@@ -260,10 +260,10 @@
   X(riser_next_picture, "riser_frame",      "a fourth step: the next picture") \
   X(riser_went_round, "riser_frame",        "past the fifth picture, and the first again") \
   X(riser_gone,       "riser_frame",        "the sixtieth step") \
-  /* $82:E7C7, $82:E807 the thing that comes at a player -- see port/seeker.h. */\
-  X(seeker_stepped,   "seeker_step",        "a pixel the way it was told") \
-  X(seeker_flap_waited, "seeker_flap",      "the same picture") \
-  X(seeker_flapped,   "seeker_flap",        "a fifth call: the other picture") \
+  /* $82:E7C7, $82:E807 the thing that comes at a player -- see port/vampire.h. */\
+  X(vampire_stepped,   "vampire_step",        "a pixel the way it was told") \
+  X(vampire_flap_waited, "vampire_flap",      "the same picture") \
+  X(vampire_flapped,   "vampire_flap",        "a fifth call: the other one") \
   /* $82:B267 a cursor a pad moves about a screen -- see port/cursor.h. */      \
   X(cursor_same,      "cursor_frame",       "the direction it was last turn") \
   X(cursor_moved,     "cursor_frame",       "a direction newly held: a step that way") \
@@ -749,47 +749,47 @@
   X(follower_other_side,"follower_place",   "...the other side of it") \
   X(follower_looks,   "follower_place",     "a sixteenth frame: the tile is looked at next") \
   X(follower_ended,   "follower_place",     "past the last place") \
-  /* $82:EF4F a frame of level 37's thing -- see port/seeker.h. */              \
-  X(seeker_came_on,   "seeker_frame",       "a pixel toward whoever is nearest") \
-  X(seeker_backed_off,"seeker_frame",       "...or away, from too near") \
-  X(seeker_circle_began,"seeker_frame",     "...or in between, and it starts to circle") \
-  X(seeker_circled,   "seeker_frame",       "a place round the circle") \
-  X(seeker_lapped,    "seeker_frame",       "...past the last, and round again") \
-  X(seeker_lapped_back,"seeker_frame",      "...or past the first, going the other way") \
-  X(seeker_circle_asks,"seeker_frame",      "a fourth frame: next it asks who is nearest") \
-  X(seeker_circle_stayed,"seeker_frame",    "a lap done, and the draw says go on") \
-  X(seeker_circle_off_level,"seeker_frame", "...or says stop, from a place off the level") \
-  X(seeker_circle_bad_ground,"seeker_frame","...or over ground that will not do") \
-  X(seeker_circle_left,"seeker_frame",      "...or from a place that will: it stops circling") \
-  X(seeker_ask_same,  "seeker_frame",       "still nearest to the one it circles") \
-  X(seeker_ask_other_far,"seeker_frame",    "...or someone else is, not near enough to matter") \
-  X(seeker_watched,   "seeker_frame",       "still, facing whoever is nearest") \
-  X(seeker_watched_b, "seeker_frame",       "...and the same from the other state") \
-  X(seeker_faced_left,"seeker_frame",       "...to the left of it, so drawn as it is") \
-  X(seeker_faced_right,"seeker_frame",      "...to the right, so flipped") \
-  X(seeker_struck_hit, "seeker_frame",     "hit while it faces whoever is nearest: it loses nine and is struck") \
-  X(seeker_struck_alone, "seeker_frame",   "...or nobody is near enough, and it is struck all the same") \
-  X(seeker_dart_lost, "seeker_frame",       "darting, nobody in reach: drawn, and struck") \
-  X(seeker_dart_blocked, "seeker_frame",    "...or solid ground where the hop lands") \
-  X(seeker_struck_shown, "seeker_struck_shown", "its pictures played, it comes at them again and its state goes on") \
-  X(seeker_frame_ended,"seeker_frame",      "the loop's end") \
-  X(seeker_held,      "seeker_frame",       "facing them from a third state, and set to be drawn") \
-  X(seeker_blinked_on,"seeker_frame",       "at one of two places, drawn: an even frame") \
-  X(seeker_blinked_off,"seeker_frame",      "...and not drawn: an odd one") \
-  X(seeker_went_on,   "seeker_frame",       "watching: the draw says fire") \
-  X(seeker_hid,       "seeker_frame",       "...or from the other state, says hide") \
-  X(seeker_fired,     "seeker_frame",       "firing: the pictures the way it faces") \
-  X(seeker_landing,   "seeker_frame",       "landed from the swoop: on to the state's first instruction") \
-  X(seeker_dart_began,"seeker_frame",       "held: the draw says dart, and for how many hops") \
-  X(seeker_dart_arrived,"seeker_frame",     "darting: near enough, so it watches again") \
-  X(seeker_dart_spent,"seeker_frame",       "...or out of hops, and the same") \
-  X(seeker_hop_across,"seeker_frame",       "a hop across: they are further off that way") \
-  X(seeker_hop_down,  "seeker_frame",       "...or up or down") \
-  X(seeker_hop_began, "seeker_frame",       "clear ground where the hop lands") \
-  X(seeker_hopped,    "seeker_frame",       "the third frame of a hop over: its place moved") \
-  X(seeker_place_bad_ground,"seeker_frame", "hidden: the ground at the place drawn will not do") \
-  X(seeker_place_off_level,"seeker_frame",  "...or the place is off the level") \
-  X(seeker_came_back, "seeker_frame",       "...or it will do, and it comes back there") \
+  /* $82:EF4F a frame of level 37's thing -- see port/vampire.h. */              \
+  X(vampire_came_on,   "vampire_frame",       "a pixel toward whoever is nearest") \
+  X(vampire_backed_off,"vampire_frame",       "...or away, from too near") \
+  X(vampire_circle_began,"vampire_frame",     "...or in between, and it starts to circle") \
+  X(vampire_circled,   "vampire_frame",       "a place round the circle") \
+  X(vampire_lapped,    "vampire_frame",       "...past the last, and round again") \
+  X(vampire_lapped_back,"vampire_frame",      "...or past the first, going the other way") \
+  X(vampire_circle_asks,"vampire_frame",      "a fourth frame: next it asks who is nearest") \
+  X(vampire_circle_stayed,"vampire_frame",    "a lap done, and the draw says go on") \
+  X(vampire_circle_off_level,"vampire_frame", "...or says stop, from a place off the level") \
+  X(vampire_circle_bad_ground,"vampire_frame","...or over ground that will not do") \
+  X(vampire_circle_left,"vampire_frame",      "...or from a place that will: it stops circling") \
+  X(vampire_ask_same,  "vampire_frame",       "still nearest to the one it circles") \
+  X(vampire_ask_other_far,"vampire_frame",    "...or someone else is, not near enough to matter") \
+  X(vampire_watched,   "vampire_frame",       "still, facing whoever is nearest") \
+  X(vampire_watched_b, "vampire_frame",       "...and the same from the other state") \
+  X(vampire_faced_left,"vampire_frame",       "...to the left of it, so drawn as it is") \
+  X(vampire_faced_right,"vampire_frame",      "...to the right, so flipped") \
+  X(vampire_struck_hit, "vampire_frame",     "hit while it faces whoever is nearest: it loses nine and is struck") \
+  X(vampire_struck_alone, "vampire_frame",   "...or nobody is near enough, and it is struck all the same") \
+  X(vampire_dart_lost, "vampire_frame",       "darting, nobody in reach: drawn, and struck") \
+  X(vampire_dart_blocked, "vampire_frame",    "...or solid ground where the hop lands") \
+  X(vampire_struck_shown, "vampire_struck_shown", "its pictures played, it comes at them again and its state goes on") \
+  X(vampire_frame_ended,"vampire_frame",      "the loop's end") \
+  X(vampire_held,      "vampire_frame",       "facing them from a third state, and set to be drawn") \
+  X(vampire_blinked_on,"vampire_frame",       "at one of two places, drawn: an even frame") \
+  X(vampire_blinked_off,"vampire_frame",      "...and not drawn: an odd one") \
+  X(vampire_went_on,   "vampire_frame",       "watching: the draw says fire") \
+  X(vampire_hid,       "vampire_frame",       "...or from the other state, says hide") \
+  X(vampire_fired,     "vampire_frame",       "firing: the pictures the way it faces") \
+  X(vampire_landing,   "vampire_frame",       "landed from the swoop: on to the state's first instruction") \
+  X(vampire_dart_began,"vampire_frame",       "held: the draw says dart, and for how many hops") \
+  X(vampire_dart_arrived,"vampire_frame",     "darting: near enough, so it watches again") \
+  X(vampire_dart_spent,"vampire_frame",       "...or out of hops: the same") \
+  X(vampire_hop_across,"vampire_frame",       "a hop across: they are further off that way") \
+  X(vampire_hop_down,  "vampire_frame",       "...or up or down") \
+  X(vampire_hop_began, "vampire_frame",       "clear ground where the hop lands") \
+  X(vampire_hopped,    "vampire_frame",       "the third frame of a hop over: its place moved") \
+  X(vampire_place_bad_ground,"vampire_frame", "hidden: the ground at the place drawn will not do") \
+  X(vampire_place_off_level,"vampire_frame",  "...or the place is off the level") \
+  X(vampire_came_back, "vampire_frame",       "...or it will do, and it comes back there") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -1902,7 +1902,7 @@
   X(level_end_password, "level_end_ticked", "a level whose number is a multiple of four: the password") \
   X(level_end_rests, "level_end_ticked", "no password: three seconds") \
   X(level_end_rest_cut, "level_end_rest_waited", "...cut short by a pad") \
-  X(seeker_entered, "ts_seeker_enter", "a seeker's start: its place in the level's list marked gone") \
+  X(vampire_entered, "ts_vampire_enter", "a vampire's start: its place in the level's list marked gone") \
   X(game_lost, "ts_game_lost", "nobody left playing: carry set, and out of the main loop") \
   X(main_back_over, "ts_main_back", "the main thread back from the level: the game over") \
   X(main_back_next, "ts_main_back", "...or the next level") \
@@ -1916,18 +1916,18 @@
   X(stuck_state_ended, "ts_stuck_freed", "the last frame stuck: the ordinary state again") \
   X(panel_side_first, "ts_panel_side", "the first player's side of the panel") \
   X(panel_side_second, "ts_panel_side", "...or the second's") \
-  X(seeker_start_heard, "ts_seeker_made", "its record made, where the sample set has its sound: sound $26") \
-  X(seeker_start_unheard, "ts_seeker_made", "...or not, and it goes on to come at whoever is nearest") \
+  X(vampire_start_heard, "ts_vampire_made", "its record made, where the sample set has its sound: sound $26") \
+  X(vampire_start_unheard, "ts_vampire_made", "...or not, and it goes on to come at whoever is nearest") \
   X(creature_unhandled, "ts_*_dead", "a werewolf or a chainsaw maniac dead: no handler") \
   X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
   X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \
   X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
   X(clone_freed, "ts_clone_freed", "...or the hunting clone's") \
   X(werewolf_counted, "ts_werewolf_counted", "a werewolf a player killed: counted, and its last pictures") \
-  X(seeker_counted, "ts_seeker_counted", "a seeker a player killed: counted, and by the killer's side") \
-  X(seeker_spent, "seeker_struck_shown", "struck with its strength spent: it flies off") \
-  X(seeker_fled, "seeker_frame", "a frame of its flight") \
-  X(seeker_gone, "seeker_frame", "...off the level or the screen: its loop ends") \
+  X(vampire_counted, "ts_vampire_counted", "a vampire a player killed: counted, and by the killer's side") \
+  X(vampire_spent, "vampire_struck_shown", "struck with its strength spent: it flies off") \
+  X(vampire_fled, "vampire_frame", "a frame of its flight") \
+  X(vampire_gone, "vampire_frame", "...off the level or the screen: its loop ends") \
   X(fishman_died, "ts_fishman_fate", "a fishman dead: told of nothing more") \
   X(fishman_second_freed, "ts_fishman_unhandled", "...and its second record freed") \
   X(fishman_counted, "ts_fishman_counted", "...counted, by the side that killed it, and heard") \
@@ -2295,17 +2295,17 @@
   X(slimed_rested, "ts_slimed_rested", "...and after it, what they hold put aside") \
   X(door_buzzing_already, "ts_door_buzz", "a locked door pushed while it buzzes: the new thread only ends") \
   X(door_buzz_begun, "ts_door_buzz", "...or it is not, and the first buzz") \
-  X(seeker_land_heard, "ts_seeker_land", "the seeker landed where the sample set has its sound: sound $27") \
-  X(seeker_land_unheard, "ts_seeker_land", "...or the set is another, and the pictures of landing") \
-  X(seeker_spawns_more, "ts_seeker_spawned", "a tracker begun and another to come: three ticks' sleep") \
-  X(seeker_spawned_all, "ts_seeker_spawned", "...or the last, and the pictures after") \
-  X(seeker_way_on, "ts_seeker_spawn_again", "the next tracker a way round from the last") \
-  X(seeker_way_wrapped, "ts_seeker_spawn_again", "...or from the first way, the eighth") \
-  X(seeker_next_hides, "ts_seeker_next", "fired: it watches, and will hide") \
-  X(seeker_next_fires, "ts_seeker_next", "...or watches, and will fire again") \
-  X(seeker_next_darts, "ts_seeker_next", "...or holds, and will dart") \
-  X(seeker_loop_slept, "ts_seeker_next", "a state ended: the loop sleeps") \
-  X(seeker_loop_ended, "ts_seeker_next", "...or ends") \
+  X(vampire_land_heard, "ts_vampire_land", "the vampire landed where the sample set has its sound: sound $27") \
+  X(vampire_land_unheard, "ts_vampire_land", "...or the set is another, and the pictures of landing") \
+  X(vampire_spawns_more, "ts_vampire_spawned", "a tracker begun and another to come: three ticks' sleep") \
+  X(vampire_spawned_all, "ts_vampire_spawned", "...or the last, and the pictures after") \
+  X(vampire_way_on, "ts_vampire_spawn_again", "the next tracker a way round from the last") \
+  X(vampire_way_wrapped, "ts_vampire_spawn_again", "...or from the first way, the eighth") \
+  X(vampire_next_hides, "ts_vampire_next", "fired: it watches, and will hide") \
+  X(vampire_next_fires, "ts_vampire_next", "...or watches, to fire again") \
+  X(vampire_next_darts, "ts_vampire_next", "...or holds, and will dart") \
+  X(vampire_loop_slept, "ts_vampire_next", "a state ended: the loop sleeps") \
+  X(vampire_loop_ended, "ts_vampire_next", "...or ends") \
   X(figure_waits, "ts_figure_waited", "the figure's tiles not all up: another frame") \
   X(figure_placed, "ts_figure_waited", "...or up: its place, and its first part asked for") \
   X(figure_part_made, "ts_figure_part", "a part made, and the next asked for") \

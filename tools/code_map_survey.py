@@ -15,8 +15,8 @@ movie reaches, by a `--poke`:
   * level 48 twice with the player moved beside Frankenstein's monster, which
     wakes it: once moved about by more pokes, near, middling and far, and
     once firing down at it with three weapons in turn until it dies; and
-    a third time, after it is dead, with the seeker (the vampire) held
-    under the player's fire for fifty frames and its strength at nought,
+    a third time, after it is dead, with the vampire held under the
+    player's fire for fifty frames and its strength at nought,
     so that one hit kills it; and a fourth time moved about, with the
     werewolf that comes out at the end left as a fatal bazooka hit leaves
     it, so that it dies as a player's kill;
@@ -87,12 +87,12 @@ ARMED = ['--poke', '1800:130=0460', '--poke', '1800:132=0140',
          '--poke', '1700+:1CBC=0001', '--poke', '1700+:1CCE=0099',
          '--poke', '2300+:1CBC=0002', '--poke', '2300+:1CD0=0099',
          '--poke', '2900+:1CBC=0005', '--poke', '2900+:1CD6=0099']
-# ...and after it is dead, the seeker of the same level, on page `$0300`
+# ...and after it is dead, the vampire of the same level, on page `$0300`
 # with its record at `$1A7A`: its strength at nought, and held under the
 # player for fifty frames, at their place and on its record, until a shot
 # hits it. It flies off, and when it is gone it is paid for as a player's
-# kill (`ts_seeker_counted`).
-SEEKER_KILLED = ARMED + ['--poke', '3600:330=0000',
+# kill (`ts_vampire_counted`).
+VAMPIRE_KILLED = ARMED + ['--poke', '3600:330=0000',
                          '--poke', '3600+:130=0460', '--poke', '3600+:132=0140',
                          '--poke', '3600-3650:30E=0460', '--poke', '3600-3650:310=0168',
                          '--poke', '3600-3650:1A7C=0460', '--poke', '3600-3650:1A80=0168']
@@ -186,7 +186,7 @@ def sessions():
     out.append(('werewolf_killed', 'level1.zmv', 4700, ['--level', '48'] + WEREWOLF_KILLED))
     out.append(('clone_killed', 'level1.zmv', 4700, ['--level', '31'] + CLONES_KILLED))
     out.append(('frankenstein_armed', 'hold-y.zmv', 5000, ['--level', '48'] + ARMED))
-    out.append(('seeker_killed', 'hold-y.zmv', 4500, ['--level', '48'] + SEEKER_KILLED))
+    out.append(('vampire_killed', 'hold-y.zmv', 4500, ['--level', '48'] + VAMPIRE_KILLED))
     out.append(('level_end_paid', 'level21-exit.zmv', 7000, LEVEL_END_PAID))
     out.append(('level_end_cut', 'level21-exit.zmv', 7000, LEVEL_END_CUT))
     out.append(('level_end_few', 'level21-exit.zmv', 7000, LEVEL_END_FEW))

@@ -275,7 +275,7 @@ Another round of about five times the usual, validated once at the end.
   nine of its strength; with nobody near enough, or darting with nobody in
   reach or solid ground where it would land, it does not. Either way its
   pictures play with nothing to touch it, and the frame stops at their call,
-  with the state's return and the loop's under it. `seeker_struck_shown`, at
+  with the state's return and the loop's under it. `vampire_struck_shown`, at
   `$82:EF12`, goes on: it comes at whoever is nearest again, and the state
   it was struck in goes on from its `JSR`.
 * **A neighbour past the level's gate.** `victim_start` marks its place in
@@ -741,7 +741,7 @@ down on level 29's freeze movies and the seeker on level 37.
   once, and only the knocked body reads it before seeking sets it. Now the
   guard asks for it only in that state. No doll frame is turned down over
   the corpus.
-* **The seeker's states that sleep.** `seeker_frame` turned down hiding,
+* **The seeker's states that sleep.** `vampire_frame` turned down hiding,
   coming back, firing and landing, which each sleep in the middle. It now
   goes as far as each one's first call and leaves the loop's return on the
   stack. Ten thread stretches do the rest: the landing's sound and
@@ -750,7 +750,7 @@ down on level 29's freeze movies and the seeker on level 37.
   back.
   * A landing begins with `LDA $1F52`, one of the sample-set checks
     `src/bank_sfx.h` watches. A watch fires only where an instruction
-    begins under the harness, so `seeker_frame` stops on that instruction
+    begins under the harness, so `vampire_frame` stops on that instruction
     and the stretch begins there.
 * **The tracker's start and end and the seeker's puff** are five more
   stretches, and the puff's sleep is an argument.
@@ -3479,7 +3479,7 @@ corpus is the same 54 movies.
 Nothing here is one large piece. The residue is a long tail now, and this
 round took fourteen pieces off it and widened one that was there.
 
-* **Level 37's thing leaving its circle**, in `port/seeker.c`. Its frame
+* **Level 37's thing leaving its circle**, in `port/vampire.c`. Its frame
   turned down every circling frame on which the draw said stop. Those
   frames go on to two questions, and both were already the port's: is where
   it is on the level (`$80:B422`), and will the ground there do
@@ -3953,7 +3953,7 @@ Most of it was passes that ports turned down, not routines with no port.
   else. The stroke that reaches the bank is the ROM's.
   * `terrain_point_bit8`, which it asks, was priced by an average and is
     priced by its path now.
-* **Level 37's dart**, in `port/seeker.c`. The thing there darts at
+* **Level 37's dart**, in `port/vampire.c`. The thing there darts at
   whoever is nearest, four pixels a hop, up, down or across. That is state
   `$82:ECC1`, and the three frames of a hop were the port's already.
   * Hidden, it looks for somewhere to come back: `$82:EBCF`. The frames
@@ -4089,7 +4089,7 @@ the work. The game registers 387 routines, 6 more.
   ROM now calls the port for `$81:9981`, as far as the shot's thread being
   asked for, and for `$81:9C99`, the walking picture.
 * **Three small things**:
-  * Two more states of level 37's thread in `seeker_frame`: `$82:ECA3`,
+  * Two more states of level 37's thread in `vampire_frame`: `$82:ECA3`,
     which faces whoever is nearest and is drawn, and `$82:ECF7`, three
     frames shown at two places by turns.
   * `$81:CE40`, the box a slime's glob tells of when it lands, in
@@ -4356,7 +4356,7 @@ other eight do not move. The game registers 332 routines, 8 more.
   that lands on a wall that can be knocked down.
 * **Walking with a weapon of the second band**, `$80:D6B8`, in the same
   file: the other walk that was missing.
-* **A frame of level 37's thing**, `$82:EF4F`, in `port/seeker.c`: the
+* **A frame of level 37's thing**, `$82:EF4F`, in `port/vampire.c`: the
   thread's loop and five of its states. It comes at whoever is nearest,
   backs off from too near, circles them at forty-eight pixels, and stands
   facing them. A frame that goes on to anything else is turned down.
@@ -4424,7 +4424,7 @@ routines, 10 more.
 * **The thing thrown in an arc**, `$81:F98A`, in a new `port/lob.c`: a
   frame of its flight, with the three routines it calls.
 * **Two leaves of the thing in level 37 that comes at a player**,
-  `$82:E7C7` and `$82:E807`, in a new `port/seeker.c`: a pixel the way it
+  `$82:E7C7` and `$82:E807`, in a new `port/vampire.c`: a pixel the way it
   was told, and the other of its two pictures every fifth call.
 * **A pose's picture as a call of its own**, `$80:F300`, in `port/pose.c`.
   The ported poses already did this in C. The poses that are still the

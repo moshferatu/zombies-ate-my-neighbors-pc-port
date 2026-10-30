@@ -261,7 +261,7 @@ it dies: the first session of the survey to reach its death. That was the
 track cleared, its coming up, twenty ticks of pieces bursting off it and
 its colours flashing, a mosaic growing from the fifth, and its end. Ported
 now (`port/snakeoid.h`): twelve stretches more, the piece's thread at
-`$83:B1DD` beside the seeker's puff, which it is but for four words
+`$83:B1DD` beside the vampire's puff, which it is but for four words
 (`port/thread_stretches.h`), and the two mosaic jobs, which are copies of
 the saucer's (`port/vblank.h`). Both sessions run with the 65816 executing
 nothing.
@@ -335,19 +335,21 @@ four letters `$82:B018` reads, from the same tables. In all ten sessions
 of the screen the port matches the ROM call for call.
 
 **Three kills paid for, the same day.** The map's core held what a
-werewolf, the seeker (`port/seeker.h`) and the hunting clone do after a
+werewolf, the vampire (`port/vampire.h`) and the hunting clone do after a
 player kills one and `score_add` comes back. The werewolf counts the kill
-at `$1F80`, plays a sound and its last pictures. The seeker counts it at
+at `$1F80`, plays a sound and its last pictures. The vampire counts it at
 `$1F82`, and once more by the killer's side at `$1FEC`, which is the tally
-VAMPIRE DESTROYED pays for; and on the screen it is drawn caped, as a
-vampire. The clone's end is the zombie's at other addresses. Each is a
+VAMPIRE DESTROYED pays for; and on the screen it is drawn caped. Until
+then it was called the seeker, for what it does; the code calls it the
+vampire now, and the older paragraphs below follow. The clone's end is the
+zombie's at other addresses. Each is a
 stretch in `port/thread_stretches.h`, beside the chainsaw maniac's, which
 is the same work.
 
 No session killed any of the three, and holding fire on their levels did
 not either: they come at the player from the side, or from above, and the
 player of `hold-y.zmv` fires down. So three sessions more, in
-`code_map_survey.py`. The seeker of level 48 is held under the firing
+`code_map_survey.py`. The vampire of level 48 is held under the firing
 player for fifty frames, its strength poked to nought, and the one hit
 that lands kills it. For that `--poke` takes a last frame now,
 `first-last:addr=value`, since the tools take 32 pokes at most. The
@@ -355,10 +357,10 @@ werewolf there and the hunting clones of level 31 are left as their
 handlers leave them after a fatal hit: the shot's id parked, the health
 under nought. All three kills check against the ROM.
 
-The seeker's session went further than any had: with its strength spent
+The vampire's session went further than any had: with its strength spent
 it flies off, four pixels a frame the way it drew, until it is off the
 level or off the screen (`$82:EA7E` and `$82:EA8E`). That was the 65816's,
-and is ported now (`port/seeker.h`).
+and is ported now (`port/vampire.h`).
 
 **The map again, the same day**, over 135 sessions:
 
@@ -505,11 +507,11 @@ end's read of `$213F` is answered as the console the cartridge was made for.
 The places are 54 and the core executes 8,610 instructions over the survey,
 690 of them not the reset's.
 
-**Using an item, the walk's doors and the seeker struck, 2026-10-15.** The
+**Using an item, the walk's doors and the vampire struck, 2026-10-15.** The
 item use is a port for the items the corpus uses; a door with a key opens
 and the walk stops at its block and goes on from the door's `RTS`; the
-seeker struck plays its pictures and goes on; a neighbour past the level's
-gate, the swipe's cut and the seeker's and the decoy's starts are ports too.
+vampire struck plays its pictures and goes on; a neighbour past the level's
+gate, the swipe's cut and the vampire's and the decoy's starts are ports too.
 `verify` gives back a sound's wait in any call. The places are 102 and the
 core executes 10,589 instructions over the survey.
 
@@ -547,7 +549,7 @@ figure and level 21's saucer are thread stretches, with the upload both
 queue as `boss_bg_queue_one`. The places are 340 and the core executes
 57,771 instructions over the survey.
 
-**The seeker's sleeping states, 2026-10-14.** The seeker's hiding, coming
+**The vampire's sleeping states, 2026-10-14.** The vampire's hiding, coming
 back, firing and landing are ported, with the tracker's start and end and
 the puff it comes back in; the doll's frame is no longer turned down when it
 has no target, and the colour pulse's setup is a stretch. The places are 358

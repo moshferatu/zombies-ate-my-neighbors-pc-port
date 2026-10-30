@@ -486,9 +486,9 @@
 // calls too. The second and third stretches are only the start's: each
 // goes on through an `RTS`, and needs it to return to the start.
 //
-// ## The seeker's states that sleep, `$82:EA35` and on
+// ## The vampire's states that sleep, `$82:EA35` and on
 //
-// See `port/seeker.h`: its frame goes as far as the first call of each and
+// See `port/vampire.h`: its frame goes as far as the first call of each and
 // leaves the loop's return on the stack. Then:
 //
 //   landing  $82:EA35  sound `$27` where the sample set is set 3
@@ -510,7 +510,7 @@
 // The four that end a state go on through its `RTS` to the loop, which
 // sleeps or ends. Each needs the loop's return on the stack.
 //
-// ## A tracker's start and end, `$82:F03E`, the seeker's puff, and the Snakeoid's pieces
+// ## A tracker's start and end, `$82:F03E`, the vampire's puff, and the Snakeoid's pieces
 //
 // See `port/tracker.h`, which has the tracker's loop and its record:
 //
@@ -518,7 +518,7 @@
 //   $82:F04B  its record kept, and a tick's sleep
 //   $82:F05E  its loop over: its last pictures asked for
 //
-// The puff the seeker comes back in, `$82:F1E6`:
+// The puff the vampire comes back in, `$82:F1E6`:
 //
 //   $82:F1E6  its weight, five, on the load
 //   $82:F1F4  its record, at the place it was asked for, drawn, and its
@@ -1299,14 +1299,14 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define WEREWOLF_PICTURE_BANK 0x008f
 #define WEREWOLF_SFX 0x002d
 #define WEREWOLF_LAST_PICTURES 0xac7au
-// The seeker's kill (`port/seeker.h`), after `score_add`: one more killed,
+// The vampire's kill (`port/vampire.h`), after `score_add`: one more killed,
 // and one more by the killer's side, which VAMPIRE DESTROYED pays for
 // (`port/level_end.h`); then its end, `$82:EF78` (`port/begin.h`).
-#define SEEKER_COUNTED_PC 0x82ef66u
-#define SEEKER_COUNTED_END_PC 0x82ef78u
-#define W_SEEKERS_KILLED 0x1f82u
-#define W_SEEKER_KILLS_BY_SIDE 0x1fecu  // a word for each side
-#define SEEKER_DP_KILLER 0x34
+#define VAMPIRE_COUNTED_PC 0x82ef66u
+#define VAMPIRE_COUNTED_END_PC 0x82ef78u
+#define W_VAMPIRES_KILLED 0x1f82u
+#define W_VAMPIRE_KILLS_BY_SIDE 0x1fecu  // a word for each side
+#define VAMPIRE_DP_KILLER 0x34
 #define CHAINSAW_DEATH_PC 0x819887u      // `port/chainsaw.h`'s frame leaves here
 #define CHAINSAW_UNHANDLED_CALL_PC 0x81988bu
 #define CHAINSAW_UNHANDLED_PC 0x81988fu
@@ -1670,54 +1670,54 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define SLIME_DP_STATE 0x16
 #define SLIME_DP_22 0x22
 
-// --- the seeker's states that sleep ------------------------------------------
+// --- the vampire's states that sleep -----------------------------------------
 
-#define SEEKER_LAND_SFX_CALL_PC 0x82ea40u       // `JSL apu_play_sfx`
-#define SEEKER_LAND_SOUNDED_PC 0x82ea44u
-#define SEEKER_LAND_PICTURES_CALL_PC 0x82ea47u  // `JSL pictures_resume`
-#define SEEKER_LANDED_PC 0x82ea4bu
-#define SEEKER_LAND_DRAW_PC 0x82ea5au           // `JSL rng`
-#define SEEKER_LAND_WAY_PC 0x82ea5eu
-#define SEEKER_LAND_SOUNDS 0x0003               // the sample set with its sound
-#define SEEKER_LAND_SFX 0x0027
-#define SEEKER_LAND_PICTURES 0xea66u
-#define SEEKER_LANDED_HEALTH 0x0009
-#define SEEKER_FIRED_PC 0x82ee1bu
-#define SEEKER_SPAWN_CALL_PC 0x82ee3bu          // `JSL thread_spawn`
-#define SEEKER_SPAWNED_PC 0x82ee3fu
-#define SEEKER_SPAWN_SLEEP_PC 0x82ee46u         // `JSL thread_yield`
-#define SEEKER_SPAWN_AGAIN_PC 0x82ee4au
-#define SEEKER_FIRED_CALL_PC 0x82ee5eu          // `JSL pictures_resume`
-#define SEEKER_NEXT_PC 0x82ee62u
-#define SEEKER_TRACKERS_FROM 0x0036  // less its strength, by 32, and one more
-#define SEEKER_TRACKER_THREAD 0xf03eu
-#define SEEKER_SPAWN_TICKS 0x0003
-#define SEEKER_FIRED_PICTURES 0x82eeafu         // a list for each way
-#define SEEKER_HIDDEN_PC 0x82eba3u
+#define VAMPIRE_LAND_SFX_CALL_PC 0x82ea40u       // `JSL apu_play_sfx`
+#define VAMPIRE_LAND_SOUNDED_PC 0x82ea44u
+#define VAMPIRE_LAND_PICTURES_CALL_PC 0x82ea47u  // `JSL pictures_resume`
+#define VAMPIRE_LANDED_PC 0x82ea4bu
+#define VAMPIRE_LAND_DRAW_PC 0x82ea5au           // `JSL rng`
+#define VAMPIRE_LAND_WAY_PC 0x82ea5eu
+#define VAMPIRE_LAND_SOUNDS 0x0003               // its sound's sample set
+#define VAMPIRE_LAND_SFX 0x0027
+#define VAMPIRE_LAND_PICTURES 0xea66u
+#define VAMPIRE_LANDED_HEALTH 0x0009
+#define VAMPIRE_FIRED_PC 0x82ee1bu
+#define VAMPIRE_SPAWN_CALL_PC 0x82ee3bu          // `JSL thread_spawn`
+#define VAMPIRE_SPAWNED_PC 0x82ee3fu
+#define VAMPIRE_SPAWN_SLEEP_PC 0x82ee46u         // `JSL thread_yield`
+#define VAMPIRE_SPAWN_AGAIN_PC 0x82ee4au
+#define VAMPIRE_FIRED_CALL_PC 0x82ee5eu          // `JSL pictures_resume`
+#define VAMPIRE_NEXT_PC 0x82ee62u
+#define VAMPIRE_TRACKERS_FROM 0x0036  // less its strength, by 32, and one more
+#define VAMPIRE_TRACKER_THREAD 0xf03eu
+#define VAMPIRE_SPAWN_TICKS 0x0003
+#define VAMPIRE_FIRED_PICTURES 0x82eeafu         // a list for each way
+#define VAMPIRE_HIDDEN_PC 0x82eba3u
 // Its start: the neighbour's place in the level's list marked gone, its
 // weight, its record, and with the sample set that has it a sound. Then the
 // state `$82:E827` sets, coming at whoever is nearest, and the first sleep.
-#define SEEKER_ENTER_PC 0x82ef36u
-#define SEEKER_GONE_CALL_PC 0x82ef38u     // `JSL victim_mark_gone`
-#define SEEKER_GONE_PC 0x82ef3cu
-#define SEEKER_ALLOC_PC 0x82ef8bu         // `JSL actor_slot_alloc`
-#define SEEKER_MADE_PC 0x82ef8fu
-#define SEEKER_MADE_RETURN 0xef48u        // `JSR $EF8B`'s
-#define SEEKER_START_SFX_CALL_PC 0x82efe9u  // `JSL apu_play_sfx`
-#define SEEKER_SOUNDED_PC 0x82efedu
-#define SEEKER_DP_GONE 0x06               // its place in the list
-#define SEEKER_LOAD 0x0014
-#define SEEKER_START_PICTURE 0xda44u
-#define SEEKER_START_ATTR 0x0c00u
-#define SEEKER_START_TURN 0x0004
-#define SEEKER_START_STRENGTH 0x0036
-#define SEEKER_START_SFX 0x0026
-#define SEEKER_DP_HIT_ID 0x34             // what `$82:EFF0` files
-#define SEEKER_DP_FREEZE_HITS 0x7e
-#define SEEKER_BACK_PC 0x82ec61u
-#define SEEKER_COLLIDE_ID 0x0003
+#define VAMPIRE_ENTER_PC 0x82ef36u
+#define VAMPIRE_GONE_CALL_PC 0x82ef38u     // `JSL victim_mark_gone`
+#define VAMPIRE_GONE_PC 0x82ef3cu
+#define VAMPIRE_ALLOC_PC 0x82ef8bu         // `JSL actor_slot_alloc`
+#define VAMPIRE_MADE_PC 0x82ef8fu
+#define VAMPIRE_MADE_RETURN 0xef48u        // `JSR $EF8B`'s
+#define VAMPIRE_START_SFX_CALL_PC 0x82efe9u  // `JSL apu_play_sfx`
+#define VAMPIRE_SOUNDED_PC 0x82efedu
+#define VAMPIRE_DP_GONE 0x06               // its place in the list
+#define VAMPIRE_LOAD 0x0014
+#define VAMPIRE_START_PICTURE 0xda44u
+#define VAMPIRE_START_ATTR 0x0c00u
+#define VAMPIRE_START_TURN 0x0004
+#define VAMPIRE_START_STRENGTH 0x0036
+#define VAMPIRE_START_SFX 0x0026
+#define VAMPIRE_DP_HIT_ID 0x34             // what `$82:EFF0` files
+#define VAMPIRE_DP_FREEZE_HITS 0x7e
+#define VAMPIRE_BACK_PC 0x82ec61u
+#define VAMPIRE_COLLIDE_ID 0x0003
 
-// --- a tracker's start and end, and the seeker's puff ------------------------
+// --- a tracker's start and end, and the vampire's puff -----------------------
 
 #define TRACKER_ENTER_PC 0x82f03eu
 #define TRACKER_BEGIN_CALL_PC 0x82f048u  // `JSR tracker_begin`
@@ -1992,8 +1992,8 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_ZOMBIE_FREED, 0x818ef6, 0x818f02, 0)   /* to the RTL */ \
   X(TS_WOLF_COUNTED, 0x81ac48, 0x81ac5c, 0) \
   X(TS_WOLF_LAST, 0x81ac60, 0x81ac63, 0)       /* LDA # */ \
-  X(TS_SEEKER_COUNTED, 0x82ef66, 0x82ef75, 0)  /* the JSL too */ \
-  X(TS_SEEKER_SIDE_COUNTED, 0x82ef75, 0x82ef78, 0) \
+  X(TS_VAMPIRE_COUNTED, 0x82ef66, 0x82ef75, 0)  /* the JSL too */ \
+  X(TS_VAMPIRE_SIDE_COUNTED, 0x82ef75, 0x82ef78, 0) \
   X(TS_EXIT_DOOR_LOOK, 0x82f7a5, 0x82f7b3, 0) \
   X(TS_EXIT_DOOR_ALIVE, 0x82f7b9, 0x82f7c0, 0)     /* LDX : LDA abs,X : BNE */ \
   X(TS_EXIT_DOOR_NOBODY, 0x82f7c0, 0x82f7c2, 0)    /* SEC : RTS */ \
@@ -2047,13 +2047,13 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SLIME_HANDLER, 0x81ccac, 0x81ccb6, 0)  /* the JSL too */ \
   X(TS_SLIME_WAY, 0x81c9e8, 0x81c9f9, 0)     /* the JMP too */ \
   X(TS_SLIME_FIRST, 0x81ccdf, 0x81cce4, 0) \
-  X(TS_SEEKER_TAIL, 0x82ef57, 0x82ef5b, 0)    /* LDA $2E : BEQ */ \
-  X(TS_SEEKER_SLEEP, 0x82ef49, 0x82ef4b, 0)   /* LDA $2C */ \
-  X(TS_SEEKER_LOAD, 0x82ef3c, 0x82ef49, 0)    /* the JSR too */ \
-  X(TS_SEEKER_MADE, 0x82ef8f, 0x82efe6, 0)    /* to the BNE */ \
-  X(TS_SEEKER_START, 0x82efed, 0x82eff0, 0)   /* JMP $E827 */ \
-  X(TS_SEEKER_RESET, 0x82e827, 0x82e850, 0)   /* the JSL too */ \
-  X(TS_SEEKER_ALIVE, 0x82e850, 0x82e854, 0)   /* LDA $30 : BPL */ \
+  X(TS_VAMPIRE_TAIL, 0x82ef57, 0x82ef5b, 0)    /* LDA $2E : BEQ */ \
+  X(TS_VAMPIRE_SLEEP, 0x82ef49, 0x82ef4b, 0)   /* LDA $2C */ \
+  X(TS_VAMPIRE_LOAD, 0x82ef3c, 0x82ef49, 0)    /* the JSR too */ \
+  X(TS_VAMPIRE_MADE, 0x82ef8f, 0x82efe6, 0)    /* to the BNE */ \
+  X(TS_VAMPIRE_START, 0x82efed, 0x82eff0, 0)   /* JMP $E827 */ \
+  X(TS_VAMPIRE_RESET, 0x82e827, 0x82e850, 0)   /* the JSL too */ \
+  X(TS_VAMPIRE_ALIVE, 0x82e850, 0x82e854, 0)   /* LDA $30 : BPL */ \
   X(TS_DECOY_ENTER, 0x81f159, 0x81f166, 0)    /* the JSR too */ \
   X(TS_BREAKABLE_ENTER, 0x82f25d, 0x82f26a, 0) /* the JSR too */ \
   X(TS_LEVEL_ENDING_SPAWN, 0x808551, 0x808561, 0) /* and $856A-$857A */ \
@@ -2090,25 +2090,25 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_FRANKENSTEIN_CLEARS, 0x81a191, 0x81a19f, 0)  /* the RTS too */ \
   X(TS_FRANKENSTEIN_HANDLER, 0x81a467, 0x81a46d, 0) \
   X(TS_DECOY_MADE, 0x81f204, 0x81f24e, 0) \
-  X(TS_SEEKER_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
-  X(TS_SEEKER_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
-  X(TS_SEEKER_LAND_ASK, 0x82ea35, 0x82ea3d, 0)  /* LDA abs : CMP # : BNE */ \
-  X(TS_SEEKER_LAND_SOUND, 0x82ea3d, 0x82ea40, 0) \
-  X(TS_SEEKER_LAND_PICTURES, 0x82ea44, 0x82ea47, 0) \
-  X(TS_SEEKER_LANDED, 0x82ea4b, 0x82ea5a, 0)  /* the JSL too */ \
-  X(TS_SEEKER_LAND_WAY, 0x82ea5e, 0x82ea66, 0)  /* the JMP too */ \
-  X(TS_SEEKER_GO_FIRE, 0x82edfd, 0x82ee0e, 0)   /* the RTS too */ \
-  X(TS_SEEKER_FIRED, 0x82ee1b, 0x82ee29, 0) \
-  X(TS_SEEKER_SPAWN, 0x82ee29, 0x82ee3b, 0) \
-  X(TS_SEEKER_SPAWNED, 0x82ee3f, 0x82ee43, 0)   /* DEC dp : BEQ */ \
-  X(TS_SEEKER_PAUSE, 0x82ee43, 0x82ee46, 0) \
-  X(TS_SEEKER_AGAIN, 0x82ee4a, 0x82ee50, 0)     /* DEC dp, DEC dp : BNE */ \
-  X(TS_SEEKER_WRAP, 0x82ee50, 0x82ee57, 1)      /* the BRA too */ \
-  X(TS_SEEKER_LAST, 0x82ee57, 0x82ee5e, 0) \
-  X(TS_SEEKER_NEXT, 0x82ee62, 0x82ee67, 0)      /* LDX dp : JMP (abs,X) */ \
-  X(TS_SEEKER_HIDDEN, 0x82eba3, 0x82ebcf, 0)    /* the RTS too */ \
-  X(TS_SEEKER_BACK, 0x82ec61, 0x82ec73, 0)      /* the JSL too */ \
-  X(TS_SEEKER_BACK_ON, 0x82ec73, 0x82ec76, 0)   /* JMP $EB5E */ \
+  X(TS_VAMPIRE_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
+  X(TS_VAMPIRE_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
+  X(TS_VAMPIRE_LAND_ASK, 0x82ea35, 0x82ea3d, 0)  /* LDA abs : CMP # : BNE */ \
+  X(TS_VAMPIRE_LAND_SOUND, 0x82ea3d, 0x82ea40, 0) \
+  X(TS_VAMPIRE_LAND_PICTURES, 0x82ea44, 0x82ea47, 0) \
+  X(TS_VAMPIRE_LANDED, 0x82ea4b, 0x82ea5a, 0)  /* the JSL too */ \
+  X(TS_VAMPIRE_LAND_WAY, 0x82ea5e, 0x82ea66, 0)  /* the JMP too */ \
+  X(TS_VAMPIRE_GO_FIRE, 0x82edfd, 0x82ee0e, 0)   /* the RTS too */ \
+  X(TS_VAMPIRE_FIRED, 0x82ee1b, 0x82ee29, 0) \
+  X(TS_VAMPIRE_SPAWN, 0x82ee29, 0x82ee3b, 0) \
+  X(TS_VAMPIRE_SPAWNED, 0x82ee3f, 0x82ee43, 0)   /* DEC dp : BEQ */ \
+  X(TS_VAMPIRE_PAUSE, 0x82ee43, 0x82ee46, 0) \
+  X(TS_VAMPIRE_AGAIN, 0x82ee4a, 0x82ee50, 0)     /* DEC dp, DEC dp : BNE */ \
+  X(TS_VAMPIRE_WRAP, 0x82ee50, 0x82ee57, 1)      /* the BRA too */ \
+  X(TS_VAMPIRE_LAST, 0x82ee57, 0x82ee5e, 0) \
+  X(TS_VAMPIRE_NEXT, 0x82ee62, 0x82ee67, 0)      /* LDX dp : JMP (abs,X) */ \
+  X(TS_VAMPIRE_HIDDEN, 0x82eba3, 0x82ebcf, 0)    /* the RTS too */ \
+  X(TS_VAMPIRE_BACK, 0x82ec61, 0x82ec73, 0)      /* the JSL too */ \
+  X(TS_VAMPIRE_BACK_ON, 0x82ec73, 0x82ec76, 0)   /* JMP $EB5E */ \
   X(TS_TRACKER_ENTER, 0x82f03e, 0x82f048, 0) \
   X(TS_TRACKER_BEGUN, 0x82f04b, 0x82f050, 0) \
   X(TS_TRACKER_ENDED, 0x82f05e, 0x82f069, 0) \
@@ -2174,9 +2174,9 @@ typedef enum {
   TS_NEEDS_DEATH,       // which player, which of the two, and the record
   TS_NEEDS_SLIME_BEGUN,  // `slime_begin`'s `JSR` to return to
   TS_NEEDS_SLIME_WAY,    // the start's `JSR $C9E4` to return to
-  TS_NEEDS_SEEKER,       // the seeker's loop to return to, and its record
-  TS_NEEDS_SEEKER_HIDDEN,  // ...and whoever it watched, in low WRAM
-  TS_NEEDS_SEEKER_NEXT,    // ...and what it does after firing, one of three
+  TS_NEEDS_VAMPIRE,       // the vampire's loop to return to, and its record
+  TS_NEEDS_VAMPIRE_HIDDEN,  // ...and whoever it watched, in low WRAM
+  TS_NEEDS_VAMPIRE_NEXT,    // ...and what it does after firing, one of three
   TS_NEEDS_FIGURE_PART,    // a record in A, and a part's `JSR` to return to
   TS_NEEDS_SAUCER_AIMED,   // a record in X, and the start's `JSR` to return to
   TS_NEEDS_PLAYER_LOAD,    // the level's load holds a player's
@@ -2209,8 +2209,8 @@ typedef enum {
                             //    if it is to
   TS_NEEDS_PLAYER_DROPS,    // its inventory in low WRAM
   TS_NEEDS_BOLT_MADE,      // a record in A and Y, the start's `JSR` to return
-  TS_NEEDS_SEEKER_MADE,    // a record in A, the start's `JSR` to return
-  TS_NEEDS_SEEKER_SOUNDED, // ...that `JSR`'s return
+  TS_NEEDS_VAMPIRE_MADE,    // a record in A, the start's `JSR` to return
+  TS_NEEDS_VAMPIRE_SOUNDED, // ...that `JSR`'s return
   TS_NEEDS_BREAKABLE_MADE, // a record in A, the start's `JSR` to return to
   // A record on its page, the start's `JSR` likewise.
   TS_NEEDS_FRANKENSTEIN_BEGUN,
@@ -2391,7 +2391,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(clone_freed, "$81:8F76", CLONE_FREED_PC, zombie_freed, ENDS, TS_NEEDS_ZOMBIE_FREED) \
   X(werewolf_counted, "$81:AC48", WEREWOLF_COUNTED_PC, werewolf_counted, ENDS, TS_NEEDS_WEREWOLF_COUNTED) \
   X(werewolf_heard, "$81:AC60", WEREWOLF_HEARD_PC, werewolf_heard, ENDS, TS_NEEDS_NOTHING) \
-  X(seeker_counted, "$82:EF66", SEEKER_COUNTED_PC, seeker_counted, ENDS, TS_NEEDS_NOTHING) \
+  X(vampire_counted, "$82:EF66", VAMPIRE_COUNTED_PC, vampire_counted, ENDS, TS_NEEDS_NOTHING) \
   X(fishman_fate, "$81:E4C1", FISHMAN_FATE_PC, fishman_fate, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_unhandled, "$81:E4C9", FISHMAN_UNHANDLED_PC, fishman_unhandled, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_counted, "$81:E4DF", FISHMAN_COUNTED_PC, fishman_counted, FISHMAN_DEATH, TS_NEEDS_RECORD) \
@@ -2427,21 +2427,21 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(slime_enter, "$81:CCCF", SLIME_ENTER_PC, slime_enter, SLIME, TS_NEEDS_NOTHING) \
   X(slime_shown, "$81:CCAC", SLIME_SHOWN_PC, slime_shown, SLIME, TS_NEEDS_SLIME_BEGUN) \
   X(slime_way, "$81:C9E8", SLIME_WAY_PC, slime_way, SLIME, TS_NEEDS_SLIME_WAY) \
-  X(argument_seeker_back, "$82:EC5A", 0x82ec5au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
-  X(seeker_land, "$82:EA35", SEEKER_LAND_PC, seeker_land, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_land_sounded, "$82:EA44", SEEKER_LAND_SOUNDED_PC, seeker_land_sounded, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_landed, "$82:EA4B", SEEKER_LANDED_PC, seeker_landed, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_land_way, "$82:EA5E", SEEKER_LAND_WAY_PC, seeker_land_way, SEEKER, TS_NEEDS_SEEKER) \
-  X(seeker_fired, "$82:EE1B", SEEKER_FIRED_PC, seeker_fired, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_spawned, "$82:EE3F", SEEKER_SPAWNED_PC, seeker_spawned, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_spawn_again, "$82:EE4A", SEEKER_SPAWN_AGAIN_PC, seeker_spawn_again, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_next, "$82:EE62", SEEKER_NEXT_PC, seeker_next, SEEKER, TS_NEEDS_SEEKER_NEXT) \
-  X(seeker_hidden, "$82:EBA3", SEEKER_HIDDEN_PC, seeker_hidden, SEEKER, TS_NEEDS_SEEKER_HIDDEN) \
-  X(seeker_back, "$82:EC61", SEEKER_BACK_PC, seeker_back, SEEKER, TS_NEEDS_SEEKER) \
-  X(seeker_enter, "$82:EF36", SEEKER_ENTER_PC, seeker_enter, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_gone, "$82:EF3C", SEEKER_GONE_PC, seeker_gone, SEEKER, TS_NEEDS_NOTHING) \
-  X(seeker_made, "$82:EF8F", SEEKER_MADE_PC, seeker_made, SEEKER, TS_NEEDS_SEEKER_MADE) \
-  X(seeker_sounded, "$82:EFED", SEEKER_SOUNDED_PC, seeker_sounded, SEEKER, TS_NEEDS_SEEKER_SOUNDED) \
+  X(argument_vampire_back, "$82:EC5A", 0x82ec5au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(vampire_land, "$82:EA35", VAMPIRE_LAND_PC, vampire_land, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_land_sounded, "$82:EA44", VAMPIRE_LAND_SOUNDED_PC, vampire_land_sounded, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_landed, "$82:EA4B", VAMPIRE_LANDED_PC, vampire_landed, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_land_way, "$82:EA5E", VAMPIRE_LAND_WAY_PC, vampire_land_way, VAMPIRE, TS_NEEDS_VAMPIRE) \
+  X(vampire_fired, "$82:EE1B", VAMPIRE_FIRED_PC, vampire_fired, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_spawned, "$82:EE3F", VAMPIRE_SPAWNED_PC, vampire_spawned, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_spawn_again, "$82:EE4A", VAMPIRE_SPAWN_AGAIN_PC, vampire_spawn_again, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_next, "$82:EE62", VAMPIRE_NEXT_PC, vampire_next, VAMPIRE, TS_NEEDS_VAMPIRE_NEXT) \
+  X(vampire_hidden, "$82:EBA3", VAMPIRE_HIDDEN_PC, vampire_hidden, VAMPIRE, TS_NEEDS_VAMPIRE_HIDDEN) \
+  X(vampire_back, "$82:EC61", VAMPIRE_BACK_PC, vampire_back, VAMPIRE, TS_NEEDS_VAMPIRE) \
+  X(vampire_enter, "$82:EF36", VAMPIRE_ENTER_PC, vampire_enter, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_gone, "$82:EF3C", VAMPIRE_GONE_PC, vampire_gone, VAMPIRE, TS_NEEDS_NOTHING) \
+  X(vampire_made, "$82:EF8F", VAMPIRE_MADE_PC, vampire_made, VAMPIRE, TS_NEEDS_VAMPIRE_MADE) \
+  X(vampire_sounded, "$82:EFED", VAMPIRE_SOUNDED_PC, vampire_sounded, VAMPIRE, TS_NEEDS_VAMPIRE_SOUNDED) \
   X(bubbled, "$81:8404", BUBBLED_PC, bubbled, BUBBLE, TS_NEEDS_RECORD) \
   X(bubble_over, "$81:8446", BUBBLE_OVER_PC, bubble_over, BUBBLE, TS_NEEDS_RECORD) \
   X(breakable_enter, "$82:F25D", BREAKABLE_ENTER_PC, breakable_enter, BREAKABLE, TS_NEEDS_NOTHING) \

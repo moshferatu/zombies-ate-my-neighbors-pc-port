@@ -33,7 +33,7 @@
 #include "port/spider.h"
 #include "port/walker.h"
 #include "port/apu.h"               // W_APU_SOUNDS
-#include "port/seeker.h"
+#include "port/vampire.h"
 #include "port/tracker.h"
 #include "port/neighbours.h"        // W_TOURISTS_TURN
 #include "port/werewolf.h"
@@ -57,7 +57,7 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82df0au, 0x000a},  // a locked door's two buzzes, and a sleep after each
     {0x82df11u, DOOR_BUZZ_SFX},
     {0x82df18u, 0x0014},
-    {0x82ec5au, 0x0020},  // the seeker's sleep after its puff begins
+    {0x82ec5au, 0x0020},  // the vampire's sleep after its puff begins
     {0x82950au, 0x0001},  // the figure's sleeps while its tiles go up
     {0x82a871u, 0x0001},  // the same after `$82:A86D`'s upload
     {0x8085bbu, 0x0007},  // sound 7, as both players reach the way out
@@ -75,7 +75,7 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x81e8bau, 0x0014},  // the swipe's sound
     {0x81f1e6u, 0xf296},  // a decoy's pictures
     {0x81f9abu, 0xfab1},  // the lob's pictures as it bursts
-    {0x82ef0bu, 0xef20},  // a seeker's pictures
+    {0x82ef0bu, 0xef20},  // a vampire's pictures
     {0x82f279u, 0x0002},  // two ticks
     {0x82f606u, 0xf623},  // a square let go: its pictures
     {0x82f760u, 0xf77a},  // the exit door's last pictures
@@ -169,11 +169,11 @@ static void jsr_and_back(Wram* w, PortCpu* c, uint16_t jsr_at,
   ran(k, TS_JSR);
 }
 
-// A seeker's state with the loop's return under it, and its record in low
+// A vampire's state with the loop's return under it, and its record in low
 // WRAM.
-static bool seeker_returns(const Wram* w, const PortCpu* c) {
-  return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_FRAME_RETURN &&
-         page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+static bool vampire_returns(const Wram* w, const PortCpu* c) {
+  return wram_r16(w, (uint16_t)(c->s + 1)) == VAMPIRE_FRAME_RETURN &&
+         page(w, c, VAMPIRE_DP_RECORD) < 0x1f00;
 }
 
 // `$80:CEE6`: does a player out end, rather than stay for good? With
@@ -331,12 +331,12 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_ZOMBIE_FREED:
       // Less than its weight, and the ROM goes round a `BMI` for good.
       return ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - ZOMBIE_8ED5_LOAD) & 0x8000u) == 0;
-    case TS_NEEDS_SEEKER_MADE:
+    case TS_NEEDS_VAMPIRE_MADE:
       return c->a < 0x1f00 &&
-             wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_MADE_RETURN;
-    case TS_NEEDS_SEEKER_SOUNDED:
-      return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_MADE_RETURN &&
-             page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+             wram_r16(w, (uint16_t)(c->s + 1)) == VAMPIRE_MADE_RETURN;
+    case TS_NEEDS_VAMPIRE_SOUNDED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == VAMPIRE_MADE_RETURN &&
+             page(w, c, VAMPIRE_DP_RECORD) < 0x1f00;
     case TS_NEEDS_BREAKABLE_MADE:
       return c->a < 0x1f00 &&
              wram_r16(w, (uint16_t)(c->s + 1)) == BREAKABLE_MADE_RETURN;
@@ -363,13 +363,13 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_CHAINSAW_SHOWN:
       return page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
              wram_r16(w, (uint16_t)(c->s + 1)) == CHAINSAW_SHOWN_RETURN;
-    case TS_NEEDS_SEEKER:
-      return seeker_returns(w, c);
-    case TS_NEEDS_SEEKER_HIDDEN:
-      return seeker_returns(w, c) && page(w, c, SEEKER_DP_TARGET) < 0x1f00;
-    case TS_NEEDS_SEEKER_NEXT: {
-      const uint16_t after = page(w, c, SEEKER_DP_AFTER);
-      return seeker_returns(w, c) && after <= SEEKER_AFTER_DART &&
+    case TS_NEEDS_VAMPIRE:
+      return vampire_returns(w, c);
+    case TS_NEEDS_VAMPIRE_HIDDEN:
+      return vampire_returns(w, c) && page(w, c, VAMPIRE_DP_TARGET) < 0x1f00;
+    case TS_NEEDS_VAMPIRE_NEXT: {
+      const uint16_t after = page(w, c, VAMPIRE_DP_AFTER);
+      return vampire_returns(w, c) && after <= VAMPIRE_AFTER_DART &&
              (after & 1) == 0;
     }
     case TS_NEEDS_FIGURE_PART: {
@@ -2899,19 +2899,19 @@ void werewolf_heard(Wram* w, const Rom* rom, PortCpu* c,
   c->pc = WEREWOLF_LAST_PICTURES_CALL_PC;
 }
 
-// `$82:EF66`: the seeker a player killed, after it is paid for: one more
+// `$82:EF66`: the vampire a player killed, after it is paid for: one more
 // killed, and one more by the side that killed it, as `$80:9D6A` finds the
 // side; on to its end.
-void seeker_counted(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_counted(Wram* w, const Rom* rom, PortCpu* c,
                     ThreadStretchWork* k) {
   (void)rom;
-  PORT_COVER(seeker_counted);
-  count(w, c, W_SEEKERS_KILLED, 1);
+  PORT_COVER(vampire_counted);
+  count(w, c, W_VAMPIRES_KILLED, 1);
   // `LDA $34 : AND #$8000 : ASL A : ROL A : ROL A`: bit 15, doubled.
-  const bool side_b = (page(w, c, SEEKER_DP_KILLER) & 0x8000u) != 0;
+  const bool side_b = (page(w, c, VAMPIRE_DP_KILLER) & 0x8000u) != 0;
   set_c(c, false);
   lda(c, side_b ? 2 : 0);
-  ran(k, TS_SEEKER_COUNTED);
+  ran(k, TS_VAMPIRE_COUNTED);
   ldx(c, 0);
   cmp16(c, c->a, wram_r16(w, W_SCORE_SLOT_SIDE));
   ran(k, TS_KILLER_SIDE);
@@ -2922,9 +2922,9 @@ void seeker_counted(Wram* w, const Rom* rom, PortCpu* c,
     ran(k, TS_KILLER_OTHER);
   }
   ran(k, TS_RTL);
-  count(w, c, (uint16_t)(W_SEEKER_KILLS_BY_SIDE + c->x), 1);
-  ran(k, TS_SEEKER_SIDE_COUNTED);
-  c->pc = SEEKER_COUNTED_END_PC;
+  count(w, c, (uint16_t)(W_VAMPIRE_KILLS_BY_SIDE + c->x), 1);
+  ran(k, TS_VAMPIRE_SIDE_COUNTED);
+  c->pc = VAMPIRE_COUNTED_END_PC;
 }
 
 // `$81:E4C1`: dead, and told of nothing more.
@@ -3814,330 +3814,330 @@ void bystander_back(Wram* w, const Rom* rom, PortCpu* c,
   c->pc = BYSTANDER_END_PC;
 }
 
-// --- the seeker's states that sleep ------------------------------------------
+// --- the vampire's states that sleep -----------------------------------------
 
 // The loop, from a state's `RTS`: the sleep, or with `$2E` set its end.
-static void seeker_return(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+static void vampire_return(Wram* w, PortCpu* c, ThreadStretchWork* k) {
   pull16(w, c);
-  lda(c, page(w, c, SEEKER_DP_ENDED));
-  ran(k, TS_SEEKER_TAIL);
+  lda(c, page(w, c, VAMPIRE_DP_ENDED));
+  ran(k, TS_VAMPIRE_TAIL);
   if (c->a != 0) {
-    PORT_COVER(seeker_loop_ended);
-    c->pc = SEEKER_FRAME_ENDED_PC;
+    PORT_COVER(vampire_loop_ended);
+    c->pc = VAMPIRE_FRAME_ENDED_PC;
     return;
   }
-  PORT_COVER(seeker_loop_slept);
+  PORT_COVER(vampire_loop_slept);
   ran(k, TS_TAKEN);
-  lda(c, page(w, c, SEEKER_DP_SLEEP));
-  ran(k, TS_SEEKER_SLEEP);
-  c->pc = SEEKER_FRAME_SLEEP_PC;
+  lda(c, page(w, c, VAMPIRE_DP_SLEEP));
+  ran(k, TS_VAMPIRE_SLEEP);
+  c->pc = VAMPIRE_FRAME_SLEEP_PC;
 }
 
 // `$82:EB5E` and `$82:EB74`: the next state.
-static void seeker_set(Wram* w, PortCpu* c, uint16_t state,
+static void vampire_set(Wram* w, PortCpu* c, uint16_t state,
                        ThreadStretchWork* k) {
   lda(c, state);
-  set_page(w, c, SEEKER_DP_STATE, c->a);
-  ran(k, TS_SEEKER_SET);
+  set_page(w, c, VAMPIRE_DP_STATE, c->a);
+  ran(k, TS_VAMPIRE_SET);
 }
 
 // Its record drawn, `LDY $08 : LDA $0000,Y : ORA #$8000 : STA $0000,Y`.
-static void seeker_show(Wram* w, PortCpu* c) {
-  ldy(c, page(w, c, SEEKER_DP_RECORD));
+static void vampire_show(Wram* w, PortCpu* c) {
+  ldy(c, page(w, c, VAMPIRE_DP_RECORD));
   lda(c, (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) | ACTOR_DRAW));
   wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
 }
 
 // `$82:EA35`: landed from the swoop. Sound `$27`, where the sample set is
 // the one with it, and the pictures of landing.
-void seeker_land(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_land(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, wram_r16(w, W_APU_SOUNDS));
-  cmp16(c, c->a, SEEKER_LAND_SOUNDS);
-  ran(k, TS_SEEKER_LAND_ASK);
-  if (c->a == SEEKER_LAND_SOUNDS) {
-    PORT_COVER(seeker_land_heard);
-    lda(c, SEEKER_LAND_SFX);
-    ran(k, TS_SEEKER_LAND_SOUND);
-    c->pc = SEEKER_LAND_SFX_CALL_PC;
+  cmp16(c, c->a, VAMPIRE_LAND_SOUNDS);
+  ran(k, TS_VAMPIRE_LAND_ASK);
+  if (c->a == VAMPIRE_LAND_SOUNDS) {
+    PORT_COVER(vampire_land_heard);
+    lda(c, VAMPIRE_LAND_SFX);
+    ran(k, TS_VAMPIRE_LAND_SOUND);
+    c->pc = VAMPIRE_LAND_SFX_CALL_PC;
     return;
   }
-  PORT_COVER(seeker_land_unheard);
+  PORT_COVER(vampire_land_unheard);
   ran(k, TS_TAKEN);
-  seeker_land_sounded(w, rom, c, k);
+  vampire_land_sounded(w, rom, c, k);
 }
 
 // `$82:EA44`.
-void seeker_land_sounded(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_land_sounded(Wram* w, const Rom* rom, PortCpu* c,
                          ThreadStretchWork* k) {
   (void)w;
   (void)rom;
-  lda(c, SEEKER_LAND_PICTURES);
-  ran(k, TS_SEEKER_LAND_PICTURES);
-  c->pc = SEEKER_LAND_PICTURES_CALL_PC;
+  lda(c, VAMPIRE_LAND_PICTURES);
+  ran(k, TS_VAMPIRE_LAND_PICTURES);
+  c->pc = VAMPIRE_LAND_PICTURES_CALL_PC;
 }
 
 // `$82:EA4B`: its health, and things that touch it told to its handler
 // again. Then a draw.
-void seeker_landed(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_landed(Wram* w, const Rom* rom, PortCpu* c,
                    ThreadStretchWork* k) {
   (void)rom;
-  set_page(w, c, SEEKER_DP_HURT, SEEKER_LANDED_HEALTH);
-  lda(c, SEEKER_HANDLER);
-  ldy(c, SEEKER_HANDLER_BANK);
-  ran(k, TS_SEEKER_LANDED);
+  set_page(w, c, VAMPIRE_DP_HURT, VAMPIRE_LANDED_HEALTH);
+  lda(c, VAMPIRE_HANDLER);
+  ldy(c, VAMPIRE_HANDLER_BANK);
+  ran(k, TS_VAMPIRE_LANDED);
   thread_set_handler(w, c);
   ran(k, TS_SET_HANDLER);
-  c->pc = SEEKER_LAND_DRAW_PC;
+  c->pc = VAMPIRE_LAND_DRAW_PC;
 }
 
 // `$82:EDFD`: it fires, drawn, from the next frame.
-static void seeker_go_fire(Wram* w, PortCpu* c, ThreadStretchWork* k) {
-  lda(c, SEEKER_STATE_FIRE);
-  set_page(w, c, SEEKER_DP_STATE, c->a);
-  seeker_show(w, c);
-  ran(k, TS_SEEKER_GO_FIRE);
-  seeker_return(w, c, k);
+static void vampire_go_fire(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, VAMPIRE_STATE_FIRE);
+  set_page(w, c, VAMPIRE_DP_STATE, c->a);
+  vampire_show(w, c);
+  ran(k, TS_VAMPIRE_GO_FIRE);
+  vampire_return(w, c, k);
 }
 
 // `$82:EA5E`: the draw says whether it hides or darts after firing.
-void seeker_land_way(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_land_way(Wram* w, const Rom* rom, PortCpu* c,
                      ThreadStretchWork* k) {
   (void)rom;
-  lda(c, (uint16_t)(c->a & SEEKER_AFTER_DART));
-  set_page(w, c, SEEKER_DP_AFTER, c->a);
-  ran(k, TS_SEEKER_LAND_WAY);
-  seeker_go_fire(w, c, k);
+  lda(c, (uint16_t)(c->a & VAMPIRE_AFTER_DART));
+  set_page(w, c, VAMPIRE_DP_AFTER, c->a);
+  ran(k, TS_VAMPIRE_LAND_WAY);
+  vampire_go_fire(w, c, k);
 }
 
 // `$82:EE29`: a tracker from where it is, sent the way `$22` says.
-static void seeker_spawn(Wram* w, PortCpu* c, ThreadStretchWork* k) {
-  set_page(w, c, SEEKER_DP_SPAWN_X, page(w, c, SEEKER_DP_X));
-  set_page(w, c, SEEKER_DP_SPAWN_Y, page(w, c, SEEKER_DP_Y));
-  set_page(w, c, SEEKER_DP_SPAWN_WAY, page(w, c, SEEKER_DP_TRACKER_WAY));
-  lda(c, SEEKER_TRACKER_THREAD);
-  ldy(c, SEEKER_BANK);
-  ran(k, TS_SEEKER_SPAWN);
-  c->pc = SEEKER_SPAWN_CALL_PC;
+static void vampire_spawn(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, VAMPIRE_DP_SPAWN_X, page(w, c, VAMPIRE_DP_X));
+  set_page(w, c, VAMPIRE_DP_SPAWN_Y, page(w, c, VAMPIRE_DP_Y));
+  set_page(w, c, VAMPIRE_DP_SPAWN_WAY, page(w, c, VAMPIRE_DP_TRACKER_WAY));
+  lda(c, VAMPIRE_TRACKER_THREAD);
+  ldy(c, VAMPIRE_BANK);
+  ran(k, TS_VAMPIRE_SPAWN);
+  c->pc = VAMPIRE_SPAWN_CALL_PC;
 }
 
 // `$82:EE1B`: its firing pictures played, as many trackers as its strength
 // leaves room for, the first the way it faces.
-void seeker_fired(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_fired(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
   set_c(c, true);
-  uint16_t n = sbc16(c, SEEKER_TRACKERS_FROM, page(w, c, SEEKER_DP_STRENGTH));
+  uint16_t n = sbc16(c, VAMPIRE_TRACKERS_FROM, page(w, c, VAMPIRE_DP_STRENGTH));
   for (int i = 0; i < 5; i++) {  // the `LSR`s
     set_c(c, (n & 1) != 0);
     n = (uint16_t)(n >> 1);
   }
   lda(c, (uint16_t)(n + 1));
-  set_page(w, c, SEEKER_DP_TRACKERS, c->a);
-  ran(k, TS_SEEKER_FIRED);
-  seeker_spawn(w, c, k);
+  set_page(w, c, VAMPIRE_DP_TRACKERS, c->a);
+  ran(k, TS_VAMPIRE_FIRED);
+  vampire_spawn(w, c, k);
 }
 
 // `$82:EE3F`: three ticks' sleep before the next, or after the last its
 // last pictures.
-void seeker_spawned(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_spawned(Wram* w, const Rom* rom, PortCpu* c,
                     ThreadStretchWork* k) {
-  const uint16_t left = (uint16_t)(page(w, c, SEEKER_DP_TRACKERS) - 1);
-  set_page(w, c, SEEKER_DP_TRACKERS, left);
+  const uint16_t left = (uint16_t)(page(w, c, VAMPIRE_DP_TRACKERS) - 1);
+  set_page(w, c, VAMPIRE_DP_TRACKERS, left);
   set_nz16(c, left);
-  ran(k, TS_SEEKER_SPAWNED);
+  ran(k, TS_VAMPIRE_SPAWNED);
   if (left != 0) {
-    PORT_COVER(seeker_spawns_more);
-    lda(c, SEEKER_SPAWN_TICKS);
-    ran(k, TS_SEEKER_PAUSE);
-    c->pc = SEEKER_SPAWN_SLEEP_PC;
+    PORT_COVER(vampire_spawns_more);
+    lda(c, VAMPIRE_SPAWN_TICKS);
+    ran(k, TS_VAMPIRE_PAUSE);
+    c->pc = VAMPIRE_SPAWN_SLEEP_PC;
     return;
   }
-  PORT_COVER(seeker_spawned_all);
+  PORT_COVER(vampire_spawned_all);
   ran(k, TS_TAKEN);
-  c->x = asl16(c, page(w, c, SEEKER_DP_WAY));
-  lda(c, rom_word(rom, SEEKER_FIRED_PICTURES + c->x));
-  ran(k, TS_SEEKER_LAST);
-  c->pc = SEEKER_FIRED_CALL_PC;
+  c->x = asl16(c, page(w, c, VAMPIRE_DP_WAY));
+  lda(c, rom_word(rom, VAMPIRE_FIRED_PICTURES + c->x));
+  ran(k, TS_VAMPIRE_LAST);
+  c->pc = VAMPIRE_FIRED_CALL_PC;
 }
 
 // `$82:EE4A`: the next tracker a way round from the last, and from the
 // first way to the eighth.
-void seeker_spawn_again(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_spawn_again(Wram* w, const Rom* rom, PortCpu* c,
                         ThreadStretchWork* k) {
   (void)rom;
-  const uint16_t way = (uint16_t)(page(w, c, SEEKER_DP_TRACKER_WAY) - 2);
-  set_page(w, c, SEEKER_DP_TRACKER_WAY, way);
+  const uint16_t way = (uint16_t)(page(w, c, VAMPIRE_DP_TRACKER_WAY) - 2);
+  set_page(w, c, VAMPIRE_DP_TRACKER_WAY, way);
   set_nz16(c, way);
-  ran(k, TS_SEEKER_AGAIN);
+  ran(k, TS_VAMPIRE_AGAIN);
   if (way != 0) {
-    PORT_COVER(seeker_way_on);
+    PORT_COVER(vampire_way_on);
     ran(k, TS_TAKEN);
   } else {
-    PORT_COVER(seeker_way_wrapped);
-    lda(c, (SEEKER_WAYS - 1) * 2);
-    set_page(w, c, SEEKER_DP_TRACKER_WAY, c->a);
-    ran(k, TS_SEEKER_WRAP);
+    PORT_COVER(vampire_way_wrapped);
+    lda(c, (VAMPIRE_WAYS - 1) * 2);
+    set_page(w, c, VAMPIRE_DP_TRACKER_WAY, c->a);
+    ran(k, TS_VAMPIRE_WRAP);
   }
-  seeker_spawn(w, c, k);
+  vampire_spawn(w, c, k);
 }
 
 // `$82:EE62`: after firing, by `$36`, through `$82:E7AF`.
-void seeker_next(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_next(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  ldx(c, page(w, c, SEEKER_DP_AFTER));
-  ran(k, TS_SEEKER_NEXT);
+  ldx(c, page(w, c, VAMPIRE_DP_AFTER));
+  ran(k, TS_VAMPIRE_NEXT);
   switch (c->x) {
-    case SEEKER_AFTER_HIDE:
-      PORT_COVER(seeker_next_hides);
-      seeker_set(w, c, SEEKER_STATE_WATCH_B, k);
+    case VAMPIRE_AFTER_HIDE:
+      PORT_COVER(vampire_next_hides);
+      vampire_set(w, c, VAMPIRE_STATE_WATCH_B, k);
       break;
-    case SEEKER_AFTER_FIRE:
-      PORT_COVER(seeker_next_fires);
-      seeker_set(w, c, SEEKER_STATE_WATCH, k);
+    case VAMPIRE_AFTER_FIRE:
+      PORT_COVER(vampire_next_fires);
+      vampire_set(w, c, VAMPIRE_STATE_WATCH, k);
       break;
     default:
-      PORT_COVER(seeker_next_darts);
-      lda(c, SEEKER_STATE_HOLD);
-      set_page(w, c, SEEKER_DP_STATE, c->a);
-      seeker_show(w, c);
-      ran(k, TS_SEEKER_SET_HOLD);
+      PORT_COVER(vampire_next_darts);
+      lda(c, VAMPIRE_STATE_HOLD);
+      set_page(w, c, VAMPIRE_DP_STATE, c->a);
+      vampire_show(w, c);
+      ran(k, TS_VAMPIRE_SET_HOLD);
       break;
   }
-  seeker_return(w, c, k);
+  vampire_return(w, c, k);
 }
 
 // `$82:EBA3`: its going played, it is not drawn, its record is put at the
 // corner of the level, and it keeps where whoever it watched was.
-void seeker_hidden(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_hidden(Wram* w, const Rom* rom, PortCpu* c,
                    ThreadStretchWork* k) {
   (void)rom;
-  ldy(c, page(w, c, SEEKER_DP_RECORD));
+  ldy(c, page(w, c, VAMPIRE_DP_RECORD));
   lda(c, (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) & ~ACTOR_DRAW));
   wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
-  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), VAMPIRE_PICTURE_BANK);
   wram_w16(w, (uint16_t)(c->y + ACTOR_X), 0);
   wram_w16(w, (uint16_t)(c->y + ACTOR_Y), 0);
-  ldx(c, page(w, c, SEEKER_DP_TARGET));
-  set_page(w, c, SEEKER_DP_AHEAD_X, wram_r16(w, (uint16_t)(c->x + ACTOR_X)));
-  set_page(w, c, SEEKER_DP_AHEAD_Y, wram_r16(w, (uint16_t)(c->x + ACTOR_Y)));
-  lda(c, SEEKER_STATE_PLACE);
-  set_page(w, c, SEEKER_DP_STATE, c->a);
-  ran(k, TS_SEEKER_HIDDEN);
-  seeker_return(w, c, k);
+  ldx(c, page(w, c, VAMPIRE_DP_TARGET));
+  set_page(w, c, VAMPIRE_DP_AHEAD_X, wram_r16(w, (uint16_t)(c->x + ACTOR_X)));
+  set_page(w, c, VAMPIRE_DP_AHEAD_Y, wram_r16(w, (uint16_t)(c->x + ACTOR_Y)));
+  lda(c, VAMPIRE_STATE_PLACE);
+  set_page(w, c, VAMPIRE_DP_STATE, c->a);
+  ran(k, TS_VAMPIRE_HIDDEN);
+  vampire_return(w, c, k);
 }
 
 // `$82:EC61`: back, so things that touch it are told to its handler again.
 // It watches.
-void seeker_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  ldy(c, page(w, c, SEEKER_DP_RECORD));
-  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), SEEKER_COLLIDE_ID);
-  lda(c, SEEKER_HANDLER);
-  ldy(c, SEEKER_HANDLER_BANK);
-  ran(k, TS_SEEKER_BACK);
+  ldy(c, page(w, c, VAMPIRE_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), VAMPIRE_COLLIDE_ID);
+  lda(c, VAMPIRE_HANDLER);
+  ldy(c, VAMPIRE_HANDLER_BANK);
+  ran(k, TS_VAMPIRE_BACK);
   thread_set_handler(w, c);
   ran(k, TS_SET_HANDLER);
-  ran(k, TS_SEEKER_BACK_ON);
-  seeker_set(w, c, SEEKER_STATE_WATCH, k);
-  seeker_return(w, c, k);
+  ran(k, TS_VAMPIRE_BACK_ON);
+  vampire_set(w, c, VAMPIRE_STATE_WATCH, k);
+  vampire_return(w, c, k);
 }
 
-// --- the seeker's start --------------------------------------------------------
+// --- the vampire's start --------------------------------------------------------
 
 // `$82:EF36`: its place in the level's list, to be marked gone.
-void seeker_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  PORT_COVER(seeker_entered);
-  lda(c, page(w, c, SEEKER_DP_GONE));
+  PORT_COVER(vampire_entered);
+  lda(c, page(w, c, VAMPIRE_DP_GONE));
   ran(k, TS_LDA_DP);
-  c->pc = SEEKER_GONE_CALL_PC;
+  c->pc = VAMPIRE_GONE_CALL_PC;
 }
 
 // `$82:EF3C`: its weight, and `JSR $EF8B` to its record.
-void seeker_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  load_up(w, c, SEEKER_LOAD);
-  push16(w, c, SEEKER_MADE_RETURN);
-  ran(k, TS_SEEKER_LOAD);
-  c->pc = SEEKER_ALLOC_PC;
+  load_up(w, c, VAMPIRE_LOAD);
+  push16(w, c, VAMPIRE_MADE_RETURN);
+  ran(k, TS_VAMPIRE_LOAD);
+  c->pc = VAMPIRE_ALLOC_PC;
 }
 
 // `$82:E827`, then the `RTS` of the start's `JSR` and the first sleep: it
 // comes at whoever is nearest, from the next frame.
-static void seeker_started(Wram* w, PortCpu* c, ThreadStretchWork* k) {
-  set_page(w, c, SEEKER_DP_SLEEP, 1);
-  set_page(w, c, SEEKER_DP_STATE, SEEKER_STATE_CHASE);
-  set_page(w, c, SEEKER_DP_FRAMES, SEEKER_FLAP_FRAMES);
-  set_page(w, c, SEEKER_DP_PICTURE,
-           (uint16_t)(page(w, c, SEEKER_DP_PICTURE) & 0x0001u));
-  ldy(c, page(w, c, SEEKER_DP_RECORD));
+static void vampire_started(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, VAMPIRE_DP_SLEEP, 1);
+  set_page(w, c, VAMPIRE_DP_STATE, VAMPIRE_STATE_CHASE);
+  set_page(w, c, VAMPIRE_DP_FRAMES, VAMPIRE_FLAP_FRAMES);
+  set_page(w, c, VAMPIRE_DP_PICTURE,
+           (uint16_t)(page(w, c, VAMPIRE_DP_PICTURE) & 0x0001u));
+  ldy(c, page(w, c, VAMPIRE_DP_RECORD));
   wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
            (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
                       ACTOR_PRIORITY_TOP));
   lda(c, 0);
   ldy(c, 0);
-  ran(k, TS_SEEKER_RESET);
+  ran(k, TS_VAMPIRE_RESET);
   thread_set_handler(w, c);
   ran(k, TS_SET_HANDLER);
-  lda(c, page(w, c, SEEKER_DP_STRENGTH));
-  ran(k, TS_SEEKER_ALIVE);
+  lda(c, page(w, c, VAMPIRE_DP_STRENGTH));
+  ran(k, TS_VAMPIRE_ALIVE);
   ran(k, TS_TAKEN);
   pull16(w, c);
   ran(k, TS_RTS);
-  lda(c, page(w, c, SEEKER_DP_SLEEP));
-  ran(k, TS_SEEKER_SLEEP);
-  c->pc = SEEKER_FRAME_SLEEP_PC;
+  lda(c, page(w, c, VAMPIRE_DP_SLEEP));
+  ran(k, TS_VAMPIRE_SLEEP);
+  c->pc = VAMPIRE_FRAME_SLEEP_PC;
 }
 
 // `$82:EF8F`: its record, at the place it was begun at, with its picture
 // and its id, drawn; its first turn and its strength; and with the sample
 // set that has it, its sound.
-void seeker_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void vampire_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
   const uint16_t record = c->a;
-  set_page(w, c, SEEKER_DP_RECORD, record);
+  set_page(w, c, VAMPIRE_DP_RECORD, record);
   ldy(c, record);
-  const uint16_t x = page(w, c, SEEKER_DP_SPAWN_X);
-  set_page(w, c, SEEKER_DP_X, x);
+  const uint16_t x = page(w, c, VAMPIRE_DP_SPAWN_X);
+  set_page(w, c, VAMPIRE_DP_X, x);
   wram_w16(w, (uint16_t)(record + ACTOR_X), x);
   wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
-  const uint16_t y = page(w, c, SEEKER_DP_SPAWN_Y);
-  set_page(w, c, SEEKER_DP_Y, y);
+  const uint16_t y = page(w, c, VAMPIRE_DP_SPAWN_Y);
+  set_page(w, c, VAMPIRE_DP_Y, y);
   wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
-  wram_w16(w, (uint16_t)(record + ACTOR_META), SEEKER_START_PICTURE);
-  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), VAMPIRE_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), VAMPIRE_PICTURE_BANK);
   wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
-  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), SEEKER_COLLIDE_ID);
-  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), SEEKER_START_ATTR);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), VAMPIRE_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), VAMPIRE_START_ATTR);
   wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
            (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
                       ACTOR_DRAW));
-  set_page(w, c, SEEKER_DP_TURN, SEEKER_START_TURN);
-  set_page(w, c, SEEKER_DP_STRENGTH, SEEKER_START_STRENGTH);
-  set_page(w, c, SEEKER_DP_ENDED, 0);
-  set_page(w, c, SEEKER_DP_HIT_ID, 0);
-  set_page(w, c, SEEKER_DP_FREEZE_HITS, 0);
-  set_page(w, c, SEEKER_DP_AFTER, 0);
+  set_page(w, c, VAMPIRE_DP_TURN, VAMPIRE_START_TURN);
+  set_page(w, c, VAMPIRE_DP_STRENGTH, VAMPIRE_START_STRENGTH);
+  set_page(w, c, VAMPIRE_DP_ENDED, 0);
+  set_page(w, c, VAMPIRE_DP_HIT_ID, 0);
+  set_page(w, c, VAMPIRE_DP_FREEZE_HITS, 0);
+  set_page(w, c, VAMPIRE_DP_AFTER, 0);
   lda(c, wram_r16(w, W_APU_SOUNDS));
-  cmp16(c, c->a, SEEKER_LAND_SOUNDS);
-  ran(k, TS_SEEKER_MADE);
-  if (c->a == SEEKER_LAND_SOUNDS) {
-    PORT_COVER(seeker_start_heard);
-    lda(c, SEEKER_START_SFX);
+  cmp16(c, c->a, VAMPIRE_LAND_SOUNDS);
+  ran(k, TS_VAMPIRE_MADE);
+  if (c->a == VAMPIRE_LAND_SOUNDS) {
+    PORT_COVER(vampire_start_heard);
+    lda(c, VAMPIRE_START_SFX);
     ran(k, TS_LDA_IMM);
-    c->pc = SEEKER_START_SFX_CALL_PC;
+    c->pc = VAMPIRE_START_SFX_CALL_PC;
     return;
   }
-  PORT_COVER(seeker_start_unheard);
+  PORT_COVER(vampire_start_unheard);
   ran(k, TS_TAKEN);
-  seeker_sounded(w, rom, c, k);
+  vampire_sounded(w, rom, c, k);
 }
 
 // `$82:EFED`: `JMP $E827`.
-void seeker_sounded(Wram* w, const Rom* rom, PortCpu* c,
+void vampire_sounded(Wram* w, const Rom* rom, PortCpu* c,
                     ThreadStretchWork* k) {
   (void)rom;
-  ran(k, TS_SEEKER_START);
-  seeker_started(w, c, k);
+  ran(k, TS_VAMPIRE_START);
+  vampire_started(w, c, k);
 }
 
 // --- a creature bubbled ------------------------------------------------------
@@ -4333,7 +4333,7 @@ void decoy_first(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   c->pc = DECOY_FIRST_SLEEP_PC;
 }
 
-// --- a tracker's start and end, and the seeker's puff ------------------------
+// --- a tracker's start and end, and the vampire's puff -----------------------
 
 // `$82:F03E`.
 void tracker_enter(Wram* w, const Rom* rom, PortCpu* c,

@@ -16781,7 +16781,7 @@ Ported as states they would have left the loop's own seven instructions
 a frame in the ROM, which was about a quarter of what the thread ran.
 
 So the port is the frame: from the sleep's return, through the state, to
-the next sleep. `seeker_frame` returns false when the state is not one it
+the next sleep. `vampire_frame` returns false when the state is not one it
 has, or when a state it has goes on to something it has not: a swoop, a
 change of mind, being hit. The entry uses `.supported`, which runs it on
 a copy of WRAM first, so a frame that is turned down has changed nothing.
@@ -17318,7 +17318,7 @@ shims come first in the file.
 `$82:ECA3` is the watch state a third time, with other odds and the
 record set to be drawn. `$82:ECF7` has no calls: it takes four from
 `$1A`, and until that goes negative puts the record at `$0A`,`$0C` or at
-`$0E`,`$10`, drawn on the game's even frames. `seeker_frame` was priced
+`$0E`,`$10`, drawn on the game's even frames. `vampire_frame` was priced
 on 274 calls in the corpus and is on 330.
 
 ### Names
@@ -17527,7 +17527,7 @@ port turns down.
 
 A frame of level 37's thing asked who is nearest once, and drew one
 random byte. The dart asks again after facing them, and the frame that
-begins it draws twice. `SeekerWork` keeps two of each now.
+begins it draws twice. `VampireWork` keeps two of each now.
 
 `actor_nearest` leaves overflow clear: its last subtraction steps a
 record's address down by 20. The frame did not say so, because every
@@ -17572,8 +17572,8 @@ have not checked it against a screen.
 33,396,982 calls across 51 movies, 0 diverged. 1,137 of 1,356 sites; of
 the 38 new, nine are untaken: `walk_door_no_reach`,
 `walk_door_not_there`, `walk_square_full`, `swim_tethered`,
-`swim_off_map`, `tile_search_resting`, `seeker_dart_arrived`,
-`seeker_place_bad_ground` and `seeker_place_off_level`. The corpus runs
+`swim_off_map`, `tile_search_resting`, `vampire_dart_arrived`,
+`vampire_place_bad_ground` and `vampire_place_off_level`. The corpus runs
 `level37.zmv` for 4,700 frames. `zamn_cosim verify -f 30000` on it takes
 the seventh and eighth of those: 2,616 frames of 2,788 passed, each
 priced exactly, 0 diverged.
@@ -17960,7 +17960,7 @@ instructions go from 183,910 to 162,997.
 
 ### A guard that asked for more than the state reads
 
-`seeker_frame`'s guard turned a frame down unless the record at `$1E` was
+`vampire_frame`'s guard turned a frame down unless the record at `$1E` was
 in low WRAM and the place at `$26` was in the circle's table. Only the two
 circling states read either. In the others they hold whatever was there
 last, and a frame the port has was the ROM's for no reason. The guard reads
@@ -19500,13 +19500,13 @@ Over the same 110 sessions the core executes 70,451 instructions where it
 executed 78,057, and takes over 5,508 times where it did 6,273, at 401
 places where there were 422.
 
-## The seeker's states that sleep (2026-10-14)
+## The vampire's states that sleep (2026-10-14)
 
 ### A watched instruction is a place to stop
 
 `src/bank_sfx.h` watches the sample-set checks, and a watch fires only
 where an instruction begins under the harness. A port that runs through a
-check hides it. The seeker's landing begins with one, so `seeker_frame`
+check hides it. The vampire's landing begins with one, so `vampire_frame`
 stops on it, with the loop's return pushed, and a stretch begins there.
 That is the same as the doll's and the werewolf's checks.
 
@@ -19689,7 +19689,7 @@ Over the same 110 sessions the core executes 12,335 instructions where it
 executed 15,011, and takes over 720 times where it did 1,007, at 125 places
 where there were 174. The reset's own 7,920 are most of what is left.
 
-## Using an item, the walk's doors and the seeker struck (2026-10-15)
+## Using an item, the walk's doors and the vampire struck (2026-10-15)
 
 ### A sound's wait, in any call
 

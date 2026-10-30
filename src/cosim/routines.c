@@ -98,7 +98,7 @@
 #include "port/thread_stretches.h"
 #include "port/radar_thread.h"
 #include "port/riser.h"
-#include "port/seeker.h"
+#include "port/vampire.h"
 #include "port/spawner.h"
 #include "port/stepper.h"
 #include "port/swipe.h"
@@ -9508,35 +9508,35 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_SLIME_HANDLER] = {90, 10, 0},
     [TS_SLIME_WAY] = {158, 17, 2},
     [TS_SLIME_FIRST] = {46, 5, 1},
-    // The seeker's states, the tracker and the puff, `--db=82`.
-    [TS_SEEKER_TAIL] = {40, 4, 1},
-    [TS_SEEKER_SLEEP] = {28, 2, 1},
-    [TS_SEEKER_LOAD] = {138, 13, 0},
-    [TS_SEEKER_MADE] = {986, 87, 14},
-    [TS_SEEKER_START] = {18, 3, 0},
-    [TS_SEEKER_RESET] = {422, 41, 6},
-    [TS_SEEKER_ALIVE] = {40, 4, 1},
+    // The vampire's states, the tracker and the puff, `--db=82`.
+    [TS_VAMPIRE_TAIL] = {40, 4, 1},
+    [TS_VAMPIRE_SLEEP] = {28, 2, 1},
+    [TS_VAMPIRE_LOAD] = {138, 13, 0},
+    [TS_VAMPIRE_MADE] = {986, 87, 14},
+    [TS_VAMPIRE_START] = {18, 3, 0},
+    [TS_VAMPIRE_RESET] = {422, 41, 6},
+    [TS_VAMPIRE_ALIVE] = {40, 4, 1},
     [TS_DECOY_ENTER] = {138, 13, 0},
     [TS_DECOY_MADE] = {830, 74, 8},
-    [TS_SEEKER_SET] = {86, 6, 1},
-    [TS_SEEKER_SET_HOLD] = {212, 17, 2},
-    [TS_SEEKER_LAND_ASK] = {64, 8, 0},
-    [TS_SEEKER_LAND_SOUND] = {18, 3, 0},
-    [TS_SEEKER_LAND_PICTURES] = {18, 3, 0},
-    [TS_SEEKER_LANDED] = {136, 15, 1},
-    [TS_SEEKER_LAND_WAY] = {64, 8, 1},
-    [TS_SEEKER_GO_FIRE] = {212, 17, 2},
-    [TS_SEEKER_FIRED] = {158, 14, 2},
-    [TS_SEEKER_SPAWN] = {204, 18, 6},
-    [TS_SEEKER_SPAWNED] = {62, 4, 1},
-    [TS_SEEKER_PAUSE] = {18, 3, 0},
-    [TS_SEEKER_AGAIN] = {112, 6, 2},
-    [TS_SEEKER_WRAP] = {58 + 6, 7, 1},
-    [TS_SEEKER_LAST] = {88, 9, 1},
-    [TS_SEEKER_NEXT] = {64, 7, 1},
-    [TS_SEEKER_HIDDEN] = {532, 44, 5},
-    [TS_SEEKER_BACK] = {176, 18, 1},
-    [TS_SEEKER_BACK_ON] = {18, 3, 0},
+    [TS_VAMPIRE_SET] = {86, 6, 1},
+    [TS_VAMPIRE_SET_HOLD] = {212, 17, 2},
+    [TS_VAMPIRE_LAND_ASK] = {64, 8, 0},
+    [TS_VAMPIRE_LAND_SOUND] = {18, 3, 0},
+    [TS_VAMPIRE_LAND_PICTURES] = {18, 3, 0},
+    [TS_VAMPIRE_LANDED] = {136, 15, 1},
+    [TS_VAMPIRE_LAND_WAY] = {64, 8, 1},
+    [TS_VAMPIRE_GO_FIRE] = {212, 17, 2},
+    [TS_VAMPIRE_FIRED] = {158, 14, 2},
+    [TS_VAMPIRE_SPAWN] = {204, 18, 6},
+    [TS_VAMPIRE_SPAWNED] = {62, 4, 1},
+    [TS_VAMPIRE_PAUSE] = {18, 3, 0},
+    [TS_VAMPIRE_AGAIN] = {112, 6, 2},
+    [TS_VAMPIRE_WRAP] = {58 + 6, 7, 1},
+    [TS_VAMPIRE_LAST] = {88, 9, 1},
+    [TS_VAMPIRE_NEXT] = {64, 7, 1},
+    [TS_VAMPIRE_HIDDEN] = {532, 44, 5},
+    [TS_VAMPIRE_BACK] = {176, 18, 1},
+    [TS_VAMPIRE_BACK_ON] = {18, 3, 0},
     [TS_TRACKER_ENTER] = {98, 10, 0},
     [TS_TRACKER_BEGUN] = {46, 5, 1},
     [TS_TRACKER_ENDED] = {104, 11, 1},
@@ -9632,8 +9632,8 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_ZOMBIE_FREED] = {110, 12, 0},
     [TS_WOLF_COUNTED] = {218, 20, 1},
     [TS_WOLF_LAST] = {18, 3, 0},
-    [TS_SEEKER_COUNTED] = {192, 15, 1},
-    [TS_SEEKER_SIDE_COUNTED] = {62, 3, 0},
+    [TS_VAMPIRE_COUNTED] = {192, 15, 1},
+    [TS_VAMPIRE_SIDE_COUNTED] = {62, 3, 0},
     [TS_FISH_FATE] = {30, 4, 0},
     [TS_SQUARE_MADE] = {654, 53, 2},
     [TS_SQUARE_KEPT] = {46, 5, 1},
@@ -9831,7 +9831,7 @@ static const uint32_t TS_EXITS_ENDS[] = {
     CHAINSAW_LAST_PICTURES_CALL_PC, ZOMBIE_FREE_CALL_PC,
     ZOMBIE_RTL_PC,              CLONE_FREE_CALL_PC,
     CLONE_RTL_PC,               WEREWOLF_COUNTED_SOUND_PC,
-    WEREWOLF_LAST_PICTURES_CALL_PC, SEEKER_COUNTED_END_PC};
+    WEREWOLF_LAST_PICTURES_CALL_PC, VAMPIRE_COUNTED_END_PC};
 static const uint32_t TS_EXITS_BOLT[] = {BOLT_SOUND_CALL_PC, BOLT_ALLOC_PC,
                                          BOLT_SLEEP_PC};
 static const uint32_t TS_EXITS_PAUSE[] = {PAUSE_HELD_PC, PAUSE_VOLUME_UP_CALL_PC,
@@ -9848,11 +9848,13 @@ static const uint32_t TS_EXITS_CHAINSAW[] = {
     CHAINSAW_YIELD_PC};
 static const uint32_t TS_EXITS_SLIME[] = {SLIME_BEGIN_CALL_PC, SLIME_DRAW_PC,
                                           SLIME_FIRST_YIELD_PC};
-static const uint32_t TS_EXITS_SEEKER[] = {
-    SEEKER_LAND_SFX_CALL_PC, SEEKER_LAND_PICTURES_CALL_PC, SEEKER_LAND_DRAW_PC,
-    SEEKER_SPAWN_CALL_PC,    SEEKER_SPAWN_SLEEP_PC,        SEEKER_FIRED_CALL_PC,
-    SEEKER_FRAME_SLEEP_PC,   SEEKER_FRAME_ENDED_PC,        SEEKER_GONE_CALL_PC,
-    SEEKER_ALLOC_PC,         SEEKER_START_SFX_CALL_PC};
+static const uint32_t TS_EXITS_VAMPIRE[] = {
+    VAMPIRE_LAND_SFX_CALL_PC,  VAMPIRE_LAND_PICTURES_CALL_PC,
+    VAMPIRE_LAND_DRAW_PC,      VAMPIRE_SPAWN_CALL_PC,
+    VAMPIRE_SPAWN_SLEEP_PC,    VAMPIRE_FIRED_CALL_PC,
+    VAMPIRE_FRAME_SLEEP_PC,    VAMPIRE_FRAME_ENDED_PC,
+    VAMPIRE_GONE_CALL_PC,      VAMPIRE_ALLOC_PC,
+    VAMPIRE_START_SFX_CALL_PC};
 static const uint32_t TS_EXITS_BUBBLE[] = {BUBBLED_HANDLER_CALL_PC,
                                            BUBBLE_OVER_JML_PC};
 static const uint32_t TS_EXITS_BREAKABLE[] = {BREAKABLE_ALLOC_PC,
@@ -12633,7 +12635,7 @@ static const uint32_t RISER_SHOWN_EXITS[] = {RISER_SHOW_YIELD_PC,
 
 // ---------------------------------------------------------------------------
 // $82:E7C7 and $82:E807  the thing that comes at a player -- see
-// `port/seeker.h`
+// `port/vampire.h`
 // ---------------------------------------------------------------------------
 //
 // Each run is from `tools/cycles816.py --db=82`.
@@ -12642,30 +12644,30 @@ static const CosimRun SK_RUN_COUNT = {62, 4, 1};        // DEC $1A : BPL
 static const CosimRun SK_RUN_PICTURE = {260, 25, 4};    // $E80B-$E821
 
 // Its own data bank: the two tables are read through it.
-static bool accepts_seeker_flap(const Wram* w, const CosimRegs* in) {
-  return body_ok(in) && in->d >= 0x0100 && in->db == SEEKER_BANK &&
-         wram_r16(w, (uint16_t)(in->d + SEEKER_DP_RECORD)) < 0x1f00;
+static bool accepts_vampire_flap(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == VAMPIRE_BANK &&
+         wram_r16(w, (uint16_t)(in->d + VAMPIRE_DP_RECORD)) < 0x1f00;
 }
 
-static bool accepts_seeker_step(const Wram* w, const CosimRegs* in) {
-  return accepts_seeker_flap(w, in) && seeker_step_supported(in->a);
+static bool accepts_vampire_step(const Wram* w, const CosimRegs* in) {
+  return accepts_vampire_flap(w, in) && vampire_step_supported(in->a);
 }
 
-static void shim_seeker_step(Wram* w, const Rom* rom, const CosimRegs* in,
+static void shim_vampire_step(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   PortCpu c;
   cpu_from(in, &c);
-  seeker_step(w, rom, &c);
+  vampire_step(w, rom, &c);
   ret_from_cpu(&c, out);
   cosim_cost(cosim_run_cycles_dp(&SK_RUN_STEP, fetch_fast(in),
                                  (in->d & 0xffu) != 0));
 }
 
-static void shim_seeker_flap(Wram* w, const Rom* rom, const CosimRegs* in,
+static void shim_vampire_flap(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   PortCpu c;
   cpu_from(in, &c);
-  const bool changed = seeker_flap(w, rom, &c);
+  const bool changed = vampire_flap(w, rom, &c);
   ret_from_cpu(&c, out);
 
   CosimRun run = {0, 0, 0};
@@ -12782,27 +12784,27 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
 
 // The records it reads are in low WRAM, and circling, the place it circles
 // from is in the table. Then the frame has to be one the port has.
-static bool supported_seeker_frame(Wram* scratch, const Rom* rom,
+static bool supported_vampire_frame(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
-  if (!accepts_seeker_flap(scratch, in) ||
+  if (!accepts_vampire_flap(scratch, in) ||
       wram_r16(scratch, W_SCHED_CUR_TASK) >= WRAM_THREAD_SLOTS * 2)
     return false;
   const uint16_t state =
-      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_STATE));
-  if ((state == SEEKER_STATE_CIRCLE || state == SEEKER_STATE_CIRCLE_ASK) &&
-      (wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_TARGET)) >= 0x1f00 ||
-       wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_PLACE)) >=
-           SEEKER_CIRCLE_END))
+      wram_r16(scratch, (uint16_t)(in->d + VAMPIRE_DP_STATE));
+  if ((state == VAMPIRE_STATE_CIRCLE || state == VAMPIRE_STATE_CIRCLE_ASK) &&
+      (wram_r16(scratch, (uint16_t)(in->d + VAMPIRE_DP_TARGET)) >= 0x1f00 ||
+       wram_r16(scratch, (uint16_t)(in->d + VAMPIRE_DP_PLACE)) >=
+           VAMPIRE_CIRCLE_END))
     return false;
   PortCpu c;
-  static SeekerWork k;
-  k = (SeekerWork){0};
+  static VampireWork k;
+  k = (VampireWork){0};
   cpu_from(in, &c);
-  return seeker_frame(scratch, rom, &c, &k);
+  return vampire_frame(scratch, rom, &c, &k);
 }
 
-static int seeker_cycles(const SeekerWork* work, const CosimRegs* in) {
-  const SeekerWork k = *work;
+static int vampire_cycles(const VampireWork* work, const CosimRegs* in) {
+  const VampireWork k = *work;
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
   int cycles = 0;
@@ -12820,53 +12822,53 @@ static int seeker_cycles(const SeekerWork* work, const CosimRegs* in) {
   return cycles;
 }
 
-static void shim_seeker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+static void shim_vampire_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   PortCpu c;
-  static SeekerWork k;
-  k = (SeekerWork){0};
+  static VampireWork k;
+  k = (VampireWork){0};
   cpu_from(in, &c);
-  seeker_frame(w, rom, &c, &k);
+  vampire_frame(w, rom, &c, &k);
   cpu_to(&c, out);
-  cosim_cost(seeker_cycles(&k, in));
+  cosim_cost(vampire_cycles(&k, in));
 }
 
-static const uint32_t SEEKER_FRAME_EXITS[] = {
-    SEEKER_FRAME_SLEEP_PC, SEEKER_FRAME_ENDED_PC, SEEKER_LAND_PC,
-    SEEKER_FIRE_CALL_PC,   SEEKER_HIDE_CALL_PC,   SEEKER_BACK_CALL_PC,
-    SEEKER_STRUCK_CALL_PC};
+static const uint32_t VAMPIRE_FRAME_EXITS[] = {
+    VAMPIRE_FRAME_SLEEP_PC, VAMPIRE_FRAME_ENDED_PC, VAMPIRE_LAND_PC,
+    VAMPIRE_FIRE_CALL_PC,   VAMPIRE_HIDE_CALL_PC,   VAMPIRE_BACK_CALL_PC,
+    VAMPIRE_STRUCK_CALL_PC};
 
 // `$82:EF12`, its pictures played after it was struck: the state it was in
 // under its return, and the loop's under that.
-static bool accepts_seeker_struck_shown(const Wram* w, const CosimRegs* in) {
-  if (!accepts_seeker_flap(w, in) ||
+static bool accepts_vampire_struck_shown(const Wram* w, const CosimRegs* in) {
+  if (!accepts_vampire_flap(w, in) ||
       wram_r16(w, W_SCHED_CUR_TASK) >= WRAM_THREAD_SLOTS * 2)
     return false;
   const uint16_t back = wram_r16(w, (uint16_t)(in->s + 1));
-  if (back == SEEKER_FRAME_RETURN) return true;  // struck darting
-  return (back == SEEKER_WATCH_RETURN || back == SEEKER_WATCH_B_RETURN ||
-          back == SEEKER_HOLD_RETURN) &&
-         wram_r16(w, (uint16_t)(in->s + 3)) == SEEKER_FRAME_RETURN;
+  if (back == VAMPIRE_FRAME_RETURN) return true;  // struck darting
+  return (back == VAMPIRE_WATCH_RETURN || back == VAMPIRE_WATCH_B_RETURN ||
+          back == VAMPIRE_HOLD_RETURN) &&
+         wram_r16(w, (uint16_t)(in->s + 3)) == VAMPIRE_FRAME_RETURN;
 }
 
-static bool supported_seeker_struck_shown(Wram* scratch, const Rom* rom,
+static bool supported_vampire_struck_shown(Wram* scratch, const Rom* rom,
                                           const CosimRegs* in) {
   PortCpu c;
-  static SeekerWork k;
-  k = (SeekerWork){0};
+  static VampireWork k;
+  k = (VampireWork){0};
   cpu_from(in, &c);
-  return seeker_struck_shown(scratch, rom, &c, &k);
+  return vampire_struck_shown(scratch, rom, &c, &k);
 }
 
-static void shim_seeker_struck_shown(Wram* w, const Rom* rom,
+static void shim_vampire_struck_shown(Wram* w, const Rom* rom,
                                      const CosimRegs* in, CosimRegs* out) {
   PortCpu c;
-  static SeekerWork k;
-  k = (SeekerWork){0};
+  static VampireWork k;
+  k = (VampireWork){0};
   cpu_from(in, &c);
-  seeker_struck_shown(w, rom, &c, &k);
+  vampire_struck_shown(w, rom, &c, &k);
   cpu_to(&c, out);
-  cosim_cost(seeker_cycles(&k, in));
+  cosim_cost(vampire_cycles(&k, in));
 }
 
 // ---------------------------------------------------------------------------
@@ -34313,25 +34315,25 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 700,
     },
-    // The thing that comes at a player: see `port/seeker.h`.
+    // The thing that comes at a player: see `port/vampire.h`.
     {
-        .name = "seeker_step",
+        .name = "vampire_step",
         .symbol = "$82:E7C7",
-        .entry = SEEKER_STEP_PC,
-        .ret_op = SEEKER_STEP_RTS_PC,
+        .entry = VAMPIRE_STEP_PC,
+        .ret_op = VAMPIRE_STEP_RTS_PC,
         .ret_kind = COSIM_RTS,
-        .run = shim_seeker_step,
-        .accepts = accepts_seeker_step,
+        .run = shim_vampire_step,
+        .accepts = accepts_vampire_step,
         .cycles = 400,
     },
     {
-        .name = "seeker_flap",
+        .name = "vampire_flap",
         .symbol = "$82:E807",
-        .entry = SEEKER_FLAP_PC,
-        .ret_op = SEEKER_FLAP_RTS_PC,
+        .entry = VAMPIRE_FLAP_PC,
+        .ret_op = VAMPIRE_FLAP_RTS_PC,
         .ret_kind = COSIM_RTS,
-        .run = shim_seeker_flap,
-        .accepts = accepts_seeker_flap,
+        .run = shim_vampire_flap,
+        .accepts = accepts_vampire_flap,
         .cycles = 150,
     },
     // A cursor a pad moves about a screen: see `port/cursor.h`.
@@ -35418,12 +35420,12 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 5,
     },
     {
-        .name = "seeker_frame",
+        .name = "vampire_frame",
         .symbol = "$82:EF4F",
-        .entry = SEEKER_FRAME_PC,
-        .run = shim_seeker_frame,
-        .supported = supported_seeker_frame,
-        COSIM_EXITS(SEEKER_FRAME_EXITS),
+        .entry = VAMPIRE_FRAME_PC,
+        .run = shim_vampire_frame,
+        .supported = supported_vampire_frame,
+        COSIM_EXITS(VAMPIRE_FRAME_EXITS),
         .uncalled = true,
         .cycles = 9000,
         // The state's address and the loop's, a `JSR`, and the deepest of
@@ -35431,13 +35433,13 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 12,
     },
     {
-        .name = "seeker_struck_shown",
+        .name = "vampire_struck_shown",
         .symbol = "$82:EF12",
-        .entry = SEEKER_STRUCK_SHOWN_PC,
-        .run = shim_seeker_struck_shown,
-        .accepts = accepts_seeker_struck_shown,
-        .supported = supported_seeker_struck_shown,
-        COSIM_EXITS(SEEKER_FRAME_EXITS),
+        .entry = VAMPIRE_STRUCK_SHOWN_PC,
+        .run = shim_vampire_struck_shown,
+        .accepts = accepts_vampire_struck_shown,
+        .supported = supported_vampire_struck_shown,
+        COSIM_EXITS(VAMPIRE_FRAME_EXITS),
         .uncalled = true,
         .cycles = 4000,
         .stack_bytes = 12,
