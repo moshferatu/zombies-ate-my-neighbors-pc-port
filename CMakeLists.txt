@@ -388,6 +388,8 @@ add_library(zamn_port STATIC
   src/port/ant_states.c
   src/port/boss_thread.c
   src/port/snakeoid.c
+  src/port/frankenstein.c
+  src/port/level_end.c
   src/port/spray.c
   src/port/thrown.c
   src/port/tentacle.c

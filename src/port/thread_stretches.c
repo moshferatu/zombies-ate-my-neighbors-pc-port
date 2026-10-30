@@ -338,9 +338,9 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_BREAKABLE_MADE:
       return c->a < 0x1f00 &&
              wram_r16(w, (uint16_t)(c->s + 1)) == BREAKABLE_MADE_RETURN;
-    case TS_NEEDS_WATCHER_BEGUN:
-      return page(w, c, IDLE_WAIT_DP_RECORD) < 0x1f00 &&
-             wram_r16(w, (uint16_t)(c->s + 1)) == WATCHER_BEGUN_RETURN;
+    case TS_NEEDS_FRANKENSTEIN_BEGUN:
+      return page(w, c, FRANKENSTEIN_WAIT_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == FRANKENSTEIN_BEGUN_RETURN;
     case TS_NEEDS_DECOY_MADE:
       return c->a < 0x1f00 && c->y == c->a &&
              wram_r16(w, (uint16_t)(c->s + 1)) == DECOY_MADE_RETURN;
@@ -4168,57 +4168,57 @@ void breakable_made(Wram* w, const Rom* rom, PortCpu* c,
 }
 
 // `$81:A455`: its weight and its count, and `JSR $A410` to `record_begin`.
-void watcher_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void frankenstein_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  PORT_COVER(watcher_entered);
-  load_up(w, c, WATCHER_LOAD);
-  lda(c, WATCHER_COUNT);
-  set_page(w, c, IDLE_WAIT_DP_LEFT, c->a);
-  push16(w, c, WATCHER_BEGUN_RETURN);
-  ran(k, TS_WATCHER_ENTER);
-  c->pc = WATCHER_BEGIN_CALL_PC;
+  PORT_COVER(frankenstein_entered);
+  load_up(w, c, FRANKENSTEIN_LOAD);
+  lda(c, FRANKENSTEIN_COUNT);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_LEFT, c->a);
+  push16(w, c, FRANKENSTEIN_BEGUN_RETURN);
+  ran(k, TS_FRANKENSTEIN_ENTER);
+  c->pc = FRANKENSTEIN_BEGIN_CALL_PC;
 }
 
 // `$81:A414`: its record's picture, drawn over everything and touchable, its
 // place kept, and the rest of its page cleared, `$81:A191` too; back from the
 // `JSR`, and to its handler.
-void watcher_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+void frankenstein_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  set_page(w, c, IDLE_WAIT_DP_PICTURE, 0);
-  const uint16_t record = page(w, c, IDLE_WAIT_DP_RECORD);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_PICTURE, 0);
+  const uint16_t record = page(w, c, FRANKENSTEIN_WAIT_DP_RECORD);
   const uint16_t x = page(w, c, 0x00);
-  set_page(w, c, IDLE_WAIT_DP_X, x);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_X, x);
   wram_w16(w, (uint16_t)(record + ACTOR_X), x);
   wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
   const uint16_t y = page(w, c, 0x02);
-  set_page(w, c, IDLE_WAIT_DP_Y, y);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_Y, y);
   wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
-  wram_w16(w, (uint16_t)(record + ACTOR_META), WATCHER_PICTURE);
-  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), WATCHER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), FRANKENSTEIN_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), FRANKENSTEIN_PICTURE_BANK);
   wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
            (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
-                      WATCHER_FLAGS));
-  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), WATCHER_ATTR);
-  set_page(w, c, IDLE_WAIT_DP_LEFT, 0);
-  set_page(w, c, IDLE_WAIT_DP_PICTURE, 0);
+                      FRANKENSTEIN_FLAGS));
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), FRANKENSTEIN_ATTR);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_LEFT, 0);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_PICTURE, 0);
   set_page(w, c, 0x12, 0);
   set_page(w, c, 0x7e, 0);
-  set_page(w, c, IDLE_WAIT_DP_GONE, 0);
-  ran(k, TS_WATCHER_BEGUN);
+  set_page(w, c, FRANKENSTEIN_WAIT_DP_GONE, 0);
+  ran(k, TS_FRANKENSTEIN_BEGUN);
   // `$81:A191`.
   set_page(w, c, 0x2e, 0xffff);
   set_page(w, c, 0x36, 0xffff);
   set_page(w, c, 0x3e, 0xffff);
   set_page(w, c, 0x46, 0xffff);
   set_page(w, c, 0x2c, 0);
-  ran(k, TS_WATCHER_CLEARS);
+  ran(k, TS_FRANKENSTEIN_CLEARS);
   ran(k, TS_RTS);
   pull16(w, c);
-  c->a = WATCHER_HANDLER;
-  c->y = WATCHER_BANK;
+  c->a = FRANKENSTEIN_HANDLER;
+  c->y = FRANKENSTEIN_BANK;
   set_nz16(c, c->y);
-  ran(k, TS_WATCHER_HANDLER);
-  c->pc = WATCHER_HANDLER_CALL_PC;
+  ran(k, TS_FRANKENSTEIN_HANDLER);
+  c->pc = FRANKENSTEIN_HANDLER_CALL_PC;
 }
 
 // --- the decoy's start ---------------------------------------------------------

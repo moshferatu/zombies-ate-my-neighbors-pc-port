@@ -11,7 +11,14 @@ movie reaches, by a `--poke`:
     for it to bite, with their health held up;
   * level 20 twice more with the Snakeoid moved, on one frame, to where it
     bites: from under the player, and from the side above them, where their
-    water hits it until it dies.
+    water hits it until it dies;
+  * level 48 twice with the player moved beside Frankenstein's monster, which
+    wakes it: once moved about by more pokes, near, middling and far, and
+    once firing down at it with three weapons in turn until it dies;
+  * the screen after level 21 three times more, with what it counts poked
+    as it begins: the neighbours saved, a tally two bonuses read, a life
+    due, and the level's number, which decides the password and the level's
+    own bonus.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -50,6 +57,36 @@ UNDER = ['--poke', '1800:728=02B3', '--poke', '1800:72A=055B']
 ABOVE = ['--poke', '1800:728=02D5', '--poke', '1800:72A=056C']
 # Both players of `level1-2p.zmv` dead, and both scores going in: the second
 # is asked after the first is filed.
+# Frankenstein's monster is at (1120, 387) on level 48, and wakes for a player
+# within 80. Under `level1.zmv` the player stands still from frame 2000, so
+# they are moved: beside it, 180 to its right, 220 below, 500 to its right,
+# and beside it again.
+ROAM = ['--poke', '300+:1CB8=000A']
+for frame, x, y in ((2000, 0x424, 0x183), (2400, 0x514, 0x183),
+                    (3000, 0x460, 0x25F), (3600, 0x654, 0x183),
+                    (4200, 0x424, 0x183)):
+    ROAM += ['--poke', '%d:130=%04X' % (frame, x), '--poke', '%d:132=%04X' % (frame, y)]
+# ...and under `hold-y.zmv`, 67 above it facing down and firing: weapon 1
+# (its hits are id `$5D`), then 2 (`$5E`), then 5 (`$61`), which kills it.
+# A later poke of the same word wins.
+ARMED = ['--poke', '1800:130=0460', '--poke', '1800:132=0140',
+         '--poke', '1600+:1CB8=000A',
+         '--poke', '1700+:1CBC=0001', '--poke', '1700+:1CCE=0099',
+         '--poke', '2300+:1CBC=0002', '--poke', '2300+:1CD0=0099',
+         '--poke', '2900+:1CBC=0005', '--poke', '2900+:1CD6=0099']
+# The screen after level 21 under `level21-exit.zmv` begins at frame 4700.
+# Ten neighbours of kind 8, a UFO tally and a spawn count for two of the
+# level's bonuses, and the next life at nought; then eleven saved and five
+# lives on level 24, and four saved on level 29.
+LEVEL_END = ['--poke', '4700:1FA0=0808', '--poke', '4700:1FA2=0808',
+             '--poke', '4700:1FA4=0808', '--poke', '4700:1FA6=0808',
+             '--poke', '4700:1FA8=0808', '--poke', '4700:1FAA=0008',
+             '--poke', '4700:1FE4=0001', '--poke', '4700:1FF0=0001',
+             '--poke', '4700:6054=0000']
+LEVEL_END_PAID = LEVEL_END + ['--poke', '4700:1F9C=000A', '--poke', '4700:1E7C=0014']
+LEVEL_END_CUT = LEVEL_END + ['--poke', '4700:1F9C=000B', '--poke', '4700:1D4C=0005',
+                             '--poke', '4700:1E7C=0018']
+LEVEL_END_FEW = LEVEL_END + ['--poke', '4700:1F9C=0004', '--poke', '4700:1E7C=001D']
 BOTH_DEAD = ['--poke', '3000+:1CB8=0000', '--poke', '3000+:1CBA=0000',
              '--poke', '3000+:1E72=4321', '--poke', '3000+:1E74=0765',
              '--poke', '3000+:1E76=0000', '--poke', '3000+:1E78=0800']
@@ -79,6 +116,11 @@ def sessions():
         out.append(('bitten%d' % n, 'hold-y.zmv', 7000, ['--level', str(n)] + ALIVE))
     out.append(('bitten_under', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + UNDER))
     out.append(('bitten_above', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + ABOVE))
+    out.append(('frankenstein_roams', 'level1.zmv', 4700, ['--level', '48'] + ROAM))
+    out.append(('frankenstein_armed', 'hold-y.zmv', 5000, ['--level', '48'] + ARMED))
+    out.append(('level_end_paid', 'level21-exit.zmv', 7000, LEVEL_END_PAID))
+    out.append(('level_end_cut', 'level21-exit.zmv', 7000, LEVEL_END_CUT))
+    out.append(('level_end_few', 'level21-exit.zmv', 7000, LEVEL_END_FEW))
     return out
 
 

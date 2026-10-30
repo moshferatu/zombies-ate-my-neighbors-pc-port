@@ -234,6 +234,15 @@
   X(82b9b0, "$82:B9B0", 0x82b9b0u) /* WAI */ \
   X(82b230, "$82:B230", 0x82b230u) /* WAI */ \
   X(82b565, "$82:B565", 0x82b565u) /* WAI */ \
+  /* The screen after a level's: see port/level_end.h */ \
+  X(82bd7f, "$82:BD7F", 0x82bd7fu) /* WAI */ \
+  X(82bde6, "$82:BDE6", 0x82bde6u) /* JSL $80:BDF2 */ \
+  X(82bdf1, "$82:BDF1", 0x82bdf1u) /* WAI */ \
+  X(82be02, "$82:BE02", 0x82be02u) /* JSL $82:B0DE */ \
+  X(82be23, "$82:BE23", 0x82be23u) /* JSL $82:B820 */ \
+  X(82be3e, "$82:BE3E", 0x82be3eu) /* JSL $82:B820 */ \
+  X(82beb0, "$82:BEB0", 0x82beb0u) /* JSL $82:AD44 */ \
+  X(82bf0d, "$82:BF0D", 0x82bf0du) /* JSL $80:C049 */ \
   X(82b30e, "$82:B30E", 0x82b30eu) /* WAI */ \
   X(82b2f1, "$82:B2F1", 0x82b2f1u) /* WAI */ \
   X(809796, "$80:9796", 0x809796u) /* WAI */ \

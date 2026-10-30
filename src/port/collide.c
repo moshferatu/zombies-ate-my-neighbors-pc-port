@@ -1506,6 +1506,8 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = actor_f330_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_A638_COLLIDE_ENTRY) {
     served = actor_a638_collide(w, dp, arg, &r);
+  } else if (entry == FRANKENSTEIN_COLLIDE_ENTRY) {
+    served = frankenstein_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == ACTOR_84AC_COLLIDE_ENTRY) {
     served = actor_84ac_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == ENEMY_B95F_COLLIDE_ENTRY) {
@@ -3703,6 +3705,104 @@ bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg,
   r->z = false;
   r->c = false;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:A594  frankenstein_collide
+// ---------------------------------------------------------------------------
+
+bool frankenstein_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                     ActorHandlerRegs* r, HandlerPieces* pieces) {
+  // `LDY $0078 : LDX $000E,Y : CPX #$0009`. Y is never written again.
+  const uint16_t record = wram_r16(w, W_HANDLER_SELF);
+  const uint16_t self_id = wram_r16(w, (uint32_t)record + ACTOR_COLLIDE_ID);
+  r->a = arg;
+  r->x = self_id;
+  r->y = record;
+  if (self_id == FRANKENSTEIN_COLLIDE_SELF_ID) {
+    // `BEQ $A601`, `CLC : RTL`, with the compare's N and Z.
+    PORT_COVER(frankenstein_hit_self);
+    piece(pieces, HP_FRANKENSTEIN_SELF);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `CMP #$005C : BCS`, then `CLC : RTL`.
+    PORT_COVER(frankenstein_hit_ignore);
+    piece(pieces, HP_FRANKENSTEIN_IGNORE);
+    r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:A5A6  STA $28 : AND #$7FFF`.
+  wram_w16(w, (uint32_t)dp + FRANKENSTEIN_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    PORT_COVER(frankenstein_hit_bubble);  // `JML $81:83C6`
+    piece(pieces, HP_DEEP);
+    return enemy_bubble_react(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(frankenstein_hit_freeze);  // `JML $81:847E`
+    piece(pieces, HP_DEEP);
+    return enemy_freeze(w, dp, r);
+  }
+  if (id == FRANKENSTEIN_ID_SELF) {
+    PORT_COVER(frankenstein_hit_6f);
+    piece(pieces, HP_FRANKENSTEIN_6F);
+  } else if (id == FRANKENSTEIN_ID_61) {
+    PORT_COVER(frankenstein_hit_61);
+    piece(pieces, HP_FRANKENSTEIN_61);
+    id = FRANKENSTEIN_ID_61_AS;
+  } else if (id == FRANKENSTEIN_ID_70) {
+    PORT_COVER(frankenstein_hit_70);
+    piece(pieces, HP_FRANKENSTEIN_70);
+    id = FRANKENSTEIN_ID_70_AS;
+  } else {
+    piece(pieces, HP_FRANKENSTEIN_OTHER);
+  }
+
+  // `$81:A5D8  SEC : SBC #$005C : ASL : TAX`, then `SEC : LDA $1E : SBC
+  // $818561,X : BMI`.
+  const uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  r->x = index;
+  const uint16_t health = wram_r16(w, (uint32_t)dp + FRANKENSTEIN_DP_HEALTH);
+  const uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->a = left;
+  if (left & 0x8000) {
+    // `DEC $2A : STA $1E : STZ $7E : SEC : RTL`.
+    PORT_COVER(frankenstein_hit_died);
+    piece(pieces, HP_FRANKENSTEIN_DIED);
+    const uint16_t dead =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + FRANKENSTEIN_DP_DEAD) - 1);
+    wram_w16(w, (uint32_t)dp + FRANKENSTEIN_DP_DEAD, dead);
+    wram_w16(w, (uint32_t)dp + FRANKENSTEIN_DP_HEALTH, left);
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_FREEZE_HITS, 0);
+    r->n = (dead & 0x8000) != 0;
+    r->z = dead == 0;
+    r->c = true;
+    return true;
+  }
+  if (left == health) {
+    // `CMP $1E : BEQ $A601  CLC : RTL`.
+    PORT_COVER(frankenstein_hit_no_damage);
+    piece(pieces, HP_FRANKENSTEIN_NO_DAMAGE);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+  // `STA $1E : JML $81:8506`.
+  PORT_COVER(frankenstein_hit_survived);
+  piece(pieces, HP_FRANKENSTEIN_SURVIVED);
+  wram_w16(w, (uint32_t)dp + FRANKENSTEIN_DP_HEALTH, left);
+  return survived_in_pieces(w, dp, r, pieces);
 }
 
 // ---------------------------------------------------------------------------

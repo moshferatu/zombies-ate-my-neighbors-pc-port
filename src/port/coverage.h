@@ -1312,6 +1312,16 @@
   X(f330_ignore,      "actor_f330_collide",  "anything else") \
   X(a638_park,        "actor_a638_collide",  "id $FF, which DECs $2A and sets carry") \
   X(a638_ignore,      "actor_a638_collide",  "anything else") \
+  X(frankenstein_hit_self, "frankenstein_collide",     "the record touched wears id 9: one of its things") \
+  X(frankenstein_hit_ignore, "frankenstein_collide",   "an id below a weapon shot's") \
+  X(frankenstein_hit_bubble, "frankenstein_collide",   "id $5E, into $81:83C6") \
+  X(frankenstein_hit_freeze, "frankenstein_collide",   "id $5D, into $81:847E") \
+  X(frankenstein_hit_6f,   "frankenstein_collide",     "id $6F, answered as itself by a branch of its own") \
+  X(frankenstein_hit_61,   "frankenstein_collide",     "id $61, answered as $70") \
+  X(frankenstein_hit_70,   "frankenstein_collide",     "id $70, answered as $63") \
+  X(frankenstein_hit_died, "frankenstein_collide",     "health under nought: DEC $2A") \
+  X(frankenstein_hit_no_damage, "frankenstein_collide", "a hit that cost nothing") \
+  X(frankenstein_hit_survived, "frankenstein_collide", "a hit, and into $81:8506") \
   X(a84ac_ignore,     "actor_84ac_collide",  "an id below a weapon shot's") \
   X(a84ac_other,      "actor_84ac_collide",  "a shot other than $62, whose parked id is cleared again") \
   X(a84ac_running,    "actor_84ac_collide",  "id $62 while $32 is not negative") \
@@ -1829,7 +1839,57 @@
   X(breakable_entered, "ts_breakable_enter", "record 36's thing's start: its weight, and to its record") \
   X(bubbled, "ts_bubbled", "a creature bubbled: what it was kept, and the bubble's handler") \
   X(bubble_over, "ts_bubble_over", "...and let go: all of it back") \
-  X(watcher_entered, "ts_watcher_enter", "record 48's thing's start: its weight, and to its record") \
+  X(frankenstein_entered, "ts_frankenstein_enter", "Frankenstein's monster's start: its weight, and to its record") \
+  X(frankenstein_walks_off, "frankenstein_woke", "walking off its stuck steps: it does not look round") \
+  X(frankenstein_sees, "frankenstein_woke", "somebody within 320: it decides next") \
+  X(frankenstein_walked, "frankenstein_woke", "a step its way") \
+  X(frankenstein_walked_into_ground, "frankenstein_woke", "...or the ground there: a quarter turn") \
+  X(frankenstein_walked_into_somebody, "frankenstein_woke", "...or somebody there: no step") \
+  X(frankenstein_turned_back, "frankenstein_woke", "turning: the way an eighth back is open") \
+  X(frankenstein_turned, "frankenstein_woke", "...and a step") \
+  X(frankenstein_turned_again, "frankenstein_woke", "...or neither is: another quarter turn") \
+  X(frankenstein_gives_up, "frankenstein_woke", "deciding: nobody within 300, it wanders") \
+  X(frankenstein_attacks, "frankenstein_woke", "...somebody within 80: it attacks") \
+  X(frankenstein_on_top, "frankenstein_woke", "...or on top of it: no way, it wanders") \
+  X(frankenstein_makes_for, "frankenstein_woke", "...or a step their way") \
+  X(frankenstein_stuck, "frankenstein_woke", "a step their way that went nowhere") \
+  X(frankenstein_stuck_too_long, "frankenstein_woke", "a hundred of them: it walks as long") \
+  X(frankenstein_attack_again, "frankenstein_woke", "its attack's pictures from the first again") \
+  X(frankenstein_attack_over, "frankenstein_woke", "nobody within 96: the attack over") \
+  X(frankenstein_throws, "frankenstein_woke", "a draw under 12 and a thing free: it throws") \
+  X(frankenstein_throws_none_free, "frankenstein_woke", "...or none is free") \
+  X(frankenstein_throw_heard, "frankenstein_made", "on the screen: the sound of a throw") \
+  X(frankenstein_throw_unseen, "frankenstein_made", "...or off it") \
+  X(frankenstein_thing_turns, "frankenstein_woke", "a thing's turns up: towards whoever is nearest") \
+  X(frankenstein_thing_lost, "frankenstein_woke", "...nobody is: it is freed") \
+  X(frankenstein_thing_spent, "frankenstein_woke", "a thing's life up: freed") \
+  X(frankenstein_thing_landed, "frankenstein_woke", "a thing met the ground: freed") \
+  X(frankenstein_thing_moved, "frankenstein_woke", "a thing moved") \
+  X(frankenstein_dies, "frankenstein_woke", "its handler said it died: its things' lives ended") \
+  X(frankenstein_died, "frankenstein_dies_woke", "none of its things out: to be paid for") \
+  X(level_end_lit, "level_end_fading_in", "the screen faded in") \
+  X(level_end_saved_cut, "level_end_fading_in", "the two saved more than ten: one fewer each") \
+  X(level_end_saved_shown, "level_end_ticked", "a neighbour saved shown") \
+  X(level_end_saved_row, "level_end_saved_b_heard", "five shown: each paid for") \
+  X(level_end_saved_paid, "level_end_paid_a", "50 points for a neighbour") \
+  X(level_end_no_bonuses, "level_end_ticked", "the level lists no bonuses") \
+  X(level_end_bonus_unported, "level_end_ticked", "a bonus whose handler is not ported: the 65816 runs it") \
+  X(level_end_bonus_paid, "level_end_ticked", "a bonus paid") \
+  X(level_end_bonus_none, "level_end_ticked", "...of nothing: the other sound") \
+  X(level_end_more_saved, "level_end_ticked", "both playing, and one saved more") \
+  X(level_end_ten_saved, "level_end_ticked", "ten saved by a player") \
+  X(level_end_frankenstein_bonus, "level_end_ticked", "two or more Frankenstein's monsters killed: FRANKENSTEIN DESTROY BONUS") \
+  X(level_end_bonus_cfeb, "level_end_ticked", "the bonus at $82:CFEB: $1FE4 and $1FE6") \
+  X(level_end_level_bonus, "level_end_ticked", "the level's own bonus, $82:D0CB") \
+  X(level_end_level_words, "level_end_ticked", "...with words and a wait for a pad") \
+  X(level_end_counts_up, "level_end_ticked", "a score a hundred nearer") \
+  X(level_end_bonuses_paid, "level_end_ticked", "the bonuses paid: the lives") \
+  X(level_end_life_earned, "level_end_ticked", "a score past the next life") \
+  X(level_end_life_as_saved, "level_end_ticked", "...and under ten saved: a neighbour more instead") \
+  X(level_end_lives_full, "level_end_ticked", "...or five lives: 5,000 points instead") \
+  X(level_end_password, "level_end_ticked", "a level whose number is a multiple of four: the password") \
+  X(level_end_rests, "level_end_ticked", "no password: three seconds") \
+  X(level_end_rest_cut, "level_end_rest_waited", "...cut short by a pad") \
   X(seeker_entered, "ts_seeker_enter", "a seeker's start: its place in the level's list marked gone") \
   X(game_lost, "ts_game_lost", "nobody left playing: carry set, and out of the main loop") \
   X(main_back_over, "ts_main_back", "the main thread back from the level: the game over") \
@@ -2563,11 +2623,11 @@
   /* $80:C4EC and the coda both number renderers share. */                          \
   X(near_wait_found,  "near_wait",           "a player within 250: the wait is over") \
   X(near_wait_on,     "near_wait",           "...or neither is: four more ticks") \
-  X(idle_wait_found,  "idle_wait",           "a player within 80: the wait is over") \
-  X(idle_wait_same_picture,"idle_wait",      "nobody, and the picture has ticks left") \
-  X(idle_wait_next_picture,"idle_wait",      "...or has none, and the next goes up") \
-  X(idle_wait_gone,   "idle_wait",           "its record was taken away while it waited") \
-  X(idle_wait_on,     "idle_wait",           "...or was not: two more ticks") \
+  X(frankenstein_wait_found,  "frankenstein_wait",           "a player within 80: the wait is over") \
+  X(frankenstein_wait_same_picture,"frankenstein_wait",      "nobody, and the picture has ticks left") \
+  X(frankenstein_wait_next_picture,"frankenstein_wait",      "...or has none, and the next goes up") \
+  X(frankenstein_wait_gone,   "frankenstein_wait",           "its record was taken away while it waited") \
+  X(frankenstein_wait_on,     "frankenstein_wait",           "...or was not: two more ticks") \
   X(hits_wait_same_picture,"hits_wait",      "the picture has ticks left") \
   X(hits_wait_next_picture,"hits_wait",      "...or has none, and the next goes up") \
   X(hits_wait_first_picture,"hits_wait",     "...which after the fourth is the first") \

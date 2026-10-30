@@ -1253,19 +1253,19 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 // ...and record 48's, which waits for a player near (`port/waits.h`): its
 // weight and its count, `JSR $A410` to `record_begin`, and from there its
 // record's picture and the rest of its page, as far as its handler.
-#define WATCHER_ENTER_PC 0x81a455u
-#define WATCHER_BEGIN_CALL_PC 0x81a410u  // `JSL record_begin`
-#define WATCHER_BEGUN_PC 0x81a414u
-#define WATCHER_BEGUN_RETURN 0xa466u     // `JSR $A410`'s
-#define WATCHER_HANDLER_CALL_PC 0x81a46du
-#define WATCHER_LOAD 0x001c
-#define WATCHER_COUNT 0x0007
-#define WATCHER_PICTURE 0xd11bu
-#define WATCHER_PICTURE_BANK 0x0090u
-#define WATCHER_FLAGS 0x8008u
-#define WATCHER_ATTR 0x0c00u
-#define WATCHER_HANDLER 0xa638u
-#define WATCHER_BANK 0x0081u
+#define FRANKENSTEIN_ENTER_PC 0x81a455u
+#define FRANKENSTEIN_BEGIN_CALL_PC 0x81a410u  // `JSL record_begin`
+#define FRANKENSTEIN_BEGUN_PC 0x81a414u
+#define FRANKENSTEIN_BEGUN_RETURN 0xa466u     // `JSR $A410`'s
+#define FRANKENSTEIN_HANDLER_CALL_PC 0x81a46du
+#define FRANKENSTEIN_LOAD 0x001c
+#define FRANKENSTEIN_COUNT 0x0007
+#define FRANKENSTEIN_PICTURE 0xd11bu
+#define FRANKENSTEIN_PICTURE_BANK 0x0090u
+#define FRANKENSTEIN_FLAGS 0x8008u
+#define FRANKENSTEIN_ATTR 0x0c00u
+#define FRANKENSTEIN_HANDLER 0xa638u
+#define FRANKENSTEIN_BANK 0x0081u
 #define DECOY_ENTER_PC 0x81f159u
 #define DECOY_ALLOC_PC 0x81f200u          // `JSL actor_slot_alloc`
 #define DECOY_MADE_PC 0x81f204u
@@ -2056,10 +2056,10 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_BUBBLE_OVER, 0x818446, 0x81845a, 0) \
   X(TS_BREAKABLE_MADE, 0x82f2f0, 0x82f330, 0)  /* the RTS too */ \
   X(TS_BREAKABLE_HANDLER, 0x82f26a, 0x82f275, 0) \
-  X(TS_WATCHER_ENTER, 0x81a455, 0x81a467, 0)   /* the JSR too */ \
-  X(TS_WATCHER_BEGUN, 0x81a414, 0x81a454, 0)   /* the JSR too */ \
-  X(TS_WATCHER_CLEARS, 0x81a191, 0x81a19f, 0)  /* the RTS too */ \
-  X(TS_WATCHER_HANDLER, 0x81a467, 0x81a46d, 0) \
+  X(TS_FRANKENSTEIN_ENTER, 0x81a455, 0x81a467, 0)   /* the JSR too */ \
+  X(TS_FRANKENSTEIN_BEGUN, 0x81a414, 0x81a454, 0)   /* the JSR too */ \
+  X(TS_FRANKENSTEIN_CLEARS, 0x81a191, 0x81a19f, 0)  /* the RTS too */ \
+  X(TS_FRANKENSTEIN_HANDLER, 0x81a467, 0x81a46d, 0) \
   X(TS_DECOY_MADE, 0x81f204, 0x81f24e, 0) \
   X(TS_SEEKER_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
   X(TS_SEEKER_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
@@ -2182,7 +2182,8 @@ typedef enum {
   TS_NEEDS_SEEKER_MADE,    // a record in A, the start's `JSR` to return
   TS_NEEDS_SEEKER_SOUNDED, // ...that `JSR`'s return
   TS_NEEDS_BREAKABLE_MADE, // a record in A, the start's `JSR` to return to
-  TS_NEEDS_WATCHER_BEGUN,  // a record on its page, the start's `JSR` likewise
+  // A record on its page, the start's `JSR` likewise.
+  TS_NEEDS_FRANKENSTEIN_BEGUN,
   TS_NEEDS_DECOY_MADE,     // a record in A and Y, the start's `JSR` to return
                            // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
@@ -2410,8 +2411,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(bubble_over, "$81:8446", BUBBLE_OVER_PC, bubble_over, BUBBLE, TS_NEEDS_RECORD) \
   X(breakable_enter, "$82:F25D", BREAKABLE_ENTER_PC, breakable_enter, BREAKABLE, TS_NEEDS_NOTHING) \
   X(breakable_made, "$82:F2F0", BREAKABLE_MADE_PC, breakable_made, BREAKABLE, TS_NEEDS_BREAKABLE_MADE) \
-  X(watcher_enter, "$81:A455", WATCHER_ENTER_PC, watcher_enter, WATCHER, TS_NEEDS_NOTHING) \
-  X(watcher_begun, "$81:A414", WATCHER_BEGUN_PC, watcher_begun, WATCHER, TS_NEEDS_WATCHER_BEGUN) \
+  X(frankenstein_enter, "$81:A455", FRANKENSTEIN_ENTER_PC, frankenstein_enter, FRANKENSTEIN, TS_NEEDS_NOTHING) \
+  X(frankenstein_begun, "$81:A414", FRANKENSTEIN_BEGUN_PC, frankenstein_begun, FRANKENSTEIN, TS_NEEDS_FRANKENSTEIN_BEGUN) \
   X(decoy_enter, "$81:F159", DECOY_ENTER_PC, decoy_enter, DECOY_START, TS_NEEDS_NOTHING) \
   X(decoy_made, "$81:F204", DECOY_MADE_PC, decoy_made, DECOY_START, TS_NEEDS_DECOY_MADE) \
   X(decoy_first, "$81:F166", DECOY_FIRST_PC, decoy_first, DECOY_START, TS_NEEDS_NOTHING) \

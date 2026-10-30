@@ -230,6 +230,15 @@ typedef enum {
   HP_OBJECT_TAKE_A,     // ...id 5, queued
   HP_OBJECT_TAKE_B,     // ...id 6
   HP_OBJECT_TAKE_C,     // ...id 4
+  HP_FRANKENSTEIN_SELF,      // $81:A594, its own record wearing id 9
+  HP_FRANKENSTEIN_IGNORE,    // ...an id below a shot's
+  HP_FRANKENSTEIN_6F,        // ...a shot, to $81:A5D8 as id $6F
+  HP_FRANKENSTEIN_61,        // ...as $61, answered as $70
+  HP_FRANKENSTEIN_70,        // ...as $70, answered as $63
+  HP_FRANKENSTEIN_OTHER,     // ...as any other
+  HP_FRANKENSTEIN_DIED,      // $81:A5D8, health under nought
+  HP_FRANKENSTEIN_NO_DAMAGE, // ...none taken
+  HP_FRANKENSTEIN_SURVIVED,  // ...or some, and to the `JML $81:8506`
   HP_DEEP,
   HANDLER_PIECE_COUNT,
 } HandlerPiece;
@@ -2381,13 +2390,41 @@ bool boss_aa2e_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 #define F330_ID_PARK 0x00ff
 bool actor_f330_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
-// --- $81:A638  actor_a638_collide — record 48 -------------------------------
+// --- $81:A638  actor_a638_collide — Frankenstein's monster, waiting ---------
 //
 // Eleven bytes: `$FF` is `DEC $2A : SEC : RTL`, anything else `CLC : RTL`.
 #define ACTOR_A638_COLLIDE_ENTRY 0x81a638u
 #define A638_DP_COUNT 0x2a
 #define A638_ID_PARK 0x00ff
 bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $81:A594  frankenstein_collide — the monster, once it is awake ----------
+//
+// What `$81:A484` sets in place of the one above when a player comes near
+// (`port/frankenstein.h`). The family again: the raw id parked at `$28`,
+// which its thread pays out on, health at `$1E`, `$5E` and `$5D` to the bubble and the
+// freeze, and a death that `DEC $2A`s. Three ids are answered as others
+// first, and one of them is answered as itself by a branch of its own:
+//
+//     $6F  as $6F      $61  as $70      $70  as $63
+//
+// So the weapon that is `$61` costs it what `$70` costs anything else.
+//
+// It refuses a hit while the record touched wears id 9, as `boss_9660`
+// does. Its own never does, but the four things it throws do, and they are
+// its thread's: so a thing it threw touching anything comes here, and goes.
+#define FRANKENSTEIN_COLLIDE_ENTRY 0x81a594u
+#define FRANKENSTEIN_COLLIDE_SELF_ID 0x0009
+#define FRANKENSTEIN_DP_HEALTH 0x1e
+#define FRANKENSTEIN_DP_HIT_ID 0x28
+#define FRANKENSTEIN_DP_DEAD 0x2a
+#define FRANKENSTEIN_ID_SELF 0x006f   // answered as itself
+#define FRANKENSTEIN_ID_61 0x0061     // answered as `$70`
+#define FRANKENSTEIN_ID_61_AS 0x0070
+#define FRANKENSTEIN_ID_70 0x0070     // answered as `$63`
+#define FRANKENSTEIN_ID_70_AS 0x0063
+bool frankenstein_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                     ActorHandlerRegs* r, HandlerPieces* pieces);
 
 // --- $82:84AC  actor_84ac_collide — record 12 --------------------------------
 //

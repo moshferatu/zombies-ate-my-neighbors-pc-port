@@ -224,7 +224,7 @@ routine, in an order no session went.
 **Sessions for the exits nobody took** (2026-10-29). Followed back, nearly
 all of those 5,092 bytes are behind four exits: the game over (2,313
 bytes), the Snakeoid coming up to bite beside a player (1,111) and under
-one (779 with the next), and record 48's thing finding a player (714). No
+one (779 with the next), and Frankenstein's monster finding a player (714). No
 movie reaches any. `zamn_trace` takes `--poke` now, as the game does, and
 the survey has six sessions more:
 
@@ -274,14 +274,50 @@ cartridge, two cycles quicker than WRAM. The port counts those bytes now.
 `zamn_headless` takes `--level`, as the tracer and the game do, which is
 how the places were found: `--watch` on the Snakeoid's page while it chased.
 
-**Record 48's thing** (`ts_watcher_enter`, `port/waits.h`) waits for a
-player within 80. The record-48 session stands 150 away. A one-frame poke
-of the player's place, `$0130` and `$0132` on page `$0100`, wakes it, and
-then the 65816 runs it: its walk, kept as a state's address at `$14`, the
-four things it throws, which it moves itself, and its collide handler,
-`$81:A594`, about 1,000 bytes from `$81:9F9D` to `$81:A535`. Because that
-handler is not ported, `sprite_build_oam` turns down every pass while it
-is awake, and the 65816 runs the sprite pass too. It is the next to port.
+**Frankenstein's monster** (`ts_frankenstein_enter`, `port/waits.h`) waits
+for a player within 80. Until this round it was called record 48's thing,
+or the watcher; the words of the bonus for killing two of them,
+FRANKENSTEIN DESTROY BONUS, give its name. The record-48 session stands
+150 away. A one-frame poke of the player's place, `$0130` and `$0132` on
+page `$0100`, wakes it, and until now the 65816 ran it from there: about
+1,000 bytes from `$81:9F9D` to `$81:A535`, and its collide handler,
+`$81:A594`. With that handler not ported, `sprite_build_oam` turned down
+every pass while it was awake.
+
+Ported now. Its handler is `frankenstein_collide` (`port/collide.h`), one
+more of the family, which answers `$61` as `$70` and `$70` as `$63`, and
+turns away anything that touches one of its own four things. Its thread is
+`port/frankenstein.h`, nine stretches: its waking, a frame of its four
+states (walking, turning, deciding, attacking, reached by a pushed
+address), its throws and the four things it moves itself, and its death,
+which waits for the things to be gone and is then paid for as any kill is.
+Two sessions more reach it, in `code_map_survey.py`: the player moved
+about it by pokes, near, middling and far, and the player firing down at
+it with three weapons in turn, the freeze, the bubble and `$61`, until it
+dies. In both, the game hands the 65816 nothing.
+
+**The screen after a level**, `$82:BD6A`, was the largest piece of code
+left that the sessions run: LEVEL COMPLETE, the neighbours saved and paid
+for, the bonuses the level's record lists, the score counting up, the
+lives, and the password every fourth level. It is about 2,100 bytes, and
+it is a tree of calls with a sleep or a sound at nearly every level of it:
+a bonus's words flash inside its handler, inside the state that walks the
+list, inside the loop the screen ticks in. So it is written another way
+(`port/level_end.h`): as blocks, each from an address of the ROM's to the
+next it goes to, with the stack saying where an `RTS` goes. A stretch
+begins at any of the 52 places the screen is come back to after a call,
+and its guard runs it on a copy and turns it down if it would go back to
+an address the port does not know. Five of the sixteen bonus handlers are
+ported, the ones the sessions reach; the rest are called by a `JSR
+($C346,X)`, which the harness does not make, so a stretch that would call
+one is turned down. Eight more links (`port/links.h`) stand between it and
+what it calls. It writes the hardware once, `$212C`, which its trace
+times.
+
+Only two corpus movies reach the screen, and neither saves ten neighbours,
+pays a bonus or sees the password. Three sessions more poke what it counts
+as it begins, under `level21-exit.zmv`: ten saved and a life due on level
+20, eleven saved and five lives on level 24, four saved on level 29.
 
 Not counted yet: what of the 38,097 bytes is code.
 

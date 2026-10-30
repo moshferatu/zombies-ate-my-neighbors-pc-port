@@ -1,10 +1,12 @@
 // Three threads with nothing to do but wait.
 //
-//   $83:AAB2  near_wait   until a player is within 250 of a point
-//   $81:A478  idle_wait   ...within 80 of the thing in record 48, which
-//                         shows the next of four pictures while it waits
-//   $82:F280  hits_wait   until the thing in record 36 has been hit six
-//                         times, and it shows four pictures in turn too
+//   $83:AAB2  near_wait          until a player is within 250 of a point
+//   $81:A478  frankenstein_wait  ...within 80 of Frankenstein's monster, in
+//                                record 48, which shows the next of four
+//                                pictures while it waits
+//   $82:F280  hits_wait          until the thing in record 36 has been hit
+//                                six times, and it shows four pictures in
+//                                turn too
 //
 // Each is a loop round a sleep, and a tick of one is from where the sleep
 // comes back to the next sleep or to the end of the wait. The sleep itself
@@ -15,8 +17,8 @@
 // page, to `$3C` and `$3E`, and asks `player_in_range` about it every four
 // ticks. It returns with the player's record in A and in Y.
 //
-// **`idle_wait`** is in the thread of record 48's own, `$81:A455`. Every
-// two ticks it calls `$81:A603`: `player_bearing` from the point at `$16`
+// **`frankenstein_wait`** is in the monster's thread, `$81:A455`. Every two
+// ticks it calls `$81:A603`: `player_bearing` from the point at `$16`
 // and `$18`, and with nobody within 80 the count at `$0A` goes down. Under
 // zero it is 4 again and the record's picture is the next of the four at
 // `$81:A630`. So a picture is shown for ten ticks. The wait ends with a
@@ -76,41 +78,41 @@ void near_wait(Wram* w, PortCpu* c, NearWait* did);
 
 // --- $81:A478 ----------------------------------------------------------------
 
-#define IDLE_WAIT_BANK 0x81u
-#define IDLE_WAIT_PC 0x81a478u        // where its sleep comes back
-#define IDLE_WAIT_YIELD_PC 0x81a474u  // `JSL thread_yield`, A already 2
-#define IDLE_WAIT_FOUND_PC 0x81a484u
-#define IDLE_WAIT_GONE_PC 0x81a523u
-#define IDLE_WAIT_LOOK_RET 0xa47au    // what `JSR $A603` pushes
-#define IDLE_WAIT_ASK_AT 0xa60au      // its `JSL player_bearing`
-#define IDLE_WAIT_PICTURES 0x81a630u  // four words
+#define FRANKENSTEIN_WAIT_BANK 0x81u
+#define FRANKENSTEIN_WAIT_PC 0x81a478u        // where its sleep comes back
+#define FRANKENSTEIN_WAIT_YIELD_PC 0x81a474u  // `JSL thread_yield`, A already 2
+#define FRANKENSTEIN_WAIT_FOUND_PC 0x81a484u
+#define FRANKENSTEIN_WAIT_GONE_PC 0x81a523u
+#define FRANKENSTEIN_WAIT_LOOK_RET 0xa47au    // what `JSR $A603` pushes
+#define FRANKENSTEIN_WAIT_ASK_AT 0xa60au      // its `JSL player_bearing`
+#define FRANKENSTEIN_WAIT_PICTURES 0x81a630u  // four words
 
-#define IDLE_WAIT_DP_RECORD 0x08
-#define IDLE_WAIT_DP_LEFT 0x0a     // ticks of this picture left
-#define IDLE_WAIT_DP_PICTURE 0x0c  // which is next, doubled
-#define IDLE_WAIT_DP_X 0x16
-#define IDLE_WAIT_DP_Y 0x18
-#define IDLE_WAIT_DP_GONE 0x2a
-#define IDLE_WAIT_WITHIN 0x0050
-#define IDLE_WAIT_PICTURE_TICKS 0x0004
-#define IDLE_WAIT_TICKS 0x0002
+#define FRANKENSTEIN_WAIT_DP_RECORD 0x08
+#define FRANKENSTEIN_WAIT_DP_LEFT 0x0a     // ticks of this picture left
+#define FRANKENSTEIN_WAIT_DP_PICTURE 0x0c  // which is next, doubled
+#define FRANKENSTEIN_WAIT_DP_X 0x16
+#define FRANKENSTEIN_WAIT_DP_Y 0x18
+#define FRANKENSTEIN_WAIT_DP_GONE 0x2a
+#define FRANKENSTEIN_WAIT_WITHIN 0x0050
+#define FRANKENSTEIN_WAIT_PICTURE_TICKS 0x0004
+#define FRANKENSTEIN_WAIT_TICKS 0x0002
 
 typedef enum {
-  IDLE_WAIT_ON,     // another two ticks
-  IDLE_WAIT_FOUND,  // a player is near
-  IDLE_WAIT_GONE,   // its record was taken away
-} IdleWaitEnd;
+  FRANKENSTEIN_WAIT_ON,     // another two ticks
+  FRANKENSTEIN_WAIT_FOUND,  // a player is near
+  FRANKENSTEIN_WAIT_GONE,   // its record was taken away
+} FrankensteinWaitEnd;
 
 typedef struct {
   PlayerPickRegs players;  // what `player_bearing` did
   bool turned;             // the next picture was put up
-  IdleWaitEnd end;
-} IdleWait;
+  FrankensteinWaitEnd end;
+} FrankensteinWait;
 
 // False for a page the port will not follow: a record or a picture that is
 // not one.
-bool idle_wait_supported(const Wram* w, uint16_t page);
-void idle_wait(Wram* w, const Rom* rom, PortCpu* c, IdleWait* did);
+bool frankenstein_wait_supported(const Wram* w, uint16_t page);
+void frankenstein_wait(Wram* w, const Rom* rom, PortCpu* c, FrankensteinWait* did);
 
 // --- $82:F280 ----------------------------------------------------------------
 

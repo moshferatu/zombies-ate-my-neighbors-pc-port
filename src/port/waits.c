@@ -54,66 +54,66 @@ void near_wait(Wram* w, PortCpu* c, NearWait* did) {
   c->pc = NEAR_WAIT_YIELD_PC;
 }
 
-bool idle_wait_supported(const Wram* w, uint16_t page) {
-  return wram_r16(w, (uint16_t)(page + IDLE_WAIT_DP_RECORD)) < 0x1f00 &&
-         (wram_r16(w, (uint16_t)(page + IDLE_WAIT_DP_PICTURE)) & ~0x0006u) == 0;
+bool frankenstein_wait_supported(const Wram* w, uint16_t page) {
+  return wram_r16(w, (uint16_t)(page + FRANKENSTEIN_WAIT_DP_RECORD)) < 0x1f00 &&
+         (wram_r16(w, (uint16_t)(page + FRANKENSTEIN_WAIT_DP_PICTURE)) & ~0x0006u) == 0;
 }
 
 // `$81:A613`: a tick of the picture it shows, and the next when its ticks
 // are up.
-static void shows(Wram* w, const Rom* rom, PortCpu* c, IdleWait* did) {
-  const uint16_t left = (uint16_t)(field(w, c, IDLE_WAIT_DP_LEFT) - 1);
-  set_field(w, c, IDLE_WAIT_DP_LEFT, left);
+static void shows(Wram* w, const Rom* rom, PortCpu* c, FrankensteinWait* did) {
+  const uint16_t left = (uint16_t)(field(w, c, FRANKENSTEIN_WAIT_DP_LEFT) - 1);
+  set_field(w, c, FRANKENSTEIN_WAIT_DP_LEFT, left);
   set_nz16(c, left);
   did->turned = (left & 0x8000u) != 0;
   if (!did->turned) {
-    PORT_COVER(idle_wait_same_picture);
+    PORT_COVER(frankenstein_wait_same_picture);
     return;
   }
-  PORT_COVER(idle_wait_next_picture);
-  set_field(w, c, IDLE_WAIT_DP_LEFT, IDLE_WAIT_PICTURE_TICKS);
-  c->x = field(w, c, IDLE_WAIT_DP_PICTURE);
-  c->y = field(w, c, IDLE_WAIT_DP_RECORD);
+  PORT_COVER(frankenstein_wait_next_picture);
+  set_field(w, c, FRANKENSTEIN_WAIT_DP_LEFT, FRANKENSTEIN_WAIT_PICTURE_TICKS);
+  c->x = field(w, c, FRANKENSTEIN_WAIT_DP_PICTURE);
+  c->y = field(w, c, FRANKENSTEIN_WAIT_DP_RECORD);
   wram_w16(w, (uint16_t)(c->y + ACTOR_META),
-           bus_r16(w, rom, IDLE_WAIT_PICTURES + c->x));
+           bus_r16(w, rom, FRANKENSTEIN_WAIT_PICTURES + c->x));
   c->a = (uint16_t)((c->x + 2) & 0x0007u);
   set_nz16(c, c->a);
-  set_field(w, c, IDLE_WAIT_DP_PICTURE, c->a);
+  set_field(w, c, FRANKENSTEIN_WAIT_DP_PICTURE, c->a);
 }
 
-void idle_wait(Wram* w, const Rom* rom, PortCpu* c, IdleWait* did) {
+void frankenstein_wait(Wram* w, const Rom* rom, PortCpu* c, FrankensteinWait* did) {
   // `JSR $A603`, whose return is left under the stack as the call's is.
-  push16(w, c, IDLE_WAIT_LOOK_RET);
-  player_bearing(w, rom, IDLE_WAIT_WITHIN, field(w, c, IDLE_WAIT_DP_X),
-                 field(w, c, IDLE_WAIT_DP_Y), &did->players);
-  called_long(w, c, IDLE_WAIT_BANK, IDLE_WAIT_ASK_AT);
+  push16(w, c, FRANKENSTEIN_WAIT_LOOK_RET);
+  player_bearing(w, rom, FRANKENSTEIN_WAIT_WITHIN, field(w, c, FRANKENSTEIN_WAIT_DP_X),
+                 field(w, c, FRANKENSTEIN_WAIT_DP_Y), &did->players);
+  called_long(w, c, FRANKENSTEIN_WAIT_BANK, FRANKENSTEIN_WAIT_ASK_AT);
   (void)pull16(w, c);
   picked(c, &did->players);
   c->x = c->a;
   set_nz16(c, c->x);
   did->turned = false;
   if (c->a != 0) {
-    PORT_COVER(idle_wait_found);
+    PORT_COVER(frankenstein_wait_found);
     set_c(c, true);
-    did->end = IDLE_WAIT_FOUND;
-    c->pc = IDLE_WAIT_FOUND_PC;
+    did->end = FRANKENSTEIN_WAIT_FOUND;
+    c->pc = FRANKENSTEIN_WAIT_FOUND_PC;
     return;
   }
   shows(w, rom, c, did);
   set_c(c, false);
-  c->a = field(w, c, IDLE_WAIT_DP_GONE);
+  c->a = field(w, c, FRANKENSTEIN_WAIT_DP_GONE);
   set_nz16(c, c->a);
   if (c->a != 0) {
-    PORT_COVER(idle_wait_gone);
-    did->end = IDLE_WAIT_GONE;
-    c->pc = IDLE_WAIT_GONE_PC;
+    PORT_COVER(frankenstein_wait_gone);
+    did->end = FRANKENSTEIN_WAIT_GONE;
+    c->pc = FRANKENSTEIN_WAIT_GONE_PC;
     return;
   }
-  PORT_COVER(idle_wait_on);
-  did->end = IDLE_WAIT_ON;
-  c->a = IDLE_WAIT_TICKS;
+  PORT_COVER(frankenstein_wait_on);
+  did->end = FRANKENSTEIN_WAIT_ON;
+  c->a = FRANKENSTEIN_WAIT_TICKS;
   set_nz16(c, c->a);
-  c->pc = IDLE_WAIT_YIELD_PC;
+  c->pc = FRANKENSTEIN_WAIT_YIELD_PC;
 }
 
 bool hits_wait_supported(const Wram* w, uint16_t page) {

@@ -54,6 +54,8 @@
 #include "port/boss_thread.h"
 #include "port/tentacle.h"
 #include "port/snakeoid.h"
+#include "port/frankenstein.h"
+#include "port/level_end.h"
 #include "port/spray.h"
 #include "port/thrown.h"
 #include "port/neighbours.h"
@@ -2254,6 +2256,17 @@ static const CosimRun HANDLER_PIECE_COST[HANDLER_PIECE_COUNT] = {
     [HP_OBJECT_TAKE_A] = {424, 30, 4},
     [HP_OBJECT_TAKE_B] = {454, 35, 4},
     [HP_OBJECT_TAKE_C] = {484, 40, 4},
+    // `$81:A594`: the way to `$81:A5D8` by the id, taken branches and all,
+    // and then the way out of it.
+    [HP_FRANKENSTEIN_SELF] = {164, 13, 0},
+    [HP_FRANKENSTEIN_IGNORE] = {188, 18, 0},
+    [HP_FRANKENSTEIN_6F] = {294, 38, 1},
+    [HP_FRANKENSTEIN_61] = {366, 49, 1},
+    [HP_FRANKENSTEIN_70] = {384, 51, 1},
+    [HP_FRANKENSTEIN_OTHER] = {354, 46, 1},
+    [HP_FRANKENSTEIN_DIED] = {308, 25, 4},
+    [HP_FRANKENSTEIN_NO_DAMAGE] = {242, 23, 2},
+    [HP_FRANKENSTEIN_SURVIVED] = {234, 27, 3},
 };
 
 // False when a piece is `HP_DEEP`, or there were none.
@@ -2713,6 +2726,15 @@ static void shim_enemy_b95f_collide(Wram* w, const Rom* rom,
   cost_pieces(&pieces, in);
 }
 
+static void shim_frankenstein_collide(Wram* w, const Rom* rom,
+                                 const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  HandlerPieces pieces = {0};
+  frankenstein_collide(w, rom, in->d, in->a, &r, &pieces);
+  handler_regs(&r, out);
+  cost_pieces(&pieces, in);
+}
+
 static void shim_enemy_eff0_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
@@ -2926,6 +2948,7 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     }
     case ENEMY_9B6B_COLLIDE_ENTRY:
     case ENEMY_B95F_COLLIDE_ENTRY:
+    case FRANKENSTEIN_COLLIDE_ENTRY:
     case ACTOR_C8C3_COLLIDE_ENTRY:
     case ACTOR_84AC_COLLIDE_ENTRY:
     case VICTIM_COLLIDE_ENTRY:
@@ -9422,10 +9445,10 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_BUBBLE_OVER] = {346, 20, 1},
     [TS_BREAKABLE_MADE] = {786, 64, 10},
     [TS_BREAKABLE_HANDLER] = {82, 11, 1},
-    [TS_WATCHER_ENTER] = {184, 18, 1},
-    [TS_WATCHER_BEGUN] = {794, 64, 14},
-    [TS_WATCHER_CLEARS] = {198, 14, 5},
-    [TS_WATCHER_HANDLER] = {36, 6, 0},
+    [TS_FRANKENSTEIN_ENTER] = {184, 18, 1},
+    [TS_FRANKENSTEIN_BEGUN] = {794, 64, 14},
+    [TS_FRANKENSTEIN_CLEARS] = {198, 14, 5},
+    [TS_FRANKENSTEIN_HANDLER] = {36, 6, 0},
     [TS_SOAK_SPLASH] = {104, 11, 1},
     // `thread_set_handler`, which runs on page zero, and level 29's stagger,
     // `--db=81`.
@@ -9828,8 +9851,8 @@ static const uint32_t TS_EXITS_BUBBLE[] = {BUBBLED_HANDLER_CALL_PC,
                                            BUBBLE_OVER_JML_PC};
 static const uint32_t TS_EXITS_BREAKABLE[] = {BREAKABLE_ALLOC_PC,
                                               BREAKABLE_HANDLER_CALL_PC};
-static const uint32_t TS_EXITS_WATCHER[] = {WATCHER_BEGIN_CALL_PC,
-                                            WATCHER_HANDLER_CALL_PC};
+static const uint32_t TS_EXITS_FRANKENSTEIN[] = {FRANKENSTEIN_BEGIN_CALL_PC,
+                                            FRANKENSTEIN_HANDLER_CALL_PC};
 static const uint32_t TS_EXITS_DECOY_START[] = {
     DECOY_ALLOC_PC, DECOY_PICTURES_CALL_PC, DECOY_FIRST_SLEEP_PC};
 static const uint32_t TS_EXITS_PULSE[] = {PALCYCLE_PULSE_YIELD_PC};
@@ -13184,56 +13207,56 @@ static void shim_near_wait(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t NEAR_WAIT_EXITS[] = {NEAR_WAIT_YIELD_PC,
                                            NEAR_WAIT_RTS_PC};
 
-static const CosimRun IDLE_WAIT_RUN_LOOK = {40, 3, 0};    // JSR
-static const CosimRun IDLE_WAIT_RUN_ASK = {152, 14, 2};   // LDA : LDX : LDY : JSL : TAX : BEQ
-static const CosimRun IDLE_WAIT_RUN_FOUND = {52, 2, 0};   // SEC : RTS
-static const CosimRun IDLE_WAIT_RUN_COUNT = {62, 4, 1};   // DEC : BPL
-static const CosimRun IDLE_WAIT_RUN_NEXT = {260, 25, 4};  // $A617-$A62D
-static const CosimRun IDLE_WAIT_RUN_NONE = {52, 2, 0};    // CLC : RTS
-static const CosimRun IDLE_WAIT_RUN_CARRY = {12, 2, 0};   // BCS
-static const CosimRun IDLE_WAIT_RUN_GONE = {40, 4, 1};    // LDA : BEQ
-static const CosimRun IDLE_WAIT_RUN_ON = {18, 3, 0};      // LDA
-static const CosimRun IDLE_WAIT_RUN_ENDS = {18, 3, 0};    // JMP
+static const CosimRun FRANKENSTEIN_WAIT_RUN_LOOK = {40, 3, 0};    // JSR
+static const CosimRun FRANKENSTEIN_WAIT_RUN_ASK = {152, 14, 2};   // LDA : LDX : LDY : JSL : TAX : BEQ
+static const CosimRun FRANKENSTEIN_WAIT_RUN_FOUND = {52, 2, 0};   // SEC : RTS
+static const CosimRun FRANKENSTEIN_WAIT_RUN_COUNT = {62, 4, 1};   // DEC : BPL
+static const CosimRun FRANKENSTEIN_WAIT_RUN_NEXT = {260, 25, 4};  // $A617-$A62D
+static const CosimRun FRANKENSTEIN_WAIT_RUN_NONE = {52, 2, 0};    // CLC : RTS
+static const CosimRun FRANKENSTEIN_WAIT_RUN_CARRY = {12, 2, 0};   // BCS
+static const CosimRun FRANKENSTEIN_WAIT_RUN_GONE = {40, 4, 1};    // LDA : BEQ
+static const CosimRun FRANKENSTEIN_WAIT_RUN_ON = {18, 3, 0};      // LDA
+static const CosimRun FRANKENSTEIN_WAIT_RUN_ENDS = {18, 3, 0};    // JMP
 
 // Its pictures are read through the bank, and its record written through
 // it.
 static bool accepts_idle_wait(const Wram* w, const CosimRegs* in) {
-  return body_ok(in) && in->d >= 0x0100 && in->db == IDLE_WAIT_BANK &&
-         idle_wait_supported(w, in->d);
+  return body_ok(in) && in->d >= 0x0100 && in->db == FRANKENSTEIN_WAIT_BANK &&
+         frankenstein_wait_supported(w, in->d);
 }
 
 static void shim_idle_wait(Wram* w, const Rom* rom, const CosimRegs* in,
                            CosimRegs* out) {
   PortCpu c;
-  IdleWait did;
+  FrankensteinWait did;
   cpu_from(in, &c);
-  idle_wait(w, rom, &c, &did);
+  frankenstein_wait(w, rom, &c, &did);
   CosimRun own = {0, 0, 0};
-  run_add(&own, &IDLE_WAIT_RUN_LOOK, 1);
-  run_add(&own, &IDLE_WAIT_RUN_ASK, 1);
-  run_add(&own, &IDLE_WAIT_RUN_CARRY, 1);
-  if (did.end == IDLE_WAIT_FOUND) {
-    run_add(&own, &IDLE_WAIT_RUN_FOUND, 1);
+  run_add(&own, &FRANKENSTEIN_WAIT_RUN_LOOK, 1);
+  run_add(&own, &FRANKENSTEIN_WAIT_RUN_ASK, 1);
+  run_add(&own, &FRANKENSTEIN_WAIT_RUN_CARRY, 1);
+  if (did.end == FRANKENSTEIN_WAIT_FOUND) {
+    run_add(&own, &FRANKENSTEIN_WAIT_RUN_FOUND, 1);
     run_add(&own, &RUN_TAKEN, 1);
   } else {
     run_add(&own, &RUN_TAKEN, 1);
-    run_add(&own, &IDLE_WAIT_RUN_COUNT, 1);
-    run_add(&own, did.turned ? &IDLE_WAIT_RUN_NEXT : &RUN_TAKEN, 1);
-    run_add(&own, &IDLE_WAIT_RUN_NONE, 1);
-    run_add(&own, &IDLE_WAIT_RUN_GONE, 1);
-    if (did.end == IDLE_WAIT_ON) {
+    run_add(&own, &FRANKENSTEIN_WAIT_RUN_COUNT, 1);
+    run_add(&own, did.turned ? &FRANKENSTEIN_WAIT_RUN_NEXT : &RUN_TAKEN, 1);
+    run_add(&own, &FRANKENSTEIN_WAIT_RUN_NONE, 1);
+    run_add(&own, &FRANKENSTEIN_WAIT_RUN_GONE, 1);
+    if (did.end == FRANKENSTEIN_WAIT_ON) {
       run_add(&own, &RUN_TAKEN, 1);
-      run_add(&own, &IDLE_WAIT_RUN_ON, 1);
+      run_add(&own, &FRANKENSTEIN_WAIT_RUN_ON, 1);
     } else {
-      run_add(&own, &IDLE_WAIT_RUN_ENDS, 1);
+      run_add(&own, &FRANKENSTEIN_WAIT_RUN_ENDS, 1);
     }
   }
   waits_done(&c, in, out, &own,
              player_bearing_cycles(&did.players, fetch_fast(in)));
 }
 
-static const uint32_t IDLE_WAIT_EXITS[] = {
-    IDLE_WAIT_YIELD_PC, IDLE_WAIT_FOUND_PC, IDLE_WAIT_GONE_PC};
+static const uint32_t FRANKENSTEIN_WAIT_EXITS[] = {
+    FRANKENSTEIN_WAIT_YIELD_PC, FRANKENSTEIN_WAIT_FOUND_PC, FRANKENSTEIN_WAIT_GONE_PC};
 
 static const CosimRun HITS_WAIT_RUN_COUNT = {62, 4, 1};    // DEC : BPL
 static const CosimRun HITS_WAIT_RUN_NEXT = {116, 13, 2};   // LDA : STA : LDA : INC : CMP : BNE
@@ -24750,6 +24773,484 @@ static const uint32_t SNAKEOID_EXITS[] = {
     SNAKEOID_DIES_LEAVE_PC,    RECORD_END_EXITED_PC};
 
 // ---------------------------------------------------------------------------
+// Frankenstein's monster, awake -- see `port/frankenstein.h`
+// ---------------------------------------------------------------------------
+//
+// Priced as the Snakeoid is: the straight runs it took, a taken branch at 6
+// more, and each call it made itself by that routine's own model.
+static const CosimRun FRANKENSTEIN_RUN_COST[FRANKENSTEIN_RUN_COUNT] = {
+    [FRANKENSTEIN_RUN_9D6A] = {64, 8, 0},  // LDX : CMP : BEQ
+    [FRANKENSTEIN_RUN_9D72] = {24, 2, 0},  // INX : INX
+    [FRANKENSTEIN_RUN_9D74] = {42, 1, 0},  // RTL
+    [FRANKENSTEIN_RUN_9F33] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_9F3D] = {178, 11, 3},  // LDA : LDX : LDY : JSL : RTS
+    [FRANKENSTEIN_RUN_9F48] = {96, 8, 3},  // STZ : LDA : CMP : BEQ
+    [FRANKENSTEIN_RUN_9F50] = {106, 9, 1},  // TAX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_9F59] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_9F65] = {174, 11, 4},  // INC : LDY : LDA : STA : STA
+    [FRANKENSTEIN_RUN_9F70] = {68, 6, 2},  // LDA : CMP : BEQ
+    [FRANKENSTEIN_RUN_9F76] = {106, 9, 1},  // LDX : TAY : JSL : BCS
+    [FRANKENSTEIN_RUN_9F7F] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_9F8B] = {174, 11, 4},  // INC : LDY : LDA : STA : STA
+    [FRANKENSTEIN_RUN_9F96] = {40, 4, 1},  // LDA : BNE
+    [FRANKENSTEIN_RUN_9F9A] = {90, 3, 1},  // INC : RTS
+    [FRANKENSTEIN_RUN_9F9D] = {84, 9, 0},  // JSL : CMP : BCS
+    [FRANKENSTEIN_RUN_9FA6] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_9FA9] = {74, 7, 1},  // LDA : CMP : BCS
+    [FRANKENSTEIN_RUN_9FB0] = {70, 8, 1},  // CLC : ADC : CMP : BCC
+    [FRANKENSTEIN_RUN_9FB8] = {74, 7, 1},  // LDA : CMP : BCS
+    [FRANKENSTEIN_RUN_9FBF] = {70, 8, 1},  // CLC : ADC : CMP : BCC
+    [FRANKENSTEIN_RUN_9FC7] = {18, 3, 0},  // LDA
+    [FRANKENSTEIN_RUN_9FCF] = {18, 3, 0},  // LDA
+    [FRANKENSTEIN_RUN_9FD2] = {76, 8, 1},  // TAX : LDA : CMP : BEQ
+    [FRANKENSTEIN_RUN_9FDA] = {54, 7, 0},  // TXA : SEC : SBC : BPL
+    [FRANKENSTEIN_RUN_9FE2] = {78, 4, 2},  // STX : INC
+    [FRANKENSTEIN_RUN_9FEA] = {1116, 101, 7},  // LDX : STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : JSL : AND : STA : JSL : AND : INC : ASL : ASL : STA : TAX : LDA : STA : LDA : ORA : ORA : STA : LDA : CLC : ADC : STA : LDA : STA : LDA : CLC : ADC : STA : RTS
+    [FRANKENSTEIN_RUN_A06B] = {180, 18, 1},  // LDA : AND : ASL : TAY : LDX : STX : JSR
+    [FRANKENSTEIN_RUN_A084] = {92, 9, 2},  // LDX : LDA : CMP : BNE
+    [FRANKENSTEIN_RUN_A08D] = {18, 3, 0},  // JMP
+    [FRANKENSTEIN_RUN_A090] = {96, 6, 2},  // STA : DEC : BPL
+    [FRANKENSTEIN_RUN_A096] = {422, 34, 3},  // JSL : AND : INC : STA : LDY : LDA : TAX : LDA : TAY : JSL : TXY : LDX : JSL : TAX : BEQ
+    [FRANKENSTEIN_RUN_A0B8] = {260, 23, 3},  // ASL : ASL : LDX : STA : TAX : LDY : LDA : AND : ORA : STA
+    [FRANKENSTEIN_RUN_A0CD] = {86, 7, 2},  // LDX : LDA : DEC : BMI
+    [FRANKENSTEIN_RUN_A0D4] = {660, 58, 9},  // STA : AND : ASL : STA : LDY : LDA : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : TXA : ASL : ORA : TAX : LDA : STA : LDX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_A108] = {204, 13, 3},  // LDY : LDA : STA : LDA : STA : RTS
+    [FRANKENSTEIN_RUN_A115] = {28, 2, 1},  // LDA
+    [FRANKENSTEIN_RUN_A11B] = {170, 10, 3},  // LDX : LDA : STA : DEC : RTS
+    [FRANKENSTEIN_RUN_A19F] = {166, 16, 1},  // JSL : AND : ASL : ASL : INC : INC : STA : JMP
+    [FRANKENSTEIN_RUN_A1AF] = {46, 5, 1},  // LDA : STA
+    [FRANKENSTEIN_RUN_A1B4] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A1B7] = {382, 34, 7},  // LDA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDX : LDY : JSL : BCC
+    [FRANKENSTEIN_RUN_A1D5] = {18, 3, 0},  // JMP
+    [FRANKENSTEIN_RUN_A1D8] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [FRANKENSTEIN_RUN_A1E4] = {260, 17, 5},  // LDY : LDA : STA : STA : LDA : STA : STA : RTS
+    [FRANKENSTEIN_RUN_A1F5] = {170, 18, 2},  // LDA : DEC : DEC : CLC : ADC : AND : INC : INC : STA : JMP
+    [FRANKENSTEIN_RUN_A207] = {86, 6, 1},  // LDA : STA : RTS
+    [FRANKENSTEIN_RUN_A20D] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A210] = {424, 40, 6},  // LDA : DEC : DEC : SEC : SBC : AND : INC : INC : STA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [FRANKENSTEIN_RUN_A234] = {12, 2, 0},  // BCS
+    [FRANKENSTEIN_RUN_A236] = {56, 4, 2},  // LDA : STA
+    [FRANKENSTEIN_RUN_A23A] = {300, 27, 5},  // LDA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [FRANKENSTEIN_RUN_A251] = {12, 2, 0},  // BCS
+    [FRANKENSTEIN_RUN_A253] = {260, 17, 5},  // LDY : LDA : STA : STA : LDA : STA : STA : RTS
+    [FRANKENSTEIN_RUN_A264] = {18, 3, 0},  // JMP
+    [FRANKENSTEIN_RUN_A267] = {86, 6, 1},  // LDA : STA : RTS
+    [FRANKENSTEIN_RUN_A26D] = {140, 13, 2},  // LDX : LDY : JSL : CMP : BCS
+    [FRANKENSTEIN_RUN_A27A] = {30, 5, 0},  // CMP : BCS
+    [FRANKENSTEIN_RUN_A27F] = {18, 3, 0},  // JMP
+    [FRANKENSTEIN_RUN_A284] = {172, 14, 1},  // TXY : LDX : JSL : JSL : TAX : BEQ
+    [FRANKENSTEIN_RUN_A292] = {164, 15, 2},  // ASL : STA : ASL : STA : JSL : AND : BNE
+    [FRANKENSTEIN_RUN_A2A1] = {86, 8, 2},  // LDA : CLC : ADC : STA
+    [FRANKENSTEIN_RUN_A2A9] = {304, 27, 6},  // LDX : LDY : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [FRANKENSTEIN_RUN_A2C0] = {58, 7, 1},  // LDA : CMP : BCC
+    [FRANKENSTEIN_RUN_A2C7] = {76, 9, 1},  // EOR : INC : STA : JMP
+    [FRANKENSTEIN_RUN_A2D1] = {104, 11, 1},  // LDY : LDA : STA : JMP
+    [FRANKENSTEIN_RUN_A2DC] = {334, 23, 7},  // LDA : STA : INC : INC : LDX : LDA : STA : STZ : STZ : RTS
+    [FRANKENSTEIN_RUN_A2F1] = {162, 8, 3},  // INC : INC : DEC : BPL
+    [FRANKENSTEIN_RUN_A2F9] = {232, 17, 5},  // LDA : STA : INC : INC : LDY : LDA : BNE
+    [FRANKENSTEIN_RUN_A308] = {68, 6, 2},  // STZ : LDA
+    [FRANKENSTEIN_RUN_A30C] = {68, 5, 1},  // LDX : STA
+    [FRANKENSTEIN_RUN_A311] = {140, 13, 2},  // LDX : LDY : JSL : CMP : BCC
+    [FRANKENSTEIN_RUN_A31E] = {74, 7, 2},  // STZ : STZ : JMP
+    [FRANKENSTEIN_RUN_A362] = {40, 4, 1},  // LDA : BMI
+    [FRANKENSTEIN_RUN_A366] = {140, 13, 2},  // LDX : LDY : JSL : CMP : BCS
+    [FRANKENSTEIN_RUN_A373] = {18, 3, 0},  // JMP
+    [FRANKENSTEIN_RUN_A376] = {152, 14, 2},  // LDX : LDY : LDA : JSL : TAX : BNE
+    [FRANKENSTEIN_RUN_A384] = {40, 1, 0},  // RTS
+    [FRANKENSTEIN_RUN_A385] = {90, 3, 1},  // INC : RTS
+    [FRANKENSTEIN_RUN_A388] = {62, 4, 1},  // DEC : BPL
+    [FRANKENSTEIN_RUN_A38C] = {428, 42, 6},  // LDA : STA : LDA : INC : INC : AND : STA : LDA : ASL : ASL : ORA : TAX : LDY : LDA : STA : LDA : STA : CPX : BCS
+    [FRANKENSTEIN_RUN_A3B4] = {138, 10, 0},  // LDA : AND : STA : RTS
+    [FRANKENSTEIN_RUN_A3BE] = {138, 10, 0},  // LDA : ORA : STA : RTS
+    [FRANKENSTEIN_RUN_A484] = {146, 14, 2},  // LDA : LDY : JSL : STZ : LDA
+    [FRANKENSTEIN_RUN_A496] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A499] = {294, 24, 6},  // LDA : STA : LDY : LDA : STA : STZ : STZ : LDA : AND : STA
+    [FRANKENSTEIN_RUN_A4B1] = {46, 5, 1},  // STZ : LDA
+    [FRANKENSTEIN_RUN_A4BA] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A4BD] = {64, 8, 0},  // LDA : AND : BNE
+    [FRANKENSTEIN_RUN_A4C5] = {142, 8, 1},  // PEA : LDA : DEC : PHA : RTS
+    [FRANKENSTEIN_RUN_A4CD] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A4D0] = {40, 3, 0},  // JSR
+    [FRANKENSTEIN_RUN_A4D3] = {40, 4, 1},  // LDA : BEQ
+    [FRANKENSTEIN_RUN_A4D7] = {130, 11, 4},  // STZ : STZ : STZ : STZ : LDA
+    [FRANKENSTEIN_RUN_A4E6] = {40, 4, 1},  // LDA : BNE
+    [FRANKENSTEIN_RUN_A4F5] = {192, 15, 1},  // INC : LDA : AND : ASL : ROL : ROL : JSL
+    [FRANKENSTEIN_RUN_A504] = {224, 20, 1},  // INC : LDY : LDA : STA : LDA : STA : LDA
+    [FRANKENSTEIN_RUN_A51C] = {18, 3, 0},  // LDA
+};
+
+static bool frankenstein_thing_ok(uint16_t thing) {
+  return thing == FRANKENSTEIN_NO_THING || thing < 0x1f00;
+}
+
+// Its tables are read through the bank, and so are its records and its
+// things'. A stretch that goes on to its state needs a state it knows, and
+// one that begins inside a routine it called goes back by the return
+// addresses on the stack.
+static bool accepts_frankenstein(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != FRANKENSTEIN_CODE_BANK)
+    return false;
+  const uint16_t d = in->d;
+  if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_RECORD)) >= 0x1f00) return false;
+  if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_WAY)) > 0x0040) return false;
+  for (uint16_t i = 0; i <= FRANKENSTEIN_THING_LAST; i += FRANKENSTEIN_THING_STRIDE) {
+    if (!frankenstein_thing_ok(wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THINGS + i))))
+      return false;
+    if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THING_WAY + i)) > 0x0040)
+      return false;
+  }
+  switch (in->pc) {
+    case FRANKENSTEIN_MADE_PC:
+      if (in->a >= 0x1f00) return false;
+      /* fall through */
+    case FRANKENSTEIN_HEARD_PC:
+    case FRANKENSTEIN_WOKE_PC: {
+      const uint16_t state = wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_STATE));
+      if (!frankenstein_state_known(state)) return false;
+      // An attack reads its pictures from a list in the cartridge.
+      if (state == FRANKENSTEIN_ATTACKING &&
+          wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_ATTACK)) < 0x8000)
+        return false;
+      break;
+    }
+    case FRANKENSTEIN_FREED_PC: {
+      const uint16_t at = wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THING_AT));
+      if (at > FRANKENSTEIN_THING_LAST || at % FRANKENSTEIN_THING_STRIDE) return false;
+      break;
+    }
+  }
+  return frankenstein_stack_known(w, in->pc, in->s);
+}
+
+static void shim_frankenstein(Wram* w, const Rom* rom, const CosimRegs* in,
+                         CosimRegs* out) {
+  PortCpu c;
+  FrankensteinWork k = {0};
+  cpu_from(in, &c);
+  frankenstein_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < FRANKENSTEIN_RUN_COUNT; i++)
+    run_add(&run, &FRANKENSTEIN_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  for (int twice = 0; twice < 2; twice++)
+    cycles += k.draws[twice] * rng_cycles(twice != 0, fast);
+  for (int i = 0; i < k.nearest_count; i++)
+    cycles += nearest_cycles(&k.nearest[i], fast);
+  for (int i = 0; i < k.bearing_count; i++)
+    cycles += actor_bearing_cycles(&k.bearings[i], fast);
+  for (int i = 0; i < k.player_count; i++)
+    cycles += player_bearing_cycles(&k.players[i], fast);
+  for (int i = 0; i < k.snap_count; i++)
+    cycles += actor_snap_cycles(&k.snaps[i], fast);
+  for (int i = 0; i < k.ground_count; i++)
+    cycles += terrain_enemy_cycles(&k.grounds[i], fast);
+  for (int i = 0; i < k.at_point_count; i++)
+    cycles += at_point_cycles(&k.at_points[i], fast);
+  for (int i = 0; i < k.thing_ground_count; i++)
+    cycles += terrain_bit2_cycles(&k.thing_grounds[i], fast);
+  cycles += k.handlers_set * cosim_run_cycles(&SET_HANDLER_RUN, fast);
+  cosim_cost(cycles);
+}
+
+// Any stretch can end on any of these.
+static const uint32_t FRANKENSTEIN_EXITS[] = {
+    FRANKENSTEIN_MARK_PC,        FRANKENSTEIN_SLEEP_PC,  FRANKENSTEIN_RECORD_PC,
+    FRANKENSTEIN_THROW_SOUND_PC, FRANKENSTEIN_FREE_PC,   FRANKENSTEIN_DIES_SLEEP_PC,
+    FRANKENSTEIN_DIES_PC,        FRANKENSTEIN_CRY_PC,    FRANKENSTEIN_LAST_PC};
+
+// ---------------------------------------------------------------------------
+// The screen after a level -- see `port/level_end.h`
+// ---------------------------------------------------------------------------
+//
+// Priced by the straight runs it took and a taken branch at 6 more. The
+// stretch that shows the layers writes `$212C` in its first run, so that
+// one hands over a trace: the run as far as the store's write, the write,
+// and the rest.
+enum {
+  LEVEL_END_COST_TAKEN = LEVEL_END_RUN_COUNT,
+  LEVEL_END_COST_TO_TM,  // `SEP #$20 : LDA #$11 : STA $212C`, to the write
+  LEVEL_END_COST_COUNT,
+};
+
+static const CosimRun LEVEL_END_RUN_COST[LEVEL_END_COST_COUNT] = {
+    [LEVEL_END_RUN_BD6A] = {120, 8, 0},  // PHB : PEA : PLB : JSR
+    [LEVEL_END_RUN_BD72] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_BD75] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_BD78] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BD80] = {64, 8, 0},  // LDA : CMP : BEQ
+    [LEVEL_END_RUN_BD88] = {58, 6, 0},  // INC : STA : BRA
+    [LEVEL_END_RUN_BD8E] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_BD91] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BD98] = {148, 9, 0},  // PEA : LDA : DEC : PHA : RTS
+    [LEVEL_END_RUN_BDA1] = {12, 2, 0},  // BCC
+    [LEVEL_END_RUN_BDA3] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_BDA8] = {30, 5, 0},  // AND : BNE
+    [LEVEL_END_RUN_BDAD] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_BDB0] = {92, 9, 0},  // LDA : INC : STA : BRA
+    [LEVEL_END_RUN_BDB9] = {52, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_BDBF] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BDC6] = {80, 8, 0},  // LDA : ORA : BNE
+    [LEVEL_END_RUN_BDCE] = {68, 5, 0},  // DEC : BPL
+    [LEVEL_END_RUN_BDD4] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_BDD9] = {58, 6, 0},  // DEC : STA : BRA
+    [LEVEL_END_RUN_BDDF] = {52, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_BDEA] = {34, 3, 0},  // LDA
+    [LEVEL_END_RUN_BDF2] = {52, 2, 0},  // PLB : PLB
+    [LEVEL_END_RUN_BDF5] = {54, 9, 0},  // LDY : LDX : LDA
+    [LEVEL_END_RUN_BE06] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BE0D] = {52, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_BE13] = {88, 12, 0},  // LDA : LDX : LDY : STZ
+    [LEVEL_END_RUN_BE27] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BE2E] = {88, 12, 0},  // LDA : LDX : LDY : STZ
+    [LEVEL_END_RUN_BE42] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BE49] = {68, 5, 0},  // DEC : BPL
+    [LEVEL_END_RUN_BE4E] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BE55] = {80, 8, 0},  // LDA : ORA : BEQ
+    [LEVEL_END_RUN_BE5E] = {36, 6, 0},  // LDA : LDX
+    [LEVEL_END_RUN_BE64] = {76, 7, 0},  // STA : DEX : DEX : BPL
+    [LEVEL_END_RUN_BE6B] = {166, 17, 0},  // STZ : STZ : STZ : LDA : CMP : BEQ
+    [LEVEL_END_RUN_BE7C] = {34, 3, 0},  // STZ
+    [LEVEL_END_RUN_BE7F] = {40, 1, 0},  // RTS
+    [LEVEL_END_RUN_BE80] = {86, 9, 0},  // LDA : ORA : STA
+    [LEVEL_END_RUN_BE8D] = {54, 9, 0},  // LDA : LDX : LDY
+    [LEVEL_END_RUN_BE9A] = {100, 13, 0},  // LDA : PHA : LDA : LDX : LDY
+    [LEVEL_END_RUN_BEAB] = {34, 1, 0},  // PLA
+    [LEVEL_END_RUN_BEB4] = {54, 7, 0},  // SEP : LDA : STA
+    [LEVEL_END_RUN_BEBB] = {64, 7, 0},  // REP : LDA : BEQ
+    [LEVEL_END_RUN_BEC2] = {54, 9, 0},  // LDY : LDX : LDA
+    [LEVEL_END_RUN_BECF] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_BED4] = {54, 9, 0},  // LDY : LDX : LDA
+    [LEVEL_END_RUN_BEE1] = {54, 9, 0},  // LDY : LDX : LDA
+    [LEVEL_END_RUN_BEEE] = {34, 3, 0},  // STZ
+    [LEVEL_END_RUN_BEF2] = {126, 12, 0},  // LDA : AND : STA : JSR
+    [LEVEL_END_RUN_BF03] = {36, 6, 0},  // LDA : LDY
+    [LEVEL_END_RUN_BF11] = {154, 15, 0},  // STX : STZ : STZ : LDA : STA
+    [LEVEL_END_RUN_BF20] = {86, 8, 0},  // LDX : LDA : BEQ
+    [LEVEL_END_RUN_BF28] = {126, 12, 0},  // LDA : STA : LDA : STA
+    [LEVEL_END_RUN_BF38] = {802, 75, 0},  // TAY : LDA : STA : CLC : ADC : STA : LDA : STA : LDX : LDA : STA : LDA : TAX : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : DEC : BPL
+    [LEVEL_END_RUN_BF7F] = {86, 7, 0},  // TYA : LDX : STA
+    [LEVEL_END_RUN_BF86] = {124, 8, 0},  // DEC : DEC : BPL
+    [LEVEL_END_RUN_BF8E] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_BFD5] = {52, 6, 0},  // LDY : STY
+    [LEVEL_END_RUN_BFDB] = {86, 8, 0},  // LDY : LDA : BEQ
+    [LEVEL_END_RUN_BFE3] = {200, 22, 0},  // TYA : ASL : CLC : ADC : TAX : LDA : TAY : LDA : STA : STZ
+    [LEVEL_END_RUN_BFF7] = {146, 13, 0},  // LDA : LSR : LSR : LSR : LSR : AND : JSR
+    [LEVEL_END_RUN_C004] = {98, 9, 0},  // LDA : AND : JSR
+    [LEVEL_END_RUN_C00D] = {80, 6, 0},  // DEX : DEC : BPL
+    [LEVEL_END_RUN_C013] = {250, 25, 0},  // LDY : LDA : CLC : ADC : PHA : LDX : LDA : PLY : STZ
+    [LEVEL_END_RUN_C02C] = {124, 8, 0},  // DEC : DEC : BPL
+    [LEVEL_END_RUN_C039] = {12, 2, 0},  // BNE
+    [LEVEL_END_RUN_C03B] = {46, 5, 0},  // BIT : BMI
+    [LEVEL_END_RUN_C040] = {30, 5, 0},  // LDA : BRA
+    [LEVEL_END_RUN_C045] = {98, 8, 0},  // CLC : ADC : SEC : ROR
+    [LEVEL_END_RUN_C04D] = {120, 9, 0},  // SEP : STA : REP : INY : RTS
+    [LEVEL_END_RUN_C068] = {300, 32, 0},  // LDA : STA : STA : STZ : STZ : LDA : STA : STA : LDA : ASL : TAX : LDA
+    [LEVEL_END_RUN_C088] = {76, 8, 0},  // STA : DEX : DEX : BPL
+    [LEVEL_END_RUN_C090] = {18, 3, 0},  // LDY
+    [LEVEL_END_RUN_C093] = {52, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C098] = {110, 12, 0},  // LDA : CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_C0A4] = {92, 7, 0},  // LDA : DEC : STA
+    [LEVEL_END_RUN_C0AB] = {80, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_C0B1] = {36, 4, 0},  // DEY : DEY : BPL
+    [LEVEL_END_RUN_C0B5] = {52, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_C0BB] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C0C0] = {258, 25, 2},  // DEC : STA : LDA : STA : LDA : STA : LDX : LDA : AND : BEQ
+    [LEVEL_END_RUN_C0D9] = {236, 26, 0},  // TAX : LDA : CLC : ADC : STA : TXA : ASL : TAX : LDY : LDA
+    [LEVEL_END_RUN_C0F1] = {92, 10, 0},  // LDX : STA : LDA
+    [LEVEL_END_RUN_C0FF] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C104] = {258, 25, 2},  // DEC : STA : LDA : STA : LDA : STA : LDX : LDA : AND : BEQ
+    [LEVEL_END_RUN_C11D] = {236, 26, 0},  // TAX : LDA : CLC : ADC : STA : TXA : ASL : TAX : LDY : LDA
+    [LEVEL_END_RUN_C135] = {92, 10, 0},  // LDX : STA : LDA
+    [LEVEL_END_RUN_C143] = {136, 11, 0},  // INC : LDA : ORA : BEQ
+    [LEVEL_END_RUN_C14E] = {122, 13, 0},  // LDA : INC : INC : STA : CMP : BNE
+    [LEVEL_END_RUN_C15B] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C15E] = {52, 2, 0},  // CLC : RTS
+    [LEVEL_END_RUN_C160] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C163] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_C16A] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_C16D] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_C174] = {34, 3, 0},  // STZ
+    [LEVEL_END_RUN_C177] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C17A] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_C181] = {122, 15, 0},  // LDY : LDX : LDA : CMP : BEQ
+    [LEVEL_END_RUN_C190] = {12, 1, 0},  // TAX
+    [LEVEL_END_RUN_C195] = {226, 24, 0},  // SED : LDA : CLC : ADC : STA : LDA : ADC : STA : CLD : LDA
+    [LEVEL_END_RUN_C1B1] = {122, 15, 0},  // LDY : LDX : LDA : CMP : BEQ
+    [LEVEL_END_RUN_C1C0] = {12, 1, 0},  // TAX
+    [LEVEL_END_RUN_C1C5] = {226, 24, 0},  // SED : LDA : CLC : ADC : STA : LDA : ADC : STA : CLD : LDA
+    [LEVEL_END_RUN_C1E1] = {220, 24, 0},  // LDX : LDA : STA : STA : INX : INX : STX : CPX : BEQ
+    [LEVEL_END_RUN_C1F9] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_C1FC] = {160, 13, 0},  // LDA : STA : STA : STZ : RTS
+    [LEVEL_END_RUN_C251] = {104, 8, 0},  // LDA : STA : CLC : RTS
+    [LEVEL_END_RUN_C259] = {352 - 4, 32 + 2, 1},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDX : LDA : BNE
+    [LEVEL_END_RUN_C279] = {108, 9, 0},  // STZ : STZ : JSR
+    [LEVEL_END_RUN_C282] = {12, 2, 0},  // BRA
+    [LEVEL_END_RUN_C284] = {190, 19, 0},  // STA : CLC : ADC : STA : LDA : STA : JSR
+    [LEVEL_END_RUN_C297] = {12, 2, 0},  // BRA
+    [LEVEL_END_RUN_C299] = {86 - 4, 9 + 2, 0},  // LDX : LDA : BEQ
+    [LEVEL_END_RUN_C2A2] = {70, 6, 0},  // INX : INX : STX : TAX
+    [LEVEL_END_RUN_C2A8] = {52, 5, 0},  // JSR
+    [LEVEL_END_RUN_C2AB] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C2AE] = {12, 2, 0},  // BCS
+    [LEVEL_END_RUN_C2B1] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C2B4] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C2B7] = {54, 9, 0},  // LDY : LDX : LDA
+    [LEVEL_END_RUN_C2C4] = {52, 2, 0},  // SEC : RTS
+    [LEVEL_END_RUN_C2C6] = {114, 11, 0},  // STZ : LDA : CMP : BNE
+    [LEVEL_END_RUN_C2D1] = {80, 8, 0},  // LDA : CMP : BEQ
+    [LEVEL_END_RUN_C2D9] = {282, 27, 0},  // INC : SED : LDA : CLC : ADC : STA : LDA : ADC : STA : CLD : LDA
+    [LEVEL_END_RUN_C2F8] = {80, 8, 0},  // LDA : CMP : BNE
+    [LEVEL_END_RUN_C300] = {80, 8, 0},  // LDA : CMP : BEQ
+    [LEVEL_END_RUN_C308] = {282, 27, 0},  // INC : SED : LDA : CLC : ADC : STA : LDA : ADC : STA : CLD : LDA
+    [LEVEL_END_RUN_C327] = {46, 5, 0},  // LDA : BNE
+    [LEVEL_END_RUN_C32C] = {80, 8, 0},  // LDA : CMP : BEQ
+    [LEVEL_END_RUN_C334] = {52, 2, 0},  // CLC : RTS
+    [LEVEL_END_RUN_C336] = {52, 2, 0},  // SEC : RTS
+    [LEVEL_END_RUN_C338] = {40, 3, 0},  // JSR
+    [LEVEL_END_RUN_C33B] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_C342] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_C499] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C4A1] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C4AD] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C4B5] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_C56B] = {80, 8, 0},  // LDA : AND : BNE
+    [LEVEL_END_RUN_C574] = {80, 8, 0},  // LDA : CMP : BEQ
+    [LEVEL_END_RUN_C57C] = {12, 2, 0},  // BCC
+    [LEVEL_END_RUN_C57E] = {72, 12, 0},  // LDY : LDX : LDA : JMP
+    [LEVEL_END_RUN_C58A] = {90, 15, 0},  // LDY : LDX : LDA : ORA : JMP
+    [LEVEL_END_RUN_CE17] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CE1C] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CE21] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CE2A] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CE36] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CE3B] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CE40] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CE49] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CFEB] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CFF0] = {92, 9, 0},  // LDA : CLC : ADC : BEQ
+    [LEVEL_END_RUN_CFF9] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_D005] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D00A] = {92, 9, 0},  // LDA : CLC : ADC : BEQ
+    [LEVEL_END_RUN_D013] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_D0CB] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D0D0] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D0D5] = {110, 11, 0},  // LDA : STA : LDA : ASL : TAX
+    [LEVEL_END_RUN_D0E0] = {52, 5, 0},  // JSR
+    [LEVEL_END_RUN_D0E3] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_D0EF] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D0F4] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D0F9] = {110, 11, 0},  // LDA : STA : LDA : ASL : TAX
+    [LEVEL_END_RUN_D104] = {52, 5, 0},  // JSR
+    [LEVEL_END_RUN_D107] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_D118] = {106, 12, 0},  // LDA : ASL : TAX : LDA : BEQ
+    [LEVEL_END_RUN_D122] = {74, 4, 0},  // STA : RTS
+    [LEVEL_END_RUN_D126] = {46, 5, 0},  // LDA : BNE
+    [LEVEL_END_RUN_D12B] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_D137] = {12, 2, 0},  // BRA
+    [LEVEL_END_RUN_D139] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_D148] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_D14F] = {80, 8, 0},  // LDA : ORA : BEQ
+    [LEVEL_END_RUN_D157] = {74, 2, 0},  // PLA : RTS
+    [LEVEL_END_RUN_D159] = {46, 5, 0},  // LDA : BNE
+    [LEVEL_END_RUN_D15E] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_D16A] = {12, 2, 0},  // BRA
+    [LEVEL_END_RUN_D16C] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_D17B] = {74, 2, 0},  // PLA : RTS
+    [LEVEL_END_RUN_D44E] = {34, 3, 0},  // STZ
+    [LEVEL_END_RUN_D451] = {162, 15, 0},  // LDA : TAX : ASL : TAY : LDA : CMP : BCS
+    [LEVEL_END_RUN_D460] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_D463] = {52, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_D468] = {278, 29, 0},  // LDX : SED : LDA : CLC : ADC : STA : CLD : LDA : CLC : ADC : CMP : BCS
+    [LEVEL_END_RUN_D485] = {124, 15, 0},  // TXY : LDX : LDA : LDY : JSR
+    [LEVEL_END_RUN_D492] = {364, 35, 0},  // LDX : LDA : INC : STA : SED : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : CLD : JMP
+    [LEVEL_END_RUN_D4B5] = {104, 11, 0},  // LDX : LDA : CMP : BCS
+    [LEVEL_END_RUN_D4C0] = {92, 7, 0},  // INC : STA : JSR
+    [LEVEL_END_RUN_D4C7] = {12, 2, 0},  // BRA
+    [LEVEL_END_RUN_D4C9] = {146, 17, 0},  // LDY : LDX : LDA : LDY : JSR
+    [LEVEL_END_RUN_D4D8] = {122, 13, 0},  // LDA : INC : INC : STA : CMP : BCS
+    [LEVEL_END_RUN_D4E5] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_D4E9] = {146, 17, 0},  // LDY : LDX : LDA : LDY : JSR
+    [LEVEL_END_RUN_D4FC] = {856, 73, 0},  // TAY : LDX : LDA : TAX : LDA : CLC : ADC : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDX : TYA : STA : LDA : STA
+    [LEVEL_END_RUN_D545] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_D54C] = {138, 12, 0},  // LDX : LDA : TAX : LDA : BMI
+    [LEVEL_END_RUN_D558] = {30, 5, 0},  // ORA : BRA
+    [LEVEL_END_RUN_D55D] = {18, 3, 0},  // AND
+    [LEVEL_END_RUN_D560] = {108, 8, 0},  // STA : DEC : BPL
+    [LEVEL_END_RUN_D568] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_D774] = {378, 34, 0},  // PHX : PHA : XBA : AND : TAX : TYA : SED : CLC : ADC : STA : LDA : ADC : STA : CLD : LDA : CPY : BNE
+    [LEVEL_END_RUN_D796] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_D79D] = {52, 6, 0},  // LDA : STA
+    [LEVEL_END_RUN_D7A3] = {208, 17, 0},  // LDA : AND : TAY : LDA : TAX : PLA : PHA : LDY
+    [LEVEL_END_RUN_D7B6] = {18, 3, 0},  // LDA
+    [LEVEL_END_RUN_D7BD] = {124, 8, 0},  // DEC : DEC : BPL
+    [LEVEL_END_RUN_D7C5] = {86, 5, 0},  // PLA : PLX : LDA
+    [LEVEL_END_COST_TAKEN] = {6, 0, 0},
+    [LEVEL_END_COST_TO_TM] = {48, 7, 0},
+};
+
+// A stretch that would go back to an address the port does not know is
+// turned down, which only running it can tell.
+static bool guard_level_end(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  PortCpu c;
+  LevelEndWork k = {0};
+  cpu_from(in, &c);
+  level_end_run(scratch, rom, &c, &k);
+  return !k.lost;
+}
+
+// Its own data bank, but for its first instruction.
+static bool accepts_level_end(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  if (!body_ok(in) || (in->d & 0x00ffu) != 0) return false;
+  return in->pc == LEVEL_END_PC || in->db == LEVEL_END_BANK;
+}
+
+static void shim_level_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  LevelEndWork k = {0};
+  cpu_from(in, &c);
+  level_end_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+  const bool fast = fetch_fast(in);
+  if (!k.layers_set) {
+    CosimRun run = {0, 0, 0};
+    for (int i = 0; i < LEVEL_END_RUN_COUNT; i++)
+      run_add(&run, &LEVEL_END_RUN_COST[i], k.runs[i]);
+    run_add(&run, &RUN_TAKEN, k.taken);
+    cosim_cost(cosim_run_cycles(&run, fast));
+    return;
+  }
+  static HwStep steps[LEVEL_END_RUN_COUNT + 4];
+  HwTrace t = {0, (int)(sizeof steps / sizeof steps[0]), false, steps};
+  hw_run(&t, LEVEL_END_COST_TO_TM);
+  hw_w8(&t, LEVEL_END_TM, LEVEL_END_TM_SPRITES_AND_FIRST);
+  k.runs[LEVEL_END_RUN_BEB4]--;
+  for (int i = 0; i < LEVEL_END_RUN_COUNT; i++) hw_run_n(&t, i, k.runs[i]);
+  hw_run_n(&t, LEVEL_END_COST_TAKEN, k.taken);
+  cosim_hw(&t, LEVEL_END_RUN_COST, fast);
+}
+
+static const uint32_t LEVEL_END_EXIT_PCS[] = {
+#define X(pc) pc,
+    LEVEL_END_EXITS(X)
+#undef X
+};
+
+// ---------------------------------------------------------------------------
 // The spray of the extinguisher and the flamethrower -- see `port/spray.h`
 // ---------------------------------------------------------------------------
 //
@@ -29889,6 +30390,16 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 0,
     },
     {
+        .name = "frankenstein_collide",
+        .symbol = "$81:A594",
+        .entry = 0x81a594,
+        .ret_op = 0x81a5a5,  // the `CLC : RTL`'s bare `RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_frankenstein_collide,
+        .cycles = 300,
+        .stack_bytes = 0,  // a survivor leaves through `$81:8506`, which pushes nothing
+    },
+    {
         .name = "actor_84ac",
         .symbol = "$82:84AC",
         .entry = 0x8284ac,
@@ -33965,12 +34476,12 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 16,
     },
     {
-        .name = "idle_wait",
+        .name = "frankenstein_wait",
         .symbol = "$81:A478",
-        .entry = IDLE_WAIT_PC,
+        .entry = FRANKENSTEIN_WAIT_PC,
         .run = shim_idle_wait,
         .accepts = accepts_idle_wait,
-        COSIM_EXITS(IDLE_WAIT_EXITS),
+        COSIM_EXITS(FRANKENSTEIN_WAIT_EXITS),
         .uncalled = true,
         .cycles = 2000,
         // A `JSR` to a `JSL`, and what `player_bearing` has under it.
@@ -35117,6 +35628,50 @@ static const CosimRoutine ROUTINES[] = {
     SNAKEOID_ROW(dies_freed, "$82:A9AD", SNAKEOID_DIES_FREED_PC, 120)
     SNAKEOID_ROW(dies_left, "$82:A9BD", SNAKEOID_DIES_LEFT_PC, 210)
 #undef SNAKEOID_ROW
+    // Frankenstein's monster, awake. See `port/frankenstein.h`.
+#define FRANKENSTEIN_ROW(name_, sym, pc, mean)                                    \
+    {                                                                        \
+        .name = "frankenstein_" #name_,                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_frankenstein,                                                 \
+        .accepts = accepts_frankenstein,                                          \
+        COSIM_EXITS(FRANKENSTEIN_EXITS),                                          \
+        .uncalled = true,                                                    \
+        .cycles = mean,                                                      \
+        /* The deepest is its state's look round asking who is nearest: */  \
+        /* three returns and that routine's own pushes under them. */        \
+        .stack_bytes = 32,                                                   \
+    },
+    FRANKENSTEIN_ROW(found, "$81:A484", FRANKENSTEIN_FOUND_PC, 300)
+    FRANKENSTEIN_ROW(marked, "$81:A496", FRANKENSTEIN_MARKED_PC, 5000)
+    FRANKENSTEIN_ROW(woke, "$81:A4BA", FRANKENSTEIN_WOKE_PC, 6000)
+    FRANKENSTEIN_ROW(made, "$81:9FEA", FRANKENSTEIN_MADE_PC, 6000)
+    FRANKENSTEIN_ROW(heard, "$81:9FCE", FRANKENSTEIN_HEARD_PC, 5000)
+    FRANKENSTEIN_ROW(freed, "$81:A11B", FRANKENSTEIN_FREED_PC, 300)
+    FRANKENSTEIN_ROW(dies_woke, "$81:A4E6", FRANKENSTEIN_DIES_WOKE_PC, 1500)
+    FRANKENSTEIN_ROW(scored, "$81:A4F5", FRANKENSTEIN_SCORED_PC, 500)
+    FRANKENSTEIN_ROW(cried, "$81:A51C", FRANKENSTEIN_CRIED_PC, 20)
+#undef FRANKENSTEIN_ROW
+    // The screen after a level. See `port/level_end.h`.
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "level_end_" #name_,                                         \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_level_end,                                               \
+        .accepts = accepts_level_end,                                        \
+        .supported = guard_level_end,                                        \
+        COSIM_EXITS(LEVEL_END_EXIT_PCS),                                     \
+        .uncalled = true,                                                    \
+        .hw = pc == 0x82beb4u,                                               \
+        .cycles = 300,                                                       \
+        /* A bonus's words, under its handler, under the bonuses' state, */ \
+        /* and the text routine's own pushes. */                             \
+        .stack_bytes = 40,                                                   \
+    },
+    LEVEL_END_ENTRIES(X)
+#undef X
     // The spray of the extinguisher and the flamethrower. See
     // `port/spray.h`.
 #define SPRAY_ROW(name_, sym, pc, exits_, mean)                              \

@@ -1865,7 +1865,7 @@ back to the next sleep or to the end of the wait.
 * **`near_wait`** (`$83:AAB2`) waits for a player within 250 of a point,
   asking every four ticks. The thread at `$83:AD33` calls it first of all,
   and two level records have that thread.
-* **`idle_wait`** (`$81:A478`) is in the thread of a thing only record 48
+* **`frankenstein_wait`** (`$81:A478`) is in the thread of a thing only record 48
   has. Every two ticks it asks whether a player is within 80. With nobody,
   it counts a picture's ticks down and puts up the next of four, so each
   shows for ten ticks.
@@ -1882,7 +1882,7 @@ back to the next sleep or to the end of the wait.
   * The level records do, over 7,000 frames with `--level`. Every call was
     checked and cost what the ROM's did.
 
-    | Session | `near_wait` | `near_wait_woken` | `idle_wait` | `hits_wait` |
+    | Session | `near_wait` | `near_wait_woken` | `frankenstein_wait` | `hits_wait` |
     |---|---|---|---|---|
     | `record 36` | 1 | 1,321 | | 564 |
     | `record 48` | 1 | 1,319 | 845 | |
