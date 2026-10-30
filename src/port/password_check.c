@@ -1,7 +1,9 @@
-// $82:B018  a password checked -- see port/password_check.h.
+// $82:B018  a password checked, and $82:B0DE one written -- see
+// port/password_check.h.
 
 #include "port/password_check.h"
 
+#include "port/bcd.h"
 #include "port/coverage.h"
 
 static uint8_t table(const Rom* rom, uint32_t at) {
@@ -142,4 +144,82 @@ PasswordFate password_check(Wram* w, const Rom* rom, PortCpu* c,
   k->blocks[PW_TAIL]++;
   c->pc = PASSWORD_CHECK_RTL_PC;
   return PASSWORD_GOOD;
+}
+
+// A byte of bank `$82` read at `base` by an 8-bit index, counting a page
+// crossed.
+static uint8_t indexed(const Rom* rom, uint32_t base, uint8_t index,
+                       int* crossed) {
+  if ((base & 0xffu) + index > 0xffu) (*crossed)++;
+  return table(rom, base + index);
+}
+
+// `CLC : ADC` of two bytes, as the 8-bit accumulator does it.
+static uint8_t add8(PortCpu* c, uint8_t a, uint8_t b) {
+  const unsigned sum = (unsigned)a + b;
+  const uint8_t r = (uint8_t)sum;
+  set_c(c, sum > 0xffu);
+  set_v(c, ((a ^ r) & (b ^ r) & 0x80u) != 0);
+  return r;
+}
+
+#define PW_SAVED_A 0x1f9cu  // the neighbours each player saved
+#define PW_SAVED_B 0x1f9eu
+
+int password_write(Wram* w, const Rom* rom, PortCpu* c) {
+  int crossed = 0;
+  // `PHB : PEA $0082 : PLB`: the pushed `$00` stays on the stack until the
+  // end.
+  const uint8_t bank = c->db;
+  push8(w, c, bank);
+  push16(w, c, PASSWORD_BANK);
+  c->db = pull8(w, c);
+
+  // The level's pair: `LDA $1E7C : LSR : DEC : DEC : TAX : STX $0038`.
+  const uint16_t group = (uint16_t)((wram_r16(w, W_PASSWORD_LEVEL) >> 1) - 2);
+  wram_w16(w, W_PASSWORD_GROUP, group);
+  const uint8_t g = (uint8_t)group;  // `SEP #$30`
+  const uint8_t second =
+      indexed(rom, PASSWORD_ALPHABET,
+              indexed(rom, PASSWORD_GROUP_TABLE + 1, g, &crossed), &crossed);
+  const uint8_t first =
+      indexed(rom, PASSWORD_ALPHABET,
+              indexed(rom, PASSWORD_GROUP_TABLE, g, &crossed), &crossed);
+  const uint8_t middle[2] = {first, second};
+
+  // The count's: `SED : LDA $1F9C : CLC : ADC $1F9E : SEC : SBC #1 : CLD :
+  // ASL : TAX`.
+  bool carry = false, adjusted = false, overflow = false;
+  uint16_t left = bcd_add16(wram_r16(w, PW_SAVED_A), wram_r16(w, PW_SAVED_B),
+                            &carry, &adjusted);
+  carry = true;
+  left = bcd_sub16(left, 1, &carry, &overflow);
+  const uint8_t v = (uint8_t)(left << 1);  // `SEP #$30` keeps the low byte
+  const uint8_t gs = (uint8_t)wram_r16(w, W_PASSWORD_GROUP);  // `LDY $0038`
+  uint8_t place = add8(c,
+                       indexed(rom, PASSWORD_VARIANT_TABLE + 1, v, &crossed),
+                       indexed(rom, PASSWORD_GROUP_OFFSETS + 1, gs, &crossed));
+  const uint8_t fourth = indexed(rom, PASSWORD_ALPHABET, place, &crossed);
+  place = add8(c, indexed(rom, PASSWORD_VARIANT_TABLE, v, &crossed),
+               indexed(rom, PASSWORD_GROUP_OFFSETS, gs, &crossed));
+  const uint8_t third = indexed(rom, PASSWORD_ALPHABET, place, &crossed);
+
+  // Stored as two words, `$1EA4` cleared, and the first and third letters
+  // swapped by bytes: the same swap `$82:B018` undoes.
+  wram_w8(w, W_PASSWORD, third);
+  wram_w8(w, W_PASSWORD + 1, middle[1]);
+  wram_w8(w, W_PASSWORD + 2, middle[0]);
+  wram_w8(w, W_PASSWORD + 3, fourth);
+  wram_w16(w, W_PASSWORD + 4, 0);
+  PORT_COVER(password_written);
+
+  c->a = (uint16_t)(fourth << 8 | third);
+  c->x = middle[0];
+  c->y = place;
+  // `PLB : PLB`: the `$00`, then the caller's bank, which sets N and Z.
+  (void)pull8(w, c);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = PASSWORD_WRITE_RTL_PC;
+  return crossed;
 }

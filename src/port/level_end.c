@@ -182,6 +182,136 @@ static void pays(End* s, uint16_t lo, uint16_t v) {
 #define LEVEL_BONUSES 0xd1eeu    // ...and one of `$82:D0CB`'s, by the level
 #define DP_RECORD 0x10           // the main thread's level record
 
+// --- The bonuses that pay by a tally --------------------------------------
+//
+// Eleven handlers, one shape. Some first test something for both players
+// (a tally of theirs both, or the two's neighbours saved), then for each
+// player in turn: are they playing, does their tally pass, and if so the
+// bonus is paid by `$82:D774`, with the second player's words and `$0400`
+// in A. The only other difference is how a tally passes:
+
+typedef enum {
+  BONUS_AT_LEAST,      // `LDA tally : CMP #limit : BCC`
+  BONUS_NONE,          // `LDA tally : BNE`
+  BONUS_WITH_OTHER,    // `LDA tally : BEQ`, then `CLC : ADC other : CMP : BCC`
+  BONUS_SHARED,        // one tally, tested once first: `LDA : CMP : BCC`
+  BONUS_CHEERLEADERS,  // the two's saved, tested once first; and each player
+                       // paid has `INC` of their `$1FF0` before
+} BonusShape;
+
+typedef struct {
+  uint16_t at;
+  BonusShape shape;
+  uint16_t tally;  // the first player's; the second's is the next word
+  uint16_t limit;
+  uint16_t points;  // in decimal, for Y
+  uint16_t words[2];
+  LevelEndRun first;  // its runs are in a row from here, in the listing's order
+} Bonus;
+
+static const Bonus TALLY_BONUSES[] = {
+    {0xc3b9, BONUS_CHEERLEADERS, 0x1f9c, 0x000a, 0x1000, {0xc3f1, 0xc445},
+     LEVEL_END_RUN_C3B9},
+    {0xc641, BONUS_SHARED, 0x1fc2, 0x0032, 0x2000, {0xc66f, 0xc6c3},
+     LEVEL_END_RUN_C641},
+    {0xc717, BONUS_AT_LEAST, 0x1fc4, 0x000a, 0x5000, {0xc74d, 0xc79f},
+     LEVEL_END_RUN_C717},
+    {0xc7f3, BONUS_AT_LEAST, 0x1fc8, 0x012c, 0x1000, {0xc829, 0xc87d},
+     LEVEL_END_RUN_C7F3},
+    {0xc8d1, BONUS_NONE, 0x1fcc, 0x0000, 0x1000, {0xc901, 0xc955},
+     LEVEL_END_RUN_C8D1},
+    {0xc9a9, BONUS_AT_LEAST, 0x1fdc, 0x000a, 0x1000, {0xc9df, 0xca33},
+     LEVEL_END_RUN_C9A9},
+    {0xca87, BONUS_AT_LEAST, 0x1fe0, 0x0028, 0x1000, {0xcabd, 0xcb11},
+     LEVEL_END_RUN_CA87},
+    {0xcb65, BONUS_AT_LEAST, 0x1fd4, 0x000a, 0x1000, {0xcb9b, 0xcbef},
+     LEVEL_END_RUN_CB65},
+    {0xcc43, BONUS_WITH_OTHER, 0x1fd0, 0x0007, 0x5000, {0xcc85, 0xccd9},
+     LEVEL_END_RUN_CC43},
+    {0xcd2d, BONUS_WITH_OTHER, 0x1fd8, 0x000a, 0x1000, {0xcd6f, 0xcdc3},
+     LEVEL_END_RUN_CD2D},
+    {0xcf01, BONUS_WITH_OTHER, 0x1fec, 0x0002, 0x9900, {0xcf43, 0xcf97},
+     LEVEL_END_RUN_CF01},
+};
+
+#define TALLY_BONUS_COUNT ((int)(sizeof TALLY_BONUSES / sizeof TALLY_BONUSES[0]))
+
+// The bytes of each part of one, from the listing.
+static uint16_t bonus_test_bytes(const Bonus* b) {
+  return b->shape == BONUS_CHEERLEADERS ? 12 : b->shape == BONUS_SHARED ? 8 : 0;
+}
+
+static uint16_t bonus_own_bytes(const Bonus* b) {
+  switch (b->shape) {
+    case BONUS_AT_LEAST: return 8;
+    case BONUS_NONE: return 5;
+    case BONUS_WITH_OTHER: return 14;
+    default: return 0;
+  }
+}
+
+static int bonus_own_runs(const Bonus* b) {
+  return b->shape == BONUS_WITH_OTHER ? 2 : bonus_own_bytes(b) ? 1 : 0;
+}
+
+// `LDY #points : LDX #words : LDA #$0082 [: ORA #$0400] : JSR $D774`, and
+// before it `INC` for the cheerleaders.
+static uint16_t bonus_pay_bytes(const Bonus* b, int player) {
+  return (uint16_t)(12 + 3 * player + (b->shape == BONUS_CHEERLEADERS ? 3 : 0));
+}
+
+// Where player `p`'s part begins; part 2 is the `RTS`.
+static uint16_t bonus_part(const Bonus* b, int part) {
+  uint16_t at = (uint16_t)(b->at + bonus_test_bytes(b));
+  for (int p = 0; p < part; p++)
+    at = (uint16_t)(at + 5 + bonus_own_bytes(b) + bonus_pay_bytes(b, p));
+  return at;
+}
+
+static void cover_bonus(uint16_t at) {
+  switch (at) {
+    case 0xc3b9:
+      PORT_COVER(level_end_ten_cheerleaders);
+      break;
+    case 0xc641:
+      PORT_COVER(level_end_massive_destruction);
+      break;
+    case 0xc717:
+      PORT_COVER(level_end_pass_completion);
+      break;
+    case 0xc7f3:
+      PORT_COVER(level_end_weed_cutting);
+      break;
+    case 0xc8d1:
+      PORT_COVER(level_end_no_bazooka);
+      break;
+    case 0xc9a9:
+      PORT_COVER(level_end_martian_bubbled);
+      break;
+    case 0xca87:
+      PORT_COVER(level_end_monster_frozen);
+      break;
+    case 0xcb65:
+      PORT_COVER(level_end_extermination);
+      break;
+    case 0xcc43:
+      PORT_COVER(level_end_chainsaw_begone);
+      break;
+    case 0xcd2d:
+      PORT_COVER(level_end_fish_fry);
+      break;
+    case 0xcf01:
+      PORT_COVER(level_end_vampire_destroyed);
+      break;
+  }
+}
+
+static const Bonus* tally_bonus(uint16_t at) {
+  for (int i = 0; i < TALLY_BONUS_COUNT; i++)
+    if (TALLY_BONUSES[i].at == at) return &TALLY_BONUSES[i];
+  return 0;
+}
+
 static bool bonus_ported(uint16_t at) {
   switch (at) {
     case 0xc499:
@@ -190,6 +320,88 @@ static bool bonus_ported(uint16_t at) {
     case 0xcfeb:
     case 0xd0cb:
       return true;
+  }
+  return tally_bonus(at) != 0;
+}
+
+// The block of one that begins at `pc`, if `pc` is one of theirs: its test
+// for both, a player's part, or its `RTS`.
+static bool tally_bonus_block(End* s, uint16_t pc, uint32_t* next) {
+  for (int i = 0; i < TALLY_BONUS_COUNT; i++) {
+    const Bonus* b = &TALLY_BONUSES[i];
+    PortCpu* c = s->c;
+    LevelEndRun run = b->first;
+    const uint16_t own = bonus_own_bytes(b);
+    if (pc == b->at && bonus_test_bytes(b)) {
+      if (b->shape == BONUS_CHEERLEADERS) {
+        lda(s, data(s, b->tally));
+        add(s, data(s, (uint16_t)(b->tally + 2)));
+      } else {
+        lda(s, data(s, b->tally));
+      }
+      cmp(s, b->limit);
+      ran(s, run);
+      *next = took(s, !carry(s)) ? bonus_part(b, 2) : bonus_part(b, 0);
+      return true;
+    }
+    if (bonus_test_bytes(b)) run++;
+    for (int p = 0; p < 2; p++, run += 2 + bonus_own_runs(b)) {
+      if (pc != bonus_part(b, p)) continue;
+      const uint16_t skip = bonus_part(b, p + 1);
+      const uint16_t mine = (uint16_t)(2 * p);
+      lda(s, data(s, (uint16_t)(W_PLAYING + mine)));
+      ran(s, run);
+      if (took(s, zero(s))) {
+        *next = skip;
+        return true;
+      }
+      const uint16_t tally = (uint16_t)(b->tally + mine);
+      bool passes = true;
+      switch (b->shape) {
+        case BONUS_AT_LEAST:
+          lda(s, data(s, tally));
+          cmp(s, b->limit);
+          ran(s, run + 1);
+          passes = !took(s, !carry(s));
+          break;
+        case BONUS_NONE:
+          lda(s, data(s, tally));
+          ran(s, run + 1);
+          passes = !took(s, !zero(s));
+          break;
+        case BONUS_WITH_OTHER:
+          lda(s, data(s, tally));
+          ran(s, run + 1);
+          if (took(s, zero(s))) {
+            passes = false;
+            break;
+          }
+          add(s, data(s, (uint16_t)(b->tally + 2 - mine)));
+          cmp(s, b->limit);
+          ran(s, run + 2);
+          passes = !took(s, !carry(s));
+          break;
+        default:
+          break;
+      }
+      if (!passes) {
+        *next = skip;
+        return true;
+      }
+      cover_bonus(b->at);
+      if (b->shape == BONUS_CHEERLEADERS) count_up_at(s, (uint16_t)(0x1ff0 + mine));
+      ldy(s, b->points);
+      ldx(s, b->words[p]);
+      lda(s, LEVEL_END_BANK);
+      if (p) lda(s, c->a | 0x0400);
+      ran(s, run + 1 + bonus_own_runs(b));
+      *next = jsr(s, (uint16_t)(skip - 3), 0xd774);
+      return true;
+    }
+    if (pc == bonus_part(b, 2)) {
+      *next = lone_rts(s);
+      return true;
+    }
   }
   return false;
 }
@@ -216,6 +428,8 @@ static void set_record(End* s, uint16_t record, uint16_t at, uint16_t v) {
 static uint32_t block(End* s, uint16_t pc) {
   PortCpu* c = s->c;
   uint16_t v;
+  uint32_t next;
+  if (tally_bonus_block(s, pc, &next)) return next;
   switch (pc) {
     // --- `$82:BD6A`: the screen -------------------------------------------
     case 0xbd6a:

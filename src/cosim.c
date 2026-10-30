@@ -93,7 +93,7 @@ typedef struct {
   // `zamn_headless`.
   int twin_aim;
   int twin_from;  // ...and the frame it starts arming on
-  // `--poke <frame>[+]:<addr>=<value>[.b]`: assert a word of WRAM rather than
+  // `--poke <frame>[+|-last]:<addr>=<value>[.b]`: assert a word of WRAM rather than
   // playing the game into it. See `src/poke.h` for what that does and does not
   // prove; the short version is that `verify` diffs the port against the ROM on
   // whatever state exists at the call, and neither of them can tell how the
@@ -457,7 +457,7 @@ static void usage(void) {
          "         and not combinable with -r),\n"
          "         -c full branch-coverage table (untaken branches are always\n"
          "         listed, with or without it),\n"
-         "         --poke <frame>[+]:<addr>=<value>[.b] to assert a word of\n"
+         "         --poke <frame>[+|-last]:<addr>=<value>[.b] to assert a word of\n"
          "         WRAM rather than play the game into it (verify only,\n"
          "         repeatable). A branch taken this way is checked against the\n"
          "         ROM on a state nothing proved reachable — see src/poke.h.\n"

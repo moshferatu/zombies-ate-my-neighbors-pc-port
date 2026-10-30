@@ -833,6 +833,102 @@ static bool fire(Seeker* s) {
   return true;
 }
 
+// `$82:EAC5`: is the place in X and Y on the screen, or no more than four
+// pixels left of it? Carry clear if so, as each `CMP` leaves it.
+static bool on_screen(Seeker* s, uint16_t x, uint16_t y) {
+  PortCpu* c = s->c;
+  const uint16_t left = wram_r16(s->w, W_SEEKER_CAMERA_X);
+  const uint16_t top = wram_r16(s->w, W_SEEKER_CAMERA_Y);
+  set_c(c, false);
+  c->a = adc16(c, x, SEEKER_SCREEN_LEFT);
+  cmp16(c, c->a, left);
+  ran(s, SF_EDGE_LEFT);
+  bool in = c->a >= left;
+  if (in) {
+    set_c(c, false);
+    c->a = adc16(c, left, SEEKER_SCREEN_WIDE);
+    cmp16(c, c->a, x);
+    ran(s, SF_EDGE_RIGHT);
+    in = c->a >= x;
+  }
+  if (in) {
+    c->a = y;
+    cmp16(c, c->a, top);
+    ran(s, SF_EDGE_TOP);
+    in = c->a >= top;
+  }
+  if (in) {
+    set_c(c, false);
+    c->a = adc16(c, top, SEEKER_SCREEN_HIGH);
+    cmp16(c, c->a, y);
+    ran(s, SF_EDGE_BOTTOM);
+    in = c->a >= y;
+  }
+  if (in) {
+    set_c(c, false);
+    ran(s, SF_EDGE_IN);
+  } else {
+    ran(s, SF_TAKEN);
+    set_c(c, true);
+    ran(s, SF_EDGE_OUT);
+  }
+  return in;
+}
+
+// `$82:EA8E`: its strength spent, it flies off: its picture, four pixels
+// the way it drew, and its loop ends once it is off the level or off the
+// screen. False for a way past the table's.
+static bool flee(Seeker* s) {
+  PortCpu* c = s->c;
+  const uint16_t way = field(s, SEEKER_DP_WAY);
+  if (way >= SEEKER_FLEE_WAYS) return false;
+  PORT_COVER(seeker_fled);
+  ran(s, SF_FLEE_CALL);
+  flap(s);
+  c->x = (uint16_t)(way << 2);
+  c->y = field(s, SEEKER_DP_RECORD);
+  set_c(c, false);
+  const uint16_t x = adc16(c, rom_word(s->rom, SEEKER_FLEE_STEPS + c->x),
+                           field(s, SEEKER_DP_X));
+  set_field(s, SEEKER_DP_X, x);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_X), x);
+  set_c(c, false);
+  const uint16_t y = adc16(c, rom_word(s->rom, SEEKER_FLEE_STEPS + 2 + c->x),
+                           field(s, SEEKER_DP_Y));
+  set_field(s, SEEKER_DP_Y, y);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_Y), y);
+  ran(s, SF_FLEE_MOVE);
+
+  BoundsRegs map;
+  terrain_out_of_bounds(s->w, x, y, &map);
+  s->k->mapped = true;
+  s->k->map_exit = map.exit;
+  c->a = map.a;
+  c->x = x;
+  c->y = y;
+  set_c(c, map.c);
+  ran(s, SF_FLEE_TEST);
+  bool gone = map.c;
+  if (!gone) {
+    ran(s, SF_FLEE_ON);
+    gone = !on_screen(s, x, y);
+    c->x = x;
+    c->y = y;
+    if (!gone) {
+      ran(s, SF_FLEE_STAYS);
+      return true;
+    }
+    ran(s, SF_FLEE_TEST);
+  }
+  PORT_COVER(seeker_gone);
+  ran(s, SF_TAKEN);
+  const uint16_t ended = (uint16_t)(field(s, SEEKER_DP_ENDED) - 1);
+  set_field(s, SEEKER_DP_ENDED, ended);
+  set_nz16(c, ended);
+  ran(s, SF_FLEE_GONE);
+  return true;
+}
+
 // The loop after a state's `RTS`: its end, or the sleep.
 static bool frame_end(Seeker* s) {
   PortCpu* c = s->c;
@@ -889,6 +985,9 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
     case SEEKER_STATE_FIRE:
       if (!fire(&s)) return false;
       break;
+    case SEEKER_STATE_FLEE:
+      if (!flee(&s)) return false;
+      break;
     case SEEKER_STATE_LAND:
       // A is what the dispatch's `DEC` left.
       PORT_COVER(seeker_landing);
@@ -930,10 +1029,23 @@ bool seeker_struck_shown(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
   c->a = field(&s, SEEKER_DP_STRENGTH);
   set_nz16(c, c->a);
   ran(&s, SF_RESET_ALIVE);
-  if (c->a & 0x8000u) return false;  // `JMP $EA7E`: its end
-  PORT_COVER(seeker_struck_shown);
-  ran(&s, SF_TAKEN);
-  ran(&s, SF_RTS);
+  if (c->a & 0x8000u) {
+    // `JMP $EA7E`: its strength is spent, and it flies off from the next
+    // frame, a way from one to eight by a draw. Its `RTS` goes where the
+    // other would have.
+    PORT_COVER(seeker_spent);
+    set_field(&s, SEEKER_DP_STATE, SEEKER_STATE_FLEE);
+    ran(&s, SF_SPENT);
+    draw(&s);
+    c->a = (uint16_t)((c->a & SEEKER_FLEE_WAY_MASK) + 1);
+    set_nz16(c, c->a);
+    set_field(&s, SEEKER_DP_WAY, c->a);
+    ran(&s, SF_SPENT_WAY);
+  } else {
+    PORT_COVER(seeker_struck_shown);
+    ran(&s, SF_TAKEN);
+    ran(&s, SF_RTS);
+  }
   // Back in the state, after its `JSR $EB13`, with the loop's return under;
   // or, struck darting, in the loop.
   const uint16_t back = pull16(w, c);

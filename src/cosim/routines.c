@@ -9630,6 +9630,10 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_CHAINSAW_SIDE] = {136, 12, 1},
     [TS_CHAINSAW_COUNTED] = {224, 20, 1},
     [TS_ZOMBIE_FREED] = {110, 12, 0},
+    [TS_WOLF_COUNTED] = {218, 20, 1},
+    [TS_WOLF_LAST] = {18, 3, 0},
+    [TS_SEEKER_COUNTED] = {192, 15, 1},
+    [TS_SEEKER_SIDE_COUNTED] = {62, 3, 0},
     [TS_FISH_FATE] = {30, 4, 0},
     [TS_SQUARE_MADE] = {654, 53, 2},
     [TS_SQUARE_KEPT] = {46, 5, 1},
@@ -9825,7 +9829,9 @@ static const uint32_t TS_EXITS_ENDS[] = {
     WEREWOLF_SECOND_FREE_PC,    WEREWOLF_SCORED_PC,
     CHAINSAW_UNHANDLED_CALL_PC, CHAINSAW_SCORED_CALL_PC,
     CHAINSAW_LAST_PICTURES_CALL_PC, ZOMBIE_FREE_CALL_PC,
-    ZOMBIE_RTL_PC};
+    ZOMBIE_RTL_PC,              CLONE_FREE_CALL_PC,
+    CLONE_RTL_PC,               WEREWOLF_COUNTED_SOUND_PC,
+    WEREWOLF_LAST_PICTURES_CALL_PC, SEEKER_COUNTED_END_PC};
 static const uint32_t TS_EXITS_BOLT[] = {BOLT_SOUND_CALL_PC, BOLT_ALLOC_PC,
                                          BOLT_SLEEP_PC};
 static const uint32_t TS_EXITS_PAUSE[] = {PAUSE_HELD_PC, PAUSE_VOLUME_UP_CALL_PC,
@@ -12758,6 +12764,20 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_HIDE_HANDLER] = {84, 8, 0},
     [SF_HIDE] = {162, 17, 1},
     [SF_BACK] = {480, 42, 7},
+    [SF_SPENT] = {18 + 100, 3 + 9, 1},
+    [SF_SPENT_WAY] = {98, 7, 1},
+    [SF_FLEE_CALL] = {40, 3, 0},
+    [SF_FLEE_MOVE] = {490, 41, 8},
+    [SF_FLEE_TEST] = {12, 2, 0},
+    [SF_FLEE_ON] = {96, 7, 2},
+    [SF_FLEE_STAYS] = {52, 3, 0},
+    [SF_FLEE_GONE] = {90, 3, 1},
+    [SF_EDGE_LEFT] = {88, 10, 0},
+    [SF_EDGE_RIGHT] = {104, 11, 1},
+    [SF_EDGE_TOP] = {58, 6, 0},
+    [SF_EDGE_BOTTOM] = {104, 11, 1},
+    [SF_EDGE_IN] = {52, 2, 0},
+    [SF_EDGE_OUT] = {52, 2, 0},
 };
 
 // The records it reads are in low WRAM, and circling, the place it circles
@@ -13697,6 +13717,12 @@ static bool accepts_password_check(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->db == PASSWORD_BANK;
 }
 
+// It sets its own data bank.
+static bool accepts_password_write(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in);
+}
+
 static void shim_password_check(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   PortCpu c;
@@ -13713,6 +13739,23 @@ static void shim_password_check(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t PASSWORD_CHECK_EXITS[] = {
     PASSWORD_CHEAT_RTL_PC, PASSWORD_NO_LEVEL_RTL_PC, PASSWORD_NO_COUNT_RTL_PC,
     PASSWORD_CHECK_RTL_PC};
+
+// $82:B0DE  a password written. `tools/cycles816.py --db=82 --same-page`,
+// to the `RTL`; a table read that crosses a page is six more.
+static const CosimRun PW_WRITE_RUN = {1096, 117, 0};
+static const CosimRun PW_WRITE_CROSSED = {6, 0, 0};
+
+static void shim_password_write(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const int crossed = password_write(w, rom, &c);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PW_WRITE_RUN, 1);
+  run_add(&run, &PW_WRITE_CROSSED, crossed);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
 
 // ---------------------------------------------------------------------------
 // Five loops that fade a screen -- see `port/dim.h`
@@ -25117,6 +25160,11 @@ static const CosimRun LEVEL_END_RUN_COST[LEVEL_END_COST_COUNT] = {
     [LEVEL_END_RUN_C338] = {40, 3, 0},  // JSR
     [LEVEL_END_RUN_C33B] = {18, 3, 0},  // LDA
     [LEVEL_END_RUN_C342] = {18, 3, 0},  // JMP
+    [LEVEL_END_RUN_C3B9] = {110, 12, 0},  // LDA : CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_C3C5] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C3CA] = {150, 15, 0},  // INC : LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C3D9] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C3DE] = {168, 18, 0},  // INC : LDY : LDX : LDA : ORA : JSR
     [LEVEL_END_RUN_C499] = {64, 8, 0},  // LDA : CMP : BCC
     [LEVEL_END_RUN_C4A1] = {94, 12, 0},  // LDY : LDX : LDA : JSR
     [LEVEL_END_RUN_C4AD] = {64, 8, 0},  // LDA : CMP : BCC
@@ -25126,6 +25174,63 @@ static const CosimRun LEVEL_END_RUN_COST[LEVEL_END_COST_COUNT] = {
     [LEVEL_END_RUN_C57C] = {12, 2, 0},  // BCC
     [LEVEL_END_RUN_C57E] = {72, 12, 0},  // LDY : LDX : LDA : JMP
     [LEVEL_END_RUN_C58A] = {90, 15, 0},  // LDY : LDX : LDA : ORA : JMP
+    [LEVEL_END_RUN_C641] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C649] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C64E] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C65A] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C65F] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_C717] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C71C] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C724] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C730] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C735] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C73D] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_C7F3] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C7F8] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C800] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C80C] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C811] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C819] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_C8D1] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C8D6] = {46, 5, 0},  // LDA : BNE
+    [LEVEL_END_RUN_C8DB] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C8E7] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C8EC] = {46, 5, 0},  // LDA : BNE
+    [LEVEL_END_RUN_C8F1] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_C9A9] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C9AE] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C9B6] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_C9C2] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_C9C7] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_C9CF] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CA87] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CA8C] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_CA94] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CAA0] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CAA5] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_CAAD] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CB65] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CB6A] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_CB72] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CB7E] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CB83] = {64, 8, 0},  // LDA : CMP : BCC
+    [LEVEL_END_RUN_CB8B] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CC43] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CC48] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CC4D] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CC56] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CC62] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CC67] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CC6C] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CC75] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CD2D] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CD32] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CD37] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CD40] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CD4C] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CD51] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CD56] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CD5F] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
     [LEVEL_END_RUN_CE17] = {46, 5, 0},  // LDA : BEQ
     [LEVEL_END_RUN_CE1C] = {46, 5, 0},  // LDA : BEQ
     [LEVEL_END_RUN_CE21] = {76, 9, 0},  // CLC : ADC : CMP : BCC
@@ -25134,6 +25239,14 @@ static const CosimRun LEVEL_END_RUN_COST[LEVEL_END_COST_COUNT] = {
     [LEVEL_END_RUN_CE3B] = {46, 5, 0},  // LDA : BEQ
     [LEVEL_END_RUN_CE40] = {76, 9, 0},  // CLC : ADC : CMP : BCC
     [LEVEL_END_RUN_CE49] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
+    [LEVEL_END_RUN_CF01] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CF06] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CF0B] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CF14] = {94, 12, 0},  // LDY : LDX : LDA : JSR
+    [LEVEL_END_RUN_CF20] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CF25] = {46, 5, 0},  // LDA : BEQ
+    [LEVEL_END_RUN_CF2A] = {76, 9, 0},  // CLC : ADC : CMP : BCC
+    [LEVEL_END_RUN_CF33] = {112, 15, 0},  // LDY : LDX : LDA : ORA : JSR
     [LEVEL_END_RUN_CFEB] = {46, 5, 0},  // LDA : BEQ
     [LEVEL_END_RUN_CFF0] = {92, 9, 0},  // LDA : CLC : ADC : BEQ
     [LEVEL_END_RUN_CFF9] = {94, 12, 0},  // LDY : LDX : LDA : JSR
@@ -34274,6 +34387,17 @@ static const CosimRoutine ROUTINES[] = {
         // Through the pointer in the screen's table, by a `JML`.
         .uncalled = true,
         .cycles = 14000,
+    },
+    // ...and one written, after every fourth level.
+    {
+        .name = "password_write",
+        .symbol = "$82:B0DE",
+        .entry = PASSWORD_WRITE_PC,
+        .ret_op = PASSWORD_WRITE_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_password_write,
+        .accepts = accepts_password_write,
+        .cycles = 1200,
     },
     // Five loops that fade a screen: see `port/dim.h`.
 #define DIM_ENTRY(n, sym, loop, exit_list)                                    \

@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
             "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
             "       [--watch addr[,first[,last[,step]]]]...\n"
             "       [--save frame,file] [--load file]\n"
-            "       [--poke frame[+]:addr=value[.b]]... [--level n]\n"
+            "       [--poke frame[+|-last]:addr=value[.b]]... [--level n]\n"
             "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
             "       [--widescreen off|16:9|16:10|21:9] [--flashing-radar]\n"
             "       [--renderer native|emulated|check]\n"

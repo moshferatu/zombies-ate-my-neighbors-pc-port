@@ -326,6 +326,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       const uint16_t at = page(w, c, PLAYER_OUT_DP_INVENTORY);
       return at < 0x1f00 && (c->db < 0x40 || (c->db >= 0x80 && c->db < 0xc0));
     }
+    case TS_NEEDS_WEREWOLF_COUNTED:
+      return page(w, c, WEREWOLF_DP_RECORD) < 0x1f00;
     case TS_NEEDS_ZOMBIE_FREED:
       // Less than its weight, and the ROM goes round a `BMI` for good.
       return ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - ZOMBIE_8ED5_LOAD) & 0x8000u) == 0;
@@ -2845,23 +2847,84 @@ void chainsaw_scored(Wram* w, const Rom* rom, PortCpu* c,
 }
 
 // `$81:8EF0`: a zombie nobody killed, or one paid for: its record freed.
+// The hunting clone's, `$81:8F70`, is the same.
 void zombie_unscored(Wram* w, const Rom* rom, PortCpu* c,
                      ThreadStretchWork* k) {
   (void)rom;
+  const bool clone = c->pc == CLONE_UNSCORED_PC;
   lda(c, page(w, c, ZOMBIE_DP_RECORD));
   ran(k, TS_LDA_DP);
-  c->pc = ZOMBIE_FREE_CALL_PC;
+  c->pc = clone ? CLONE_FREE_CALL_PC : ZOMBIE_FREE_CALL_PC;
 }
 
-// `$81:8EF6`: and its weight given back, to the thread's `RTL`.
+// `$81:8EF6`, or `$81:8F76`: and its weight given back, to the thread's
+// `RTL`.
 void zombie_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
-  PORT_COVER(zombie_freed);
+  const bool clone = c->pc == CLONE_FREED_PC;
+  PORT_COVER_IF(clone, clone_freed, zombie_freed);
   set_c(c, true);
   lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), ZOMBIE_8ED5_LOAD));
   wram_w16(w, W_SPAWN_LOAD, c->a);
   ran(k, TS_ZOMBIE_FREED);
-  c->pc = ZOMBIE_RTL_PC;
+  c->pc = clone ? CLONE_RTL_PC : ZOMBIE_RTL_PC;
+}
+
+// `$81:AC48`: a werewolf a player killed, after it is paid for: one more
+// killed, its record touched by nothing and its pictures' bank set, and a
+// sound.
+void werewolf_counted(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(werewolf_counted);
+  count(w, c, W_WEREWOLVES_KILLED, 1);
+  const uint16_t record = page(w, c, WEREWOLF_DP_RECORD);
+  ldy(c, record);
+  lda(c, 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), c->a);
+  lda(c, WEREWOLF_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), c->a);
+  lda(c, WEREWOLF_SFX);
+  ran(k, TS_WOLF_COUNTED);
+  c->pc = WEREWOLF_COUNTED_SOUND_PC;
+}
+
+// `$81:AC60`: ...and its last pictures.
+void werewolf_heard(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, WEREWOLF_LAST_PICTURES);
+  ran(k, TS_WOLF_LAST);
+  c->pc = WEREWOLF_LAST_PICTURES_CALL_PC;
+}
+
+// `$82:EF66`: the seeker a player killed, after it is paid for: one more
+// killed, and one more by the side that killed it, as `$80:9D6A` finds the
+// side; on to its end.
+void seeker_counted(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(seeker_counted);
+  count(w, c, W_SEEKERS_KILLED, 1);
+  // `LDA $34 : AND #$8000 : ASL A : ROL A : ROL A`: bit 15, doubled.
+  const bool side_b = (page(w, c, SEEKER_DP_KILLER) & 0x8000u) != 0;
+  set_c(c, false);
+  lda(c, side_b ? 2 : 0);
+  ran(k, TS_SEEKER_COUNTED);
+  ldx(c, 0);
+  cmp16(c, c->a, wram_r16(w, W_SCORE_SLOT_SIDE));
+  ran(k, TS_KILLER_SIDE);
+  if (c->a == wram_r16(w, W_SCORE_SLOT_SIDE)) {
+    ran(k, TS_TAKEN);
+  } else {
+    ldx(c, 2);
+    ran(k, TS_KILLER_OTHER);
+  }
+  ran(k, TS_RTL);
+  count(w, c, (uint16_t)(W_SEEKER_KILLS_BY_SIDE + c->x), 1);
+  ran(k, TS_SEEKER_SIDE_COUNTED);
+  c->pc = SEEKER_COUNTED_END_PC;
 }
 
 // `$81:E4C1`: dead, and told of nothing more.

@@ -1,5 +1,9 @@
 // The thing in level 37 that comes at a player.
 //
+// It is drawn caped, and a player's kill of it counts in the tally VAMPIRE
+// DESTROYED pays for (`$1FEC`, `port/level_end.h`), so it is the game's
+// vampire. Its kill is `ts_seeker_counted`, `port/thread_stretches.h`.
+//
 // Its thread sleeps at `$82:EF4B` for as many frames as `$2C` says, and then
 // runs the state `$16` names. A frame of that is here, for eleven states:
 //
@@ -29,6 +33,9 @@
 //             and a puff begins a pixel below it.
 //   $82:EE0E  It fires: pictures the way it faces, then trackers.
 //   $82:EA35  It has landed from the swoop.
+//   $82:EA8E  Its strength spent, it flies off four pixels a frame the way
+//             it drew, until it is off the level or off the screen, and
+//             then its loop ends and it is paid for.
 //
 // The third of those goes on to the dart on thirty draws in 256. The fourth
 // fires on thirty-five.
@@ -118,6 +125,15 @@
 #define SEEKER_STATE_PLACE 0xebcfu
 #define SEEKER_STATE_FIRE 0xee0eu
 #define SEEKER_STATE_LAND 0xea35u
+#define SEEKER_STATE_FLEE 0xea8eu
+#define SEEKER_FLEE_STEPS 0x82eaefu  // a step across and down for each way, by 4
+#define SEEKER_FLEE_WAYS 9         // the first of which is none
+#define SEEKER_FLEE_WAY_MASK 0x0007  // a draw's way, less one
+#define W_SEEKER_CAMERA_X 0x1b6au
+#define W_SEEKER_CAMERA_Y 0x1b6cu
+#define SEEKER_SCREEN_LEFT 0x0004   // what it may be left of the screen by
+#define SEEKER_SCREEN_WIDE 0x0144
+#define SEEKER_SCREEN_HIGH 0x0100
 // Where each of the four leaves, and what it leaves for.
 #define SEEKER_LAND_PC 0x82ea35u         // the state itself
 #define SEEKER_FIRE_CALL_PC 0x82ee17u    // `JSL pictures_resume`
@@ -272,6 +288,20 @@ enum {
   SF_FACE_CALL,     // JSR $EB13
   SF_WATCH_ON,      // JSL, CMP : BCS
   SF_DART_LOST,     // $ED43-$ED50, the `JMP $EF03` too
+  SF_SPENT,         // JMP $EA7E, and $EA7E-$EA86 with the `JSL`
+  SF_SPENT_WAY,     // $EA87-$EA8D, to the `RTS`
+  SF_FLEE_CALL,     // JSR $E807
+  SF_FLEE_MOVE,     // $EA91-$EAB5, the `JSL` too
+  SF_FLEE_TEST,     // BCS, at either place
+  SF_FLEE_ON,       // LDX $0E : LDY $10 : JSR $EAC5
+  SF_FLEE_STAYS,    // BCS : RTS, not taken
+  SF_FLEE_GONE,     // DEC $2E : RTS
+  SF_EDGE_LEFT,     // $EAC5-$EACE
+  SF_EDGE_RIGHT,    // $EACF-$EAD9
+  SF_EDGE_TOP,      // $EADA-$EADF
+  SF_EDGE_BOTTOM,   // $EAE0-$EAEA
+  SF_EDGE_IN,       // CLC : RTS
+  SF_EDGE_OUT,      // SEC : RTS
   SF_BLOCK_COUNT
 };
 

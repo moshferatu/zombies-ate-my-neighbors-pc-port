@@ -29,7 +29,24 @@
 //               some it waits for a pad there and pays nothing
 //
 // `$82:CE17` pays 2,000 for two Frankenstein's monsters killed (their tally
-// is `port/frankenstein.h`'s). A bonus is paid by `$82:D774`: its points added
+// is `port/frankenstein.h`'s), and eleven more handlers pay for what a
+// tally of the level's says, each by its words:
+//
+//     $82:C3B9  1,000  TEN CHEERLEADER BONUS: ten saved between the two,
+//                      which also sets `$1FF0` for the level's own bonus
+//     $82:C641  2,000  MASSIVE DESTRUCTION: `$1FC2`, one for both, at 50
+//     $82:C717  5,000  BONUS FOR PASS COMPLETION: `$1FC4` at ten
+//     $82:C7F3  1,000  WEED CUTTING BONUS: `$1FC8` at 300
+//     $82:C8D1  1,000  NO BAZOOKA FIRED BONUS: `$1FCC` at nought
+//     $82:C9A9  1,000  MARTIAN BUBBLED BONUS: `$1FDC` at ten
+//     $82:CA87  1,000  MONSTER FROZEN BONUS: `$1FE0` at 40, in no level's list
+//     $82:CB65  1,000  EXTERMINATION BONUS: `$1FD4` at ten
+//     $82:CC43  5,000  CHAINSAW BEGONE: `$1FD0`, if not nought, and the
+//                      other player's, at seven
+//     $82:CD2D  1,000  FISH FRY BONUS: `$1FD8` likewise, at ten
+//     $82:CF01  9,900  VAMPIRE DESTROYED: `$1FEC` likewise, at two
+//
+// Each tally is a word a player, the second player's two bytes on. A bonus is paid by `$82:D774`: its points added
 // to what the score is counting up to, a sound, and its words flashed three
 // times. The score counts up a hundred at a time after each, a sound each.
 //
@@ -42,11 +59,11 @@
 // and it waits for a pad. Otherwise it waits three seconds or for a pad.
 // Then it fades out.
 //
-// Of the bonus handlers, five are ported: those of `$82:C499`, `$82:C56B`,
-// `$82:CE17`, `$82:CFEB` and `$82:D0CB`, which are the ones the sessions
-// reach. They are called by `JSR ($C346,X)`, which the harness does not
-// make, so a stretch that would call another is turned down and the 65816
-// runs it.
+// All sixteen bonus handlers are ported. They are called by `JSR
+// ($C346,X)`, which the harness does not make, so a stretch is turned down
+// if the record lists an id that is not one of them. The eleven above are
+// one shape with four ways of testing a tally, and are one routine and a
+// table here.
 //
 // **Written as blocks.** Each block runs from an address of the ROM's to
 // the next it goes to: an address after a branch or a `JSR`, or one an
@@ -322,6 +339,11 @@
   X(C338, 0x82c33bu) \
   X(C33B, 0x82c33eu) \
   X(C342, 0x82c345u) \
+  X(C3B9, 0x82c3c5u) \
+  X(C3C5, 0x82c3cau) \
+  X(C3CA, 0x82c3d9u) \
+  X(C3D9, 0x82c3deu) \
+  X(C3DE, 0x82c3f0u) \
   X(C499, 0x82c4a1u) \
   X(C4A1, 0x82c4adu) \
   X(C4AD, 0x82c4b5u) \
@@ -331,6 +353,63 @@
   X(C57C, 0x82c57eu) \
   X(C57E, 0x82c58au) \
   X(C58A, 0x82c599u) \
+  X(C641, 0x82c649u) \
+  X(C649, 0x82c64eu) \
+  X(C64E, 0x82c65au) \
+  X(C65A, 0x82c65fu) \
+  X(C65F, 0x82c66eu) \
+  X(C717, 0x82c71cu) \
+  X(C71C, 0x82c724u) \
+  X(C724, 0x82c730u) \
+  X(C730, 0x82c735u) \
+  X(C735, 0x82c73du) \
+  X(C73D, 0x82c74cu) \
+  X(C7F3, 0x82c7f8u) \
+  X(C7F8, 0x82c800u) \
+  X(C800, 0x82c80cu) \
+  X(C80C, 0x82c811u) \
+  X(C811, 0x82c819u) \
+  X(C819, 0x82c828u) \
+  X(C8D1, 0x82c8d6u) \
+  X(C8D6, 0x82c8dbu) \
+  X(C8DB, 0x82c8e7u) \
+  X(C8E7, 0x82c8ecu) \
+  X(C8EC, 0x82c8f1u) \
+  X(C8F1, 0x82c900u) \
+  X(C9A9, 0x82c9aeu) \
+  X(C9AE, 0x82c9b6u) \
+  X(C9B6, 0x82c9c2u) \
+  X(C9C2, 0x82c9c7u) \
+  X(C9C7, 0x82c9cfu) \
+  X(C9CF, 0x82c9deu) \
+  X(CA87, 0x82ca8cu) \
+  X(CA8C, 0x82ca94u) \
+  X(CA94, 0x82caa0u) \
+  X(CAA0, 0x82caa5u) \
+  X(CAA5, 0x82caadu) \
+  X(CAAD, 0x82cabcu) \
+  X(CB65, 0x82cb6au) \
+  X(CB6A, 0x82cb72u) \
+  X(CB72, 0x82cb7eu) \
+  X(CB7E, 0x82cb83u) \
+  X(CB83, 0x82cb8bu) \
+  X(CB8B, 0x82cb9au) \
+  X(CC43, 0x82cc48u) \
+  X(CC48, 0x82cc4du) \
+  X(CC4D, 0x82cc56u) \
+  X(CC56, 0x82cc62u) \
+  X(CC62, 0x82cc67u) \
+  X(CC67, 0x82cc6cu) \
+  X(CC6C, 0x82cc75u) \
+  X(CC75, 0x82cc84u) \
+  X(CD2D, 0x82cd32u) \
+  X(CD32, 0x82cd37u) \
+  X(CD37, 0x82cd40u) \
+  X(CD40, 0x82cd4cu) \
+  X(CD4C, 0x82cd51u) \
+  X(CD51, 0x82cd56u) \
+  X(CD56, 0x82cd5fu) \
+  X(CD5F, 0x82cd6eu) \
   X(CE17, 0x82ce1cu) \
   X(CE1C, 0x82ce21u) \
   X(CE21, 0x82ce2au) \
@@ -339,6 +418,14 @@
   X(CE3B, 0x82ce40u) \
   X(CE40, 0x82ce49u) \
   X(CE49, 0x82ce58u) \
+  X(CF01, 0x82cf06u) \
+  X(CF06, 0x82cf0bu) \
+  X(CF0B, 0x82cf14u) \
+  X(CF14, 0x82cf20u) \
+  X(CF20, 0x82cf25u) \
+  X(CF25, 0x82cf2au) \
+  X(CF2A, 0x82cf33u) \
+  X(CF33, 0x82cf42u) \
   X(CFEB, 0x82cff0u) \
   X(CFF0, 0x82cff9u) \
   X(CFF9, 0x82d005u) \

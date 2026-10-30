@@ -1,4 +1,4 @@
-// A password checked.
+// A password checked, and one written.
 //
 // `$82:B018` is what the password screen calls when the player is done:
 // four letters at `$7E:1EA0` in, and a level and a count of neighbours out.
@@ -25,6 +25,19 @@
 // Its contract with the ROM: all of it, from its first instruction to
 // whichever of its four `RTL`s it comes to, which is the ROM's to make.
 //
+// **A password written.** `$82:B0DE` is the other way: the screen after a
+// level calls it every fourth level (`port/level_end.h`), and it spells the
+// password for the level at `$1E7C` and the neighbours left, `$1F9C` and
+// `$1F9E` added, at `$7E:1EA0`, the same four letters `$82:B018` reads,
+// with a nought after them at `$1EA4`. The level's pair is the letters at
+// `$82:B14A` by the level halved, less two; the count's is at `$82:B164` by
+// the count less one, doubled, moved along by the level's two steps at
+// `$82:B18D`. The count is added and taken from in decimal, and the tables
+// are read through 8-bit indexes, so a level or a count the game never has
+// still spells something, which is the ROM's. It is straight code to its
+// `RTL`, and costs six cycles more for each table read that crosses a
+// page.
+//
 // Port code: libc only.
 
 #ifndef PORT_PASSWORD_CHECK_H
@@ -43,6 +56,8 @@
 #define PASSWORD_NO_LEVEL_RTL_PC 0x82b076u
 #define PASSWORD_NO_COUNT_RTL_PC 0x82b0bau
 #define PASSWORD_CHECK_RTL_PC 0x82b0ddu
+#define PASSWORD_WRITE_PC 0x82b0deu
+#define PASSWORD_WRITE_RTL_PC 0x82b149u
 
 #define PASSWORD_BANK 0x82
 #define PASSWORD_CHEAT_FIRST 0x4342u   // its first two letters, as the word
@@ -87,5 +102,9 @@ typedef struct {
 
 PasswordFate password_check(Wram* w, const Rom* rom, PortCpu* c,
                             PasswordWork* k);
+
+// `$82:B0DE` to its `RTL`, with the data bank pushed and pulled as the ROM
+// does. Hands back how many of its table reads crossed a page.
+int password_write(Wram* w, const Rom* rom, PortCpu* c);
 
 #endif

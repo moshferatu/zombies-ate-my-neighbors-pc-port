@@ -319,6 +319,65 @@ pays a bonus or sees the password. Three sessions more poke what it counts
 as it begins, under `level21-exit.zmv`: ten saved and a life due on level
 20, eleven saved and five lives on level 24, four saved on level 29.
 
+**The rest of the bonuses and the password, 2026-10-29.** The other eleven
+bonus handlers are ported. Their words name them: TEN CHEERLEADER, MASSIVE
+DESTRUCTION, PASS COMPLETION, WEED CUTTING, NO BAZOOKA FIRED, MARTIAN
+BUBBLED, MONSTER FROZEN, EXTERMINATION, CHAINSAW BEGONE, FISH FRY and
+VAMPIRE DESTROYED. Each tests a tally of the level's, a word a player, in
+one of four ways, and pays by `$82:D774` as the others do, so they are one
+routine and a row each (`port/level_end.h`). No level lists MONSTER
+FROZEN. The screen reads a level's list through the record on the main
+thread's page, `$0C10`, so seven sessions more put another level's record
+there as the screen begins and poke the tallies its list pays for: every
+other bonus is paid in one of them, three for both players.
+`password_write`, `$82:B0DE`, is ported too (`port/password_check.h`): the
+four letters `$82:B018` reads, from the same tables. In all ten sessions
+of the screen the port matches the ROM call for call.
+
+**Three kills paid for, the same day.** The map's core held what a
+werewolf, the seeker (`port/seeker.h`) and the hunting clone do after a
+player kills one and `score_add` comes back. The werewolf counts the kill
+at `$1F80`, plays a sound and its last pictures. The seeker counts it at
+`$1F82`, and once more by the killer's side at `$1FEC`, which is the tally
+VAMPIRE DESTROYED pays for; and on the screen it is drawn caped, as a
+vampire. The clone's end is the zombie's at other addresses. Each is a
+stretch in `port/thread_stretches.h`, beside the chainsaw maniac's, which
+is the same work.
+
+No session killed any of the three, and holding fire on their levels did
+not either: they come at the player from the side, or from above, and the
+player of `hold-y.zmv` fires down. So three sessions more, in
+`code_map_survey.py`. The seeker of level 48 is held under the firing
+player for fifty frames, its strength poked to nought, and the one hit
+that lands kills it. For that `--poke` takes a last frame now,
+`first-last:addr=value`, since the tools take 32 pokes at most. The
+werewolf there and the hunting clones of level 31 are left as their
+handlers leave them after a fatal hit: the shot's id parked, the health
+under nought. All three kills check against the ROM.
+
+The seeker's session went further than any had: with its strength spent
+it flies off, four pixels a frame the way it drew, until it is off the
+level or off the screen (`$82:EA7E` and `$82:EA8E`). That was the 65816's,
+and is ported now (`port/seeker.h`).
+
+**The map again, the same day**, over 135 sessions:
+
+| | Bytes | Never run in a session |
+|---|---|---|
+| Core | 1,082 | 211 |
+| Guarded | 1,111 | 223 |
+| Ported | 69,472 | 3,370 |
+| Data | 26,116 | |
+| Touched by nothing | 33,291 | |
+
+The game's own run of all 135 has the 65816 executing nothing. Walked with
+only the exits the game saw, the core is 976 bytes, so 106 are behind an
+exit no session took. The guarded bytes are the screen after a level's,
+which a port runs every time: its state is an address it pushes and goes
+to by an `RTS`, and the map's walk of a port's stretch does not follow
+one, so it finds that code only on the way the screen's guard turns down.
+It is the map's to fix.
+
 Not counted yet: what of the 38,097 bytes is code.
 
 ### Step 2. A driver with no CPU

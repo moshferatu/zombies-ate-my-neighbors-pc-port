@@ -14,11 +14,24 @@ movie reaches, by a `--poke`:
     water hits it until it dies;
   * level 48 twice with the player moved beside Frankenstein's monster, which
     wakes it: once moved about by more pokes, near, middling and far, and
-    once firing down at it with three weapons in turn until it dies;
+    once firing down at it with three weapons in turn until it dies; and
+    a third time, after it is dead, with the seeker (the vampire) held
+    under the player's fire for fifty frames and its strength at nought,
+    so that one hit kills it; and a fourth time moved about, with the
+    werewolf that comes out at the end left as a fatal bazooka hit leaves
+    it, so that it dies as a player's kill;
+  * level 31 once more with its three clones, on pages `$0300`, `$0400`
+    and `$0600`, left as a fatal bazooka hit leaves them: the one that only
+    hunts reads it and dies as a player's kill.
   * the screen after level 21 three times more, with what it counts poked
     as it begins: the neighbours saved, a tally two bonuses read, a life
     due, and the level's number, which decides the password and the level's
-    own bonus.
+    own bonus;
+  * the same screen seven times more with another level's record put in
+    the main thread's page as it begins, `$0C10`, so that its list of
+    bonuses is read instead, and the tallies they pay for poked: every
+    bonus but MONSTER FROZEN, which no level lists. Three have the second
+    player playing too.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -74,6 +87,29 @@ ARMED = ['--poke', '1800:130=0460', '--poke', '1800:132=0140',
          '--poke', '1700+:1CBC=0001', '--poke', '1700+:1CCE=0099',
          '--poke', '2300+:1CBC=0002', '--poke', '2300+:1CD0=0099',
          '--poke', '2900+:1CBC=0005', '--poke', '2900+:1CD6=0099']
+# ...and after it is dead, the seeker of the same level, on page `$0300`
+# with its record at `$1A7A`: its strength at nought, and held under the
+# player for fifty frames, at their place and on its record, until a shot
+# hits it. It flies off, and when it is gone it is paid for as a player's
+# kill (`ts_seeker_counted`).
+SEEKER_KILLED = ARMED + ['--poke', '3600:330=0000',
+                         '--poke', '3600+:130=0460', '--poke', '3600+:132=0140',
+                         '--poke', '3600-3650:30E=0460', '--poke', '3600-3650:310=0168',
+                         '--poke', '3600-3650:1A7C=0460', '--poke', '3600-3650:1A80=0168']
+# ...and in `frankenstein_roams`, the werewolf that comes out at about frame
+# 4300 on page `$0700`, as its handler `$81:AC92` leaves it after a hit of
+# id `$61` that kills: the id parked at `$3E`, its health under nought, and
+# its fate stepped down (`ts_werewolf_counted`).
+WEREWOLF_KILLED = ROAM + ['--poke', '4400:73E=0061', '--poke', '4400:73C=FFF0',
+                          '--poke', '4400:710=FFFF']
+# Level 31's clones, as their handler `enemy_9063_collide` leaves them after
+# a hit of id `$61` that kills: the id parked at `$30` and the health at
+# `$22` under nought. Only the one that only hunts reads `$22`, and it ends
+# as a player's kill (`ts_clone_unscored` after `death_pictures`).
+CLONES_KILLED = []
+for page in (0x300, 0x400, 0x600):
+    CLONES_KILLED += ['--poke', '2500:%X=0061' % (page + 0x30),
+                      '--poke', '2500:%X=FFF0' % (page + 0x22)]
 # The screen after level 21 under `level21-exit.zmv` begins at frame 4700.
 # Ten neighbours of kind 8, a UFO tally and a spawn count for two of the
 # level's bonuses, and the next life at nought; then eleven saved and five
@@ -87,6 +123,36 @@ LEVEL_END_PAID = LEVEL_END + ['--poke', '4700:1F9C=000A', '--poke', '4700:1E7C=0
 LEVEL_END_CUT = LEVEL_END + ['--poke', '4700:1F9C=000B', '--poke', '4700:1D4C=0005',
                              '--poke', '4700:1E7C=0018']
 LEVEL_END_FEW = LEVEL_END + ['--poke', '4700:1F9C=0004', '--poke', '4700:1E7C=001D']
+# The bonuses another level's record lists, by its record, and the tallies
+# that pay them; `$1E8A` has the second player playing.
+TALLY_BONUSES = {
+    # TEN CHEERLEADER, ALIEN INVASION, PASS COMPLETION and the level's own.
+    'cheerleaders': ('9804', ['1F9C=0006', '1F9E=0004', '1FC4=000A', '1FC6=000A',
+                              '1E8A=0001']),
+    # Ten saved, MASSIVE DESTRUCTION, NO BAZOOKA FIRED, CHAINSAW BEGONE.
+    'massive': ('93A2', ['1F9C=000A', '1FC2=0032', '1FCC=0000', '1FCE=0001',
+                         '1FD0=0004', '1FD2=0003', '1E8A=0001']),
+    # Ten saved, NO BAZOOKA FIRED turned down, EXTERMINATION.
+    'extermination': ('8965', ['1F9C=000A', '1FCC=0001', '1FD4=000A']),
+    # Ten saved, FISH FRY.
+    'fish_fry': ('B151', ['1F9C=000A', '1FD8=000A']),
+    # Ten saved, VAMPIRE DESTROYED, FRANKENSTEIN DESTROY.
+    'vampire': ('CE21', ['1F9C=000A', '1FEC=0001', '1FEE=0001', '1FE8=0002',
+                         '1E8A=0001']),
+    # ALIEN INVASION and MARTIAN BUBBLED.
+    'martian': ('8D2E', ['1FDC=000A']),
+    # Ten saved, WEED CUTTING.
+    'weed': ('8072', ['1F9C=000A', '1FC8=012C']),
+}
+
+
+def tally_bonus_pokes(record, pokes):
+    out = LEVEL_END + ['--poke', '4700:0C10=' + record]
+    for p in pokes:
+        out += ['--poke', '4700:' + p]
+    return out
+
+
 BOTH_DEAD = ['--poke', '3000+:1CB8=0000', '--poke', '3000+:1CBA=0000',
              '--poke', '3000+:1E72=4321', '--poke', '3000+:1E74=0765',
              '--poke', '3000+:1E76=0000', '--poke', '3000+:1E78=0800']
@@ -117,10 +183,16 @@ def sessions():
     out.append(('bitten_under', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + UNDER))
     out.append(('bitten_above', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + ABOVE))
     out.append(('frankenstein_roams', 'level1.zmv', 4700, ['--level', '48'] + ROAM))
+    out.append(('werewolf_killed', 'level1.zmv', 4700, ['--level', '48'] + WEREWOLF_KILLED))
+    out.append(('clone_killed', 'level1.zmv', 4700, ['--level', '31'] + CLONES_KILLED))
     out.append(('frankenstein_armed', 'hold-y.zmv', 5000, ['--level', '48'] + ARMED))
+    out.append(('seeker_killed', 'hold-y.zmv', 4500, ['--level', '48'] + SEEKER_KILLED))
     out.append(('level_end_paid', 'level21-exit.zmv', 7000, LEVEL_END_PAID))
     out.append(('level_end_cut', 'level21-exit.zmv', 7000, LEVEL_END_CUT))
     out.append(('level_end_few', 'level21-exit.zmv', 7000, LEVEL_END_FEW))
+    for name, (record, pokes) in TALLY_BONUSES.items():
+        out.append(('level_end_' + name, 'level21-exit.zmv', 7000,
+                    tally_bonus_pokes(record, pokes)))
     return out
 
 

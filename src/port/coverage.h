@@ -325,6 +325,7 @@
   X(password_ten,     "password_check",     "...or all ten") \
   X(password_no_level,"password_check",     "the middle two letters are no level's") \
   X(password_no_count,"password_check",     "the outer two are no count's on that level") \
+  X(password_written, "password_write",     "a level's password spelled, after the level") \
   X(dim_darker,       "dim_frame",          "a screen a step darker") \
   X(dim_dark,         "dim_frame",          "...and dark") \
   X(dim_lighter,      "dim_frame",          "a screen a step lighter") \
@@ -1880,6 +1881,17 @@
   X(level_end_ten_saved, "level_end_ticked", "ten saved by a player") \
   X(level_end_frankenstein_bonus, "level_end_ticked", "two or more Frankenstein's monsters killed: FRANKENSTEIN DESTROY BONUS") \
   X(level_end_bonus_cfeb, "level_end_ticked", "the bonus at $82:CFEB: $1FE4 and $1FE6") \
+  X(level_end_ten_cheerleaders, "level_end_ticked", "TEN CHEERLEADER BONUS: ten saved between the two") \
+  X(level_end_massive_destruction, "level_end_ticked", "MASSIVE DESTRUCTION: $1FC2 50 or more") \
+  X(level_end_pass_completion, "level_end_ticked", "BONUS FOR PASS COMPLETION: $1FC4 ten or more") \
+  X(level_end_weed_cutting, "level_end_ticked", "WEED CUTTING BONUS: $1FC8 300 or more") \
+  X(level_end_no_bazooka, "level_end_ticked", "NO BAZOOKA FIRED BONUS: $1FCC nought") \
+  X(level_end_martian_bubbled, "level_end_ticked", "MARTIAN BUBBLED BONUS: $1FDC ten or more") \
+  X(level_end_monster_frozen, "level_end_ticked", "MONSTER FROZEN BONUS: $1FE0 40 or more") \
+  X(level_end_extermination, "level_end_ticked", "EXTERMINATION BONUS: $1FD4 ten or more") \
+  X(level_end_chainsaw_begone, "level_end_ticked", "CHAINSAW BEGONE: $1FD0, with the other's, seven or more") \
+  X(level_end_fish_fry, "level_end_ticked", "FISH FRY BONUS: $1FD8, with the other's, ten or more") \
+  X(level_end_vampire_destroyed, "level_end_ticked", "VAMPIRE DESTROYED: $1FEC, with the other's, two or more") \
   X(level_end_level_bonus, "level_end_ticked", "the level's own bonus, $82:D0CB") \
   X(level_end_level_words, "level_end_ticked", "...with words and a wait for a pad") \
   X(level_end_counts_up, "level_end_ticked", "a score a hundred nearer") \
@@ -1910,6 +1922,12 @@
   X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
   X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \
   X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
+  X(clone_freed, "ts_clone_freed", "...or the hunting clone's") \
+  X(werewolf_counted, "ts_werewolf_counted", "a werewolf a player killed: counted, and its last pictures") \
+  X(seeker_counted, "ts_seeker_counted", "a seeker a player killed: counted, and by the killer's side") \
+  X(seeker_spent, "seeker_struck_shown", "struck with its strength spent: it flies off") \
+  X(seeker_fled, "seeker_frame", "a frame of its flight") \
+  X(seeker_gone, "seeker_frame", "...off the level or the screen: its loop ends") \
   X(fishman_died, "ts_fishman_fate", "a fishman dead: told of nothing more") \
   X(fishman_second_freed, "ts_fishman_unhandled", "...and its second record freed") \
   X(fishman_counted, "ts_fishman_counted", "...counted, by the side that killed it, and heard") \

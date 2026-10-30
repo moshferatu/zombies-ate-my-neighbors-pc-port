@@ -38,14 +38,16 @@
 // than the rest of the corpus makes, and worth more than the nothing that was
 // there before.
 //
-// Spec: `<frame>[+]:<addr>=<value>[.b]`, the frame in decimal and the address
-// and value in hex, because that is how every other flag in these tools reads
-// them. `+` holds the value from that frame on instead of writing it once;
-// `.b` writes one byte instead of a word. The address is a `Wram` offset, so
-// `$7E:xxxx` is `xxxx` and `$7F:xxxx` is `1xxxx`.
+// Spec: `<frame>[+|-last]:<addr>=<value>[.b]`, the frames in decimal and the
+// address and value in hex, because that is how every other flag in these
+// tools reads them. `+` holds the value from that frame on instead of writing
+// it once, and `-last` holds it to that frame and no further; `.b` writes one
+// byte instead of a word. The address is a `Wram` offset, so `$7E:xxxx` is
+// `xxxx` and `$7F:xxxx` is `1xxxx`.
 //
 //   --poke 10350:1CB8=000A      health to ten, once, at frame 10350
 //   --poke 10350+:1CB8=000A     ...and hold it there
+//   --poke 10350-10400:1CB8=000A  ...for fifty frames, then let it go
 //   --poke 10350:1D0C=0004      four keys in hand
 //
 // Port code: libc only, no core dependency. The apply takes the raw WRAM
@@ -66,6 +68,7 @@ typedef struct {
   uint32_t addr;  // a Wram offset: $7E:xxxx is xxxx, $7F:xxxx is 1xxxx
   uint16_t value;
   bool hold;      // write it every frame from `frame` on, not once
+  int last;       // ...to this frame, or for ever if negative
   bool byte;      // one byte rather than a word
 } Poke;
 
@@ -84,6 +87,7 @@ static inline bool poke_parse(PokeList* l, const char* spec) {
   }
   Poke p;
   p.hold = false;
+  p.last = -1;
   p.byte = false;
 
   const char* s = spec;
@@ -98,6 +102,16 @@ static inline bool poke_parse(PokeList* l, const char* spec) {
   if (*s == '+') {
     p.hold = true;
     s++;
+  } else if (*s == '-') {
+    long last = strtol(s + 1, &end, 10);
+    if (end == s + 1 || last < frame) {
+      fprintf(stderr, "error: --poke '%s': wanted a last frame after '-'\n",
+              spec);
+      return false;
+    }
+    p.hold = true;
+    p.last = (int)last;
+    s = end;
   }
   if (*s != ':') {
     fprintf(stderr, "error: --poke '%s': wanted ':' after the frame\n", spec);
@@ -156,7 +170,9 @@ static inline bool poke_parse(PokeList* l, const char* spec) {
 static inline void poke_apply(const PokeList* l, uint8_t* ram, int frame) {
   for (int i = 0; i < l->count; i++) {
     const Poke* p = &l->at[i];
-    if (p->hold ? frame < p->frame : frame != p->frame) continue;
+    if (p->hold ? frame < p->frame || (p->last >= 0 && frame > p->last)
+                : frame != p->frame)
+      continue;
     ram[p->addr & 0x1FFFF] = (uint8_t)p->value;
     if (!p->byte) ram[(p->addr + 1) & 0x1FFFF] = (uint8_t)(p->value >> 8);
   }
@@ -174,9 +190,12 @@ static inline void poke_report(const PokeList* l) {
          l->count, l->count == 1 ? "" : "s");
   for (int i = 0; i < l->count; i++) {
     const Poke* p = &l->at[i];
-    printf("  frame %-6d $7%c:%04X = $%0*X%s\n", p->frame,
+    printf("  frame %-6d $7%c:%04X = $%0*X", p->frame,
            p->addr >= 0x10000 ? 'F' : 'E', (unsigned)(p->addr & 0xFFFF),
-           p->byte ? 2 : 4, p->value, p->hold ? ", held" : "");
+           p->byte ? 2 : 4, p->value);
+    if (p->hold && p->last >= 0) printf(", held to frame %d", p->last);
+    else if (p->hold) printf(", held");
+    printf("\n");
   }
 }
 

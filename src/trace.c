@@ -868,7 +868,7 @@ int main(int argc, char** argv) {
     fprintf(stderr,
             "usage: %s <rom.sfc> [-o dir] [-f frames] [-m movie]\n"
             "          [--trace-reset n] [--trace-nmi frame] [--level n]\n"
-            "          [--poke frame[+]:addr=value[.b]]...\n",
+            "          [--poke frame[+|-last]:addr=value[.b]]...\n",
             argv[0]);
     return 2;
   }

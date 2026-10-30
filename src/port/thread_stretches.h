@@ -1288,6 +1288,25 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define WEREWOLF_SECOND_FREE_PC 0x81ac39u  // `JSL actor_slot_free`
 #define WEREWOLF_SCORED_PC 0x81ac3du       // `port/begin.h`'s
 #define WEREWOLF_DP_SECOND 0x38            // a second record, or `$FFFF`
+// After `score_add`: one more killed, nothing can touch it, a sound, and its
+// last pictures.
+#define WEREWOLF_COUNTED_PC 0x81ac48u
+#define WEREWOLF_COUNTED_SOUND_PC 0x81ac5cu  // `JSL apu_play_sfx`
+#define WEREWOLF_HEARD_PC 0x81ac60u
+#define WEREWOLF_LAST_PICTURES_CALL_PC 0x81ac63u  // `JSL pictures_play`
+#define W_WEREWOLVES_KILLED 0x1f80u
+#define WEREWOLF_DP_RECORD 0x08
+#define WEREWOLF_PICTURE_BANK 0x008f
+#define WEREWOLF_SFX 0x002d
+#define WEREWOLF_LAST_PICTURES 0xac7au
+// The seeker's kill (`port/seeker.h`), after `score_add`: one more killed,
+// and one more by the killer's side, which VAMPIRE DESTROYED pays for
+// (`port/level_end.h`); then its end, `$82:EF78` (`port/begin.h`).
+#define SEEKER_COUNTED_PC 0x82ef66u
+#define SEEKER_COUNTED_END_PC 0x82ef78u
+#define W_SEEKERS_KILLED 0x1f82u
+#define W_SEEKER_KILLS_BY_SIDE 0x1fecu  // a word for each side
+#define SEEKER_DP_KILLER 0x34
 #define CHAINSAW_DEATH_PC 0x819887u      // `port/chainsaw.h`'s frame leaves here
 #define CHAINSAW_UNHANDLED_CALL_PC 0x81988bu
 #define CHAINSAW_UNHANDLED_PC 0x81988fu
@@ -1306,6 +1325,12 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define ZOMBIE_RTL_PC 0x818f02u
 #define ZOMBIE_8ED5_LOAD 0x0018
 #define ZOMBIE_DP_RECORD 0x08
+// The hunting clone's end is the zombie's (`$81:8F55`, `port/clone.h`): the
+// same eleven instructions twice over, at these addresses.
+#define CLONE_UNSCORED_PC 0x818f70u
+#define CLONE_FREE_CALL_PC 0x818f72u
+#define CLONE_FREED_PC 0x818f76u
+#define CLONE_RTL_PC 0x818f82u
 
 #define REST_BEGUN_PC 0x80f354u
 #define REST_SLEEP_PC 0x80f35cu         // `JSL thread_yield`, a tick
@@ -1965,6 +1990,10 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_CHAINSAW_SIDE, 0x81989b, 0x8198a7, 0)  /* the JSL too */ \
   X(TS_CHAINSAW_COUNTED, 0x8198a7, 0x8198bb, 0) \
   X(TS_ZOMBIE_FREED, 0x818ef6, 0x818f02, 0)   /* to the RTL */ \
+  X(TS_WOLF_COUNTED, 0x81ac48, 0x81ac5c, 0) \
+  X(TS_WOLF_LAST, 0x81ac60, 0x81ac63, 0)       /* LDA # */ \
+  X(TS_SEEKER_COUNTED, 0x82ef66, 0x82ef75, 0)  /* the JSL too */ \
+  X(TS_SEEKER_SIDE_COUNTED, 0x82ef75, 0x82ef78, 0) \
   X(TS_EXIT_DOOR_LOOK, 0x82f7a5, 0x82f7b3, 0) \
   X(TS_EXIT_DOOR_ALIVE, 0x82f7b9, 0x82f7c0, 0)     /* LDX : LDA abs,X : BNE */ \
   X(TS_EXIT_DOOR_NOBODY, 0x82f7c0, 0x82f7c2, 0)    /* SEC : RTS */ \
@@ -2173,6 +2202,7 @@ typedef enum {
   TS_NEEDS_EXIT_DOOR_HANDLED,   // the door's record, and the `JSR` to return to
   TS_NEEDS_EXIT_DOOR,           // the door's record
   TS_NEEDS_ZOMBIE_FREED,   // a load to give its weight back from
+  TS_NEEDS_WEREWOLF_COUNTED,  // its record in low WRAM, by `$08`
   TS_NEEDS_PLAYER,          // which player, a small index, on the page
   TS_NEEDS_REST_ENDED,      // ...and a caller other than the slime
   TS_NEEDS_PLAYER_OUT,      // ...and a load to give its weight back from,
@@ -2357,6 +2387,11 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(chainsaw_scored, "$81:989B", CHAINSAW_SCORED_PC, chainsaw_scored, ENDS, TS_NEEDS_RECORD) \
   X(zombie_unscored, "$81:8EF0", ZOMBIE_UNSCORED_PC, zombie_unscored, ENDS, TS_NEEDS_NOTHING) \
   X(zombie_freed, "$81:8EF6", ZOMBIE_FREED_PC, zombie_freed, ENDS, TS_NEEDS_ZOMBIE_FREED) \
+  X(clone_unscored, "$81:8F70", CLONE_UNSCORED_PC, zombie_unscored, ENDS, TS_NEEDS_NOTHING) \
+  X(clone_freed, "$81:8F76", CLONE_FREED_PC, zombie_freed, ENDS, TS_NEEDS_ZOMBIE_FREED) \
+  X(werewolf_counted, "$81:AC48", WEREWOLF_COUNTED_PC, werewolf_counted, ENDS, TS_NEEDS_WEREWOLF_COUNTED) \
+  X(werewolf_heard, "$81:AC60", WEREWOLF_HEARD_PC, werewolf_heard, ENDS, TS_NEEDS_NOTHING) \
+  X(seeker_counted, "$82:EF66", SEEKER_COUNTED_PC, seeker_counted, ENDS, TS_NEEDS_NOTHING) \
   X(fishman_fate, "$81:E4C1", FISHMAN_FATE_PC, fishman_fate, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_unhandled, "$81:E4C9", FISHMAN_UNHANDLED_PC, fishman_unhandled, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_counted, "$81:E4DF", FISHMAN_COUNTED_PC, fishman_counted, FISHMAN_DEATH, TS_NEEDS_RECORD) \
