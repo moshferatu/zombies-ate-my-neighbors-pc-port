@@ -20,8 +20,8 @@ of the ROM is in the repository.
 | 0. A reference emulator in a window | Done |
 | 1. Analysis and the memory map | Done |
 | 2. Assets read from the ROM | Done |
-| 3. The game's code in C, under the harness | Underway. 566 routines |
-| 4. The emulator cut loose | Begun, with the picture. This plan |
+| 3. The game's code in C, under the harness | 1,838 rows. No session meets the 65816 |
+| 4. The emulator cut loose | `zamn.exe` links none of it (2026-10-30). This plan |
 | 5. Widescreen, quick save, pads, cheats, a launcher | Done, ahead of 4 |
 
 The picture is drawn by `src/video`, and `zamn.exe` has no emulated PPU in
@@ -29,21 +29,27 @@ it. `build/zamn_with_ppu` is the same game with one, for the check.
 
 The sound is made by `src/sound` (2026-10-28): the boot loader and the
 game's driver in C, on a DSP of the port's own, exact to the cycle and the
-sample on every movie. `zamn.exe` still links LakeSnes's APU but does not
-use it. See `docs/sound.md`.
+sample on every movie. See `docs/sound.md`.
 
-What `zamn.exe` still links from LakeSnes:
+**`zamn.exe` links nothing of LakeSnes (2026-10-30).** It runs on
+`zamn_machine`, which is the port's own:
 
-| Piece | Lines | What the game uses it for |
+| Piece | In place of | What it is |
 |---|---|---|
-| The 65816, `cpu.c` | 2,478 | Runs what is not ported. Carries control from one port to the next. Is the clock every cost is spent on |
-| Sound, `apu.c` `spc.c` `dsp.c` | 2,462 | Nothing in the game: linked, and left alone since `src/sound` took its place |
-| The console, `snes.c` `snes_other.c` | 863 | The beam, the bus, WRAM, when the NMI falls, the multiplier, the pads' latch |
-| DMA, `dma.c` | 388 | Copies to VRAM, the palette and the sprites. HDMA, a line at a time |
-| States, the cartridge, the pads | 468 | The layout of a saved state, where the ROM is mapped, the buttons |
+| `src/cpu/none.c` | `cpu.c` | The registers, the reset and the wait for an interrupt. It runs no instruction: if the game reaches one no port runs, it says where and stops |
+| `src/machine/console.c` | `snes.c`, `snes_other.c` | The clock, the bus, WRAM, the console's registers, the NMI, the pads read each frame, saved states |
+| `src/machine/dma.c` | `dma.c` | DMA, and HDMA a line at a time |
+| `src/machine/cart.c` | `cart.c` | The ROM loaded and mapped: LoROM, NTSC |
+| `src/machine/pads.c` | `input.c` | The pads' shift registers |
+| `src/machine/state.c` | `statehandler.c` | A saved state written and read a field at a time |
+| nothing | `apu.c`, `spc.c`, `dsp.c` | The port's sound is attached before the console is reset |
 
-The 65816 is the hub. The console, DMA and the states cannot leave before
-it. Sound is separate, and can be done at any time.
+Each keeps LakeSnes's functions and structures, since the harness, the
+picture and the sound share them with the test programs, and its layout of
+a saved state, so a quick save loads in either build. LakeSnes's headers
+are all that is left of it in the game. `zamn_with_ppu` and the test
+programs still link LakeSnes, and `--stock` and `-r`, which run some of
+the game on the 65816, are in `zamn_with_ppu` alone.
 
 ## The survey of 2026-10-09
 
@@ -626,9 +632,37 @@ first tile reaction, and nine rows serve what a level's beginning calls.
 The places are 749 and the core executes 324,045 instructions over the
 survey.
 
-What is left of this step: registers of the driver's own in place of the
-core's, the clock, and a stop that names the address in place of the
-core.
+**No 65816 in the game, 2026-10-30.** `zamn.exe` is linked with
+`src/cpu/none.c` where LakeSnes's `cpu.c` was: the registers, the reset's
+bus reads and vector, and the wait for an interrupt, in the same layout of a
+saved state, and no instruction. If the game reaches one that no port runs
+it says the address, shows it in a box when a player is at the window, and
+stops. The harness is the driver; its clock is the console's
+(`src/machine/console.c`, step 3). `--stock` and `-r` need the 65816 and are
+in `zamn_with_ppu` alone.
+
+The first build of it stopped at 16:9 on `$81:99C9`. Widescreen moves thirty
+words in the cartridge, all of them in ported code, and the game then takes
+ways the corpus at the console's width never did; the 65816 had been running
+them quietly. Seven ports also kept a stock word as a number, so in their
+code the patch did nothing. `zamn_cosim verify --widescreen` now checks the
+ports against the patched cartridge (`docs/cosim.md`), the seven read their
+words, and every way the sweep found is ported:
+
+| Check | Result |
+|---|---|
+| The corpus, `verify` | 128,184,852 calls, 0 diverged |
+| The corpus at 16:9, 16:10 and 21:9, `verify --widescreen` | 377,044,607 calls; one routine's answers differ, below |
+| The corpus at the three widths in the game | 168 sessions, the 65816 executing nothing in each |
+| The picture at the console's width, 16:9 and 21:9 | 78,360,128 lines each, the same in `zamn.exe` as with the PPU |
+| A quick save from either build, loaded in the other | The same bytes, the same picture to the end |
+
+Not settled: at 21:9 only, where the sprite cull is widened at a map's
+end, `sprite_build_oam` leaves a scratch byte at `$3A` one from the ROM's and
+is priced wrong on some passes, in six of the 56 movies. Its picture is the
+same in both builds, and it turns nothing down. A blast that tells an
+ordinary enemy of a hit it dies of or survives is priced at the row's
+figure, since `$81:8888`'s deep exits have no table.
 
 ### Step 3. A machine with no console
 
@@ -641,6 +675,20 @@ Small, by the survey.
 - No IRQ, no divider, no manual pad read, no `$2180`.
 
 Then `zamn.exe` is `main_sdl.c` on the driver and this, with the sound.
+
+**Done in LakeSnes's shape, 2026-10-30.** `src/machine` is the console the
+game runs on: the clock and the bus (`console.c`), DMA and HDMA (`dma.c`),
+the cartridge (`cart.c`, LoROM and NTSC, anything else refused as it is
+loaded), the pads (`pads.c`) and a saved state's writer (`state.c`). Each
+keeps the functions and structures of the file it replaces, because the
+harness, `src/video` and `src/sound` are shared with the test programs,
+which still run LakeSnes beside the port. There is no sound chip in it: the
+port's sound is attached before the console is reset. `zamn_machine` is
+these as object files, and `zamn.exe` links no LakeSnes library at all.
+
+What the list above asks beyond that, a console cut to what this game uses,
+is left: the IRQ timers, the manual pad reads, `$2180` and PAL's lines are
+still there because LakeSnes's interface has them.
 
 ### Step 4. The sound
 
@@ -683,7 +731,8 @@ answer a command. See the risks.
 - **The link.** As with the PPU: the console is split into libraries, and
   `zamn.exe` is linked against none. A call of LakeSnes from anywhere in
   the game is then a link error. `zamn_with_ppu` grows into the build that
-  has all of it.
+  has all of it. Done 2026-10-30, but for the headers: the game still
+  includes LakeSnes's for the layouts of `Snes`, `Cpu` and `Dma`.
 
 ## How each step is checked
 

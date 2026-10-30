@@ -242,8 +242,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       PortCpu under = *c;
       under.d = wram_r16(w, (uint16_t)(c->s + 1));
       const uint16_t side = page(w, &under, CHAINSAW_DP_CUT_SIDE);
-      return under.d >= 0x0100 && under.d < 0x1f00 &&
-             (under.d & 0x00ffu) == 0 && side >= 1 && side <= 8;
+      return under.d >= 0x0100 && under.d < 0x1f00 && side >= 1 && side <= 8;
     }
     case TS_NEEDS_CUT_FREED:
       return wram_r16(w, (uint16_t)(c->s + 1)) == CUT_SECOND_RETURN;
@@ -300,6 +299,10 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return page(w, c, FISHMAN_DP_RECORD) < 0x1f00 &&
              (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
              wram_r16(w, W_SPAWN_LOAD) >= FISHMAN_LOAD;
+    case TS_NEEDS_CHAINSAW_ENDED:
+      return page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
+             (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= CHAINSAW_LOAD;
     case TS_NEEDS_EXIT_DOOR_FIND:
       return wram_r16(w, (uint16_t)(c->s + 1)) == EXIT_DOOR_FIND_RETURN &&
              page(w, c, EXIT_DOOR_DP_PLAYER_RECORD) < 0x1f00 &&
@@ -1755,6 +1758,8 @@ void cut_swap(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k) {
 void cut_tiled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   wram_w16(w, W_HEDGES_CUT, (uint16_t)(wram_r16(w, W_HEDGES_CUT) + 1));
   c->d = pull16(w, c);
+  k->page_pulled = true;  // every direct-page run below is on it
+  k->page = c->d;
   push16(w, c, CUT_SECOND_RETURN);
   ran(k, TS_CUT_TILED);
   c->a = page(w, c, CHAINSAW_DP_CUT_SIDE);
@@ -2094,6 +2099,7 @@ void square_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   ldx(c, wram_r16(w, W_SQUARE_COLUMN));
   ldy(c, wram_r16(w, W_SQUARE_ROW));
   ran(k, TS_SQUARE_CELL_AT);
+  k->dp_on_page_zero += 2;  // `LDX $38 : LDY $3A`, after the `TCD`
   c->pc = SQUARE_CELL_CALL_PC;
 }
 
@@ -2114,6 +2120,8 @@ void square_cell(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
 void square_tiled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
   c->d = pull16(w, c);
+  k->page_pulled = true;  // the box's `LDY $08` is on the square's page
+  k->page = c->d;
   set_nz16(c, c->d);
   pull16(w, c);
   ran(k, TS_SQUARE_BACK);
@@ -2936,6 +2944,33 @@ void fishman_fate(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   ldy(c, c->a);
   ran(k, TS_FISH_FATE);
   c->pc = FISHMAN_UNHANDLED_CALL_PC;
+}
+
+// `$81:98BF`: the maniac's weight given back, and its record to be freed.
+void chainsaw_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_ended);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), CHAINSAW_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, CHAINSAW_DP_RECORD));
+  ran(k, TS_CHAINSAW_ENDED);
+  c->pc = CHAINSAW_FREE_CALL_PC;
+}
+
+// `$81:98D1`: its second record freed, if it has one, or its `RTL`.
+void chainsaw_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, CHAINSAW_DP_SECOND));
+  cmp16(c, c->a, 0xffffu);
+  ran(k, TS_CHAINSAW_SECOND);
+  if (c->a == 0xffffu) {
+    ran(k, TS_TAKEN);
+    c->pc = CHAINSAW_RTL_PC;
+    return;
+  }
+  PORT_COVER(chainsaw_second_freed);
+  c->pc = CHAINSAW_SECOND_FREE_PC;
 }
 
 // `LDA $42 : CMP #$FFFF : BEQ`: is there a second record? True if so.

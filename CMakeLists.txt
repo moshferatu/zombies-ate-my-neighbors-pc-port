@@ -19,20 +19,39 @@ endif()
 # the co-simulation diff harness and the emulated PPU/APU the finished port
 # keeps using. See third_party/lakesnes/LICENSE.txt.
 #
-# It is two libraries. `snescore` is the whole console. `snescore_without_ppu`
-# is all of it but the emulated PPU and the one file that calls it, for a
-# program whose picture `src/video` draws alone: linked against that one, a
-# call of the PPU from anywhere is an error and not a PPU quietly linked.
+# `snescore` is the whole console. `snescore_without_ppu` is all of it but the
+# emulated PPU and the one file that calls it. The libraries of the port's
+# own take only LakeSnes's headers (`snescore_headers`), and each program
+# says which console it runs on.
+#
+# `zamn` runs on `zamn_machine`, which is the port's own and has nothing of
+# LakeSnes but its headers: the console, DMA, the cartridge, the pads and the
+# saved state's writer (`src/machine`), with no sound chip, since the game
+# attaches the port's sound, and a 65816 that runs no instruction
+# (`src/cpu/none.c`). It is object files and not an archive, so that a linker
+# that reads archives once, in order, finds all of it.
 # ---------------------------------------------------------------------------
 file(GLOB SNES_CORE_SRC third_party/lakesnes/snes/*.c)
 set(SNES_PPU_SRC
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/snes/ppu.c
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/snes/snes_ppu.c)
 list(REMOVE_ITEM SNES_CORE_SRC ${SNES_PPU_SRC})
+add_library(snescore_headers INTERFACE)
+target_include_directories(snescore_headers INTERFACE third_party/lakesnes/snes)
 add_library(snescore_without_ppu STATIC ${SNES_CORE_SRC})
-target_include_directories(snescore_without_ppu PUBLIC third_party/lakesnes/snes)
+target_link_libraries(snescore_without_ppu PUBLIC snescore_headers)
 add_library(snescore STATIC ${SNES_PPU_SRC})
 target_link_libraries(snescore PUBLIC snescore_without_ppu)
+
+add_library(zamn_machine OBJECT
+  src/machine/console.c
+  src/cpu/none.c
+  src/machine/dma.c
+  src/machine/cart.c
+  src/machine/pads.c
+  src/machine/state.c)
+target_include_directories(zamn_machine PUBLIC src)
+target_link_libraries(zamn_machine PUBLIC snescore_headers)
 
 if(MSVC)
   # The vendored core is third-party C; silence its warnings, keep ours honest.
@@ -40,6 +59,7 @@ if(MSVC)
     target_compile_definitions(${core} PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(${core} PRIVATE /w)
   endforeach()
+  target_compile_definitions(zamn_machine PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -64,7 +84,7 @@ add_library(zamn_video STATIC
   src/video/state.c
   src/video/console.c)
 target_include_directories(zamn_video PUBLIC src)
-target_link_libraries(zamn_video PUBLIC snescore_without_ppu)
+target_link_libraries(zamn_video PUBLIC snescore_headers)
 
 add_library(zamn_video_with_ppu STATIC src/video/beside.c src/video/with_ppu.c)
 target_link_libraries(zamn_video_with_ppu PUBLIC zamn_video snescore)
@@ -206,7 +226,7 @@ target_include_directories(zamn_test_twinstick PRIVATE src)
 # one the playable build takes. Only the section given a real cartridge runs it.
 # And the harness's registry, whose guards at `$80:D1FF` must leave a frontend's
 # next weapon or item for the call they let through.
-target_link_libraries(zamn_test_twinstick PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_test_twinstick PRIVATE zamn_cosim_lib snescore_without_ppu)
 if(MSVC)
   target_compile_definitions(zamn_test_twinstick PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
@@ -254,7 +274,7 @@ add_library(zamn_sound_driver STATIC src/sound/driver.c)
 target_link_libraries(zamn_sound_driver PUBLIC zamn_sound)
 # ...and put into a LakeSnes console in place of its APU (src/sound/console.h).
 add_library(zamn_sound_console STATIC src/sound/console.c)
-target_link_libraries(zamn_sound_console PUBLIC zamn_sound snescore_without_ppu)
+target_link_libraries(zamn_sound_console PUBLIC zamn_sound snescore_headers)
 
 # The port's DSP beside LakeSnes's on every movie (tools/test_dsp.c): every
 # sample, every register, and the sound RAM the echo writes. `--break` shows
@@ -460,7 +480,7 @@ add_library(zamn_cosim_lib STATIC
   src/cosim/profile.c
   src/cosim/routines.c)
 target_include_directories(zamn_cosim_lib PUBLIC src)
-target_link_libraries(zamn_cosim_lib PUBLIC snescore_without_ppu zamn_port zamn_analysis)
+target_link_libraries(zamn_cosim_lib PUBLIC snescore_headers zamn_port zamn_analysis)
 
 # zamn_cosim: runs the port against the ROM, either checked call-by-call
 # (`verify`) or actually substituted and diffed per frame (`run`).
@@ -505,16 +525,18 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
 
   # It is built twice from the one source. `zamn` is the game, and has no
   # emulated PPU in it: it is linked against the console without one, so that
-  # it builds at all is the proof that nothing it runs calls the PPU.
+  # it builds at all is the proof that nothing it runs calls the PPU. Nor
+  # has it a 65816 or a sound chip, and its console is the port's: it runs on
+  # `zamn_machine`, and links nothing of LakeSnes.
   # `zamn_with_ppu` has the PPU beside `src/video`'s chip, and so `--renderer
-  # check` and `emulated`. It is the test the game's picture is held to, and
-  # is left in the build directory.
+  # check` and `emulated`, and the 65816, and so `--stock` and `-r`. It is the
+  # test the game's picture is held to, and is left in the build directory.
   #
   # zamn_cosim_lib pulls in the core, zamn_port and zamn_analysis transitively:
   # the core to run on, the port to substitute, and the movie reader for `-m`.
   add_executable(zamn WIN32 src/main_sdl.c)
-  target_link_libraries(zamn PRIVATE zamn_video_without_ppu)
-  add_executable(zamn_with_ppu WIN32 src/main_sdl.c)
+  target_link_libraries(zamn PRIVATE zamn_video_without_ppu zamn_machine)
+  add_executable(zamn_with_ppu WIN32 src/main_sdl.c src/cpu/emulated.c)
   target_link_libraries(zamn_with_ppu PRIVATE zamn_video_with_ppu)
   foreach(game zamn zamn_with_ppu)
     target_link_libraries(${game} PRIVATE zamn_cosim_lib zamn_sound_console SDL2::SDL2

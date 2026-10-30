@@ -2654,6 +2654,12 @@ typedef struct {
   AntCollideWork ant;
   B41cCollideWork b41c;
   HandlerPieces pieces;
+  // `$81:B592`, the axe's: the id it was hit by, `$07` or `$08`, or nought
+  // for one it ignores; and whether that hit was its last.
+  uint16_t b592_hit_by;
+  bool b592_ended;
+  // `$82:F4EF`'s: the player's id it latched, `$05` or `$06`, or nought.
+  uint16_t f4ef_hit_by;
 } ThreadCallWork;
 
 bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,

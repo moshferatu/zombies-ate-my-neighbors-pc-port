@@ -127,6 +127,7 @@
   X(80fb0f, "$80:FB0F", 0x80fb0fu) /* JSR $80:F377 */ \
   X(80fb15, "$80:FB15", 0x80fb15u) /* JSR $80:F354, a player out by the exit */ \
   X(80fb12, "$80:FB12", 0x80fb12u) /* JSR $80:ECFD */ \
+  X(8198dc, "$81:98DC", 0x8198dcu) /* RTL: the maniac's end */ \
   X(819e13, "$81:9E13", 0x819e13u) /* JSL $80:B22A */ \
   X(819e58, "$81:9E58", 0x819e58u) /* JSL $80:B22A */ \
   X(81b2e7, "$81:B2E7", 0x81b2e7u) /* JSR $81:B377 */ \

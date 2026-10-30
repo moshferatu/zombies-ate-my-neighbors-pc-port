@@ -19819,3 +19819,49 @@ way it can end, and that was found only on a movie where the thread ends.
 
 Over the same 110 sessions the core executes 7,920 instructions where it
 executed 8,610, all of them the reset's, at the one place that is left.
+
+## Widescreen, checked against the ROM it makes (2026-10-30)
+
+Widescreen moves words in the cartridge (`ws_widen_window`,
+`src/widescreen.h`): how far a monster keeps to the players before it goes
+home, where the football player and the tentacle come on, the vampire's
+screen, the neighbours' window and the sprite cull. That is game code taking
+other ways, and `verify` had never seen them: it ran the stock cartridge.
+
+**`verify --widescreen <16:9|16:10|21:9>`** moves the same words at the top of
+each frame, as the game does, so the ROM each port is held to is the one the
+player's game runs. The picture is not drawn and nothing is lent to it, so
+the game drifts from the player's a little; it meets the same ways.
+
+It found two kinds of thing.
+
+* **Ports that keep the stock word.** All thirty of the words are in ported
+  code. Where a port wrote the number down, the patch did nothing in the
+  game: the doll's reach for a player, the flame's, the slime's, the
+  walker's, the fishman's (one function for seven sites, all moved alike),
+  the vampire's screen, and five of the football player's. Each now reads
+  its word from the cartridge, at the operand's address; at stock that is
+  the same number. The ant, the zombies, the martian, the spider, the
+  tentacle, the window and the cull already did.
+* **Ways only widescreen reaches**, which the ports turned down and the
+  65816 ran. With the game's 65816 gone (`docs/PLAN.md`) each would stop it.
+  A martian that stands or leaves after its shot; an arriving martian whose
+  target is stale and reads the cartridge through the data bank; the doll's
+  axe (`$81:B592`) and the square (`$82:F4EF`) told of a blast, neither of
+  which had a price inside a dispatch; a doll stunned by id `$61`, state
+  `$81:B16E`, which no trace had run (`doll_stun_over` is the rest of it,
+  after its 32 ticks); a hedge cut by a maniac on an unaligned page; and the
+  maniac's end with a second record to free (`$81:98BF`, `$81:98D1` and a
+  link for its `RTL`).
+
+**A stretch that changes page** was priced on the page it came in on. One
+that pulls another with `PLD` before any direct-page instruction says so
+(`ThreadStretchWork.page`), and one that moves to page zero partway counts
+the direct-page instructions it ran there (`dp_on_page_zero`). The hedge's
+cut and the square's two stretches are the three; the square's cost 12 too
+many or 6 too few on its unaligned page.
+
+What is left: on level 5 at 21:9, `sprite_build_oam` is priced short on 26
+of 12,943 passes, the first by 6,060 cycles. Its answer is the ROM's. Only
+21:9 at a map's end widens the cull, so a frame there runs ahead of the
+console's by that much.

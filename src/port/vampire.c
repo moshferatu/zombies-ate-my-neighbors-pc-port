@@ -840,13 +840,13 @@ static bool on_screen(Vampire* s, uint16_t x, uint16_t y) {
   const uint16_t left = wram_r16(s->w, W_VAMPIRE_CAMERA_X);
   const uint16_t top = wram_r16(s->w, W_VAMPIRE_CAMERA_Y);
   set_c(c, false);
-  c->a = adc16(c, x, VAMPIRE_SCREEN_LEFT);
+  c->a = adc16(c, x, rom_word(s->rom, VAMPIRE_SCREEN_LEFT_AT));
   cmp16(c, c->a, left);
   ran(s, SF_EDGE_LEFT);
   bool in = c->a >= left;
   if (in) {
     set_c(c, false);
-    c->a = adc16(c, left, VAMPIRE_SCREEN_WIDE);
+    c->a = adc16(c, left, rom_word(s->rom, VAMPIRE_SCREEN_WIDE_AT));
     cmp16(c, c->a, x);
     ran(s, SF_EDGE_RIGHT);
     in = c->a >= x;

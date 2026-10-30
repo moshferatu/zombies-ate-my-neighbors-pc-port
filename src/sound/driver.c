@@ -21,6 +21,8 @@
 //
 // Port code: libc only.
 
+#include <stddef.h>
+
 #include "sound/chip.h"
 #include "sound/driver_ram.h"
 

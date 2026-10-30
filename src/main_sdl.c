@@ -75,6 +75,7 @@
 #include "hiscore.h"
 #include "cosim/cosim.h"
 #include "cosim/profile.h"
+#include "cpu/kind.h"
 // For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
 // has to reach the port as well as the cartridge. See `src/twinstick.h`.
 #include "port/player.h"
@@ -759,7 +760,8 @@ static void usage(void) {
     "                  No to what the file says, for this run.\n"
     "  --volume <N>    0 to 100, default 100.\n"
     "  --stock         Do not substitute; run the ROM under the core, as the\n"
-    "                  Phase 0b baseline did.\n"
+    "                  Phase 0b baseline did. Only in zamn_with_ppu: this\n"
+    "                  game has no 65816 to run the ROM on.\n"
     "  --renderer <r>  native (default), emulated or check: who draws the\n"
     "                  picture. native is src/video. The other two are only in\n"
     "                  zamn_with_ppu, the build that has the core's PPU: emulated\n"
@@ -767,7 +769,7 @@ static void usage(void) {
     "                  otherwise; check draws every line both ways, reports the\n"
     "                  lines that differ and exits 1 if any did.\n"
     "  -r <routine>    Substitute only this one. Repeatable; default is every\n"
-    "                  routine `zamn_cosim list` reports.\n"
+    "                  routine `zamn_cosim list` reports. Only in zamn_with_ppu.\n"
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
     "  --frames <N>    Run N frames and exit, uncapped rather than paced at 60 Hz.\n"
     "  --paced         Keep 60 Hz pacing under --frames. Turns a bounded run\n"
@@ -923,6 +925,23 @@ static void usage(void) {
     "          --no-twin-stick takes that back. Drop a\n"
     "          gamecontrollerdb.txt beside the executable for anything SDL maps\n"
     "          wrongly. See src/pad.h.\n");
+}
+
+// Whether a player is at the window: no `--frames`. A box that waits for a
+// click would hang a bounded run.
+static bool g_player_at_window;
+
+// The game reached an instruction no port runs, in the build with no 65816
+// to run it: a bug of the port's. Say so where a player will see it.
+static void say_unported(uint32_t pc) {
+  if (!g_player_at_window) return;
+  char text[200];
+  snprintf(text, sizeof text,
+           "The game reached $%02X:%04X, which nothing in this build runs.\n"
+           "It has to stop. Please report the address.",
+           (unsigned)(pc >> 16), (unsigned)(pc & 0xffff));
+  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Zombies Ate My Neighbors",
+                           text, NULL);
 }
 
 int main(int argc, char** argv) {
@@ -1280,6 +1299,16 @@ int main(int argc, char** argv) {
                     "       drives from reset and already contains its boot.\n");
     return 2;
   }
+
+  // Running some of the game on the 65816 needs a 65816, and `zamn` has
+  // none (`src/cpu/kind.h`).
+  if ((!native || only_count > 0) && !cpu_emulated()) {
+    fprintf(stderr, "error: this build has no 65816, and runs every routine as a port.\n"
+                    "       --stock and -r are in zamn_with_ppu.\n");
+    return 2;
+  }
+  g_player_at_window = frame_limit == 0;
+  cpu_on_unported(say_unported);
 
   int rom_len = 0;
   uint8_t* rom = read_file(rom_path, &rom_len);

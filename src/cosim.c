@@ -46,7 +46,9 @@
 #include "poke.h"
 #include "sound/console.h"
 #include "port/player.h"  // player_set_aim, for --twin-aim
+#include "scale.h"
 #include "twinstick.h"
+#include "widescreen.h"
 
 // Room for every routine in the registry and then some. It was 32, chosen when
 // that was more than the registry held, and "run everything except one" — which
@@ -93,6 +95,12 @@ typedef struct {
   // `zamn_headless`.
   int twin_aim;
   int twin_from;  // ...and the frame it starts arming on
+  // `--widescreen <16:9|16:10|21:9>`: the cartridge's words widescreen moves
+  // (`ws_widen_window` in `src/widescreen.h`), moved at the top of each frame
+  // as the game moves them. A monster then keeps to the players longer and
+  // leaves later, and those ways are checked against the ROM that has them.
+  // The picture is not drawn: this is the game's code alone.
+  int wide_margin;
   // `--poke <frame>[+|-last]:<addr>=<value>[.b]`: assert a word of WRAM rather than
   // playing the game into it. See `src/poke.h` for what that does and does not
   // prove; the short version is that `verify` diffs the port against the ROM on
@@ -178,6 +186,13 @@ static bool parse_options(int argc, char** argv, Options* o) {
       }
     } else if (!strcmp(argv[i], "--poke") && has_next) {
       if (!poke_parse(&o->pokes, argv[++i])) return false;
+    } else if (!strcmp(argv[i], "--widescreen") && has_next) {
+      WideMode m;
+      if (!wide_parse(argv[++i], &m) || m == WIDE_AUTO) {
+        fprintf(stderr, "error: --widescreen wants off, 16:9, 16:10 or 21:9\n");
+        return false;
+      }
+      o->wide_margin = wide_margin(m);
     } else if (!strcmp(argv[i], "--level") && has_next) {
       o->level = atoi(argv[++i]);
       if (o->level < LEVEL_FIRST || o->level > LEVEL_LAST) {
@@ -279,6 +294,11 @@ static int cmd_list(void) {
   return 0;
 }
 
+// The words widescreen moves, moved for the frame about to run.
+static void widen_each_frame(Snes* snes, void* ctx) {
+  ws_widen_window(snes, *(const int*)ctx);
+}
+
 static int cmd_verify(const Options* o) {
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
@@ -300,6 +320,7 @@ static int cmd_verify(const Options* o) {
     fprintf(stderr, "error: --level: this is not a cartridge it can change\n");
     return 1;
   }
+  if (o->wide_margin > 0) snes_setFrameHook(snes, widen_each_frame, (void*)&o->wide_margin);
 
   Cosim c;
   cosim_init(&c, snes, COSIM_VERIFY);
@@ -400,6 +421,10 @@ static int cmd_run(const Options* o) {
                     "       comparison.\n");
     return 2;
   }
+  if (o->wide_margin > 0) {
+    fprintf(stderr, "error: --widescreen is a verify-only flag.\n");
+    return 2;
+  }
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
   if (!rom_data) return 1;
@@ -462,7 +487,9 @@ static void usage(void) {
          "         repeatable). A branch taken this way is checked against the\n"
          "         ROM on a state nothing proved reachable — see src/poke.h.\n"
          "         --level <n> to start a new game on record n (0..55), as\n"
-         "         `zamn --level` does.\n");
+         "         `zamn --level` does.\n"
+         "         --widescreen <16:9|16:10|21:9> to move the cartridge's words\n"
+         "         widescreen moves, each frame as the game does (verify only).\n");
 }
 
 int main(int argc, char** argv) {

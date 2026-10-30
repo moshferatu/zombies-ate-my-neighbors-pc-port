@@ -1465,6 +1465,11 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
     served = enemy_cdde_collide(w, dp, arg, &r);
   } else if (entry == ENEMY_B592_COLLIDE_ENTRY) {
+    const bool hit = arg == B592_HIT_A || arg == B592_HIT_B;
+    work->b592_hit_by = hit ? arg : 0;
+    const uint16_t left =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + B592_DP_COUNTDOWN) - 1);
+    work->b592_ended = hit && (left & 0x8000u) != 0;
     served = enemy_b592_collide(w, dp, arg, &r);
   } else if (entry == ENEMY_D7F6_COLLIDE_ENTRY ||
              entry == ENEMY_9A6D_COLLIDE_ENTRY) {
@@ -1526,6 +1531,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == SHOT_F6A3_COLLIDE_ENTRY) {
     served = shot_f6a3_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_F4EF_COLLIDE_ENTRY) {
+    if (arg == F4EF_LATCH_P1 || arg == F4EF_LATCH_P2) work->f4ef_hit_by = arg;
     served = actor_f4ef_collide(w, dp, arg, &r);
   } else if (entry == EXIT_DOOR_COLLIDE_ENTRY) {
     served = exit_door_collide(w, dp, arg, &r);

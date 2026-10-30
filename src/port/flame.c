@@ -286,7 +286,8 @@ static void wander(Flame* f) {
   }
 
   const Point now = position(f);
-  player_in_range(f->w, 0x00d0, now.x, now.y, &f->k->players);
+  // `$81:B7B6 LDA #$00D0`, from the cartridge: widescreen moves it.
+  player_in_range(f->w, rom_word(f->rom, 0x81b7b7u), now.x, now.y, &f->k->players);
   f->k->asked_players = true;
   ran(f, FL_W_PLAYERS);
   if (f->k->players.a != 0) {

@@ -216,12 +216,15 @@ void footballer_show(Wram* w, const Rom* rom, PortCpu* c, FootballerLog* log,
 #define FOOTBALLER_DP_ASKED_X 0x00
 #define FOOTBALLER_DP_ASKED_Y 0x02
 #define FOOTBALLER_ENTER_NEAR 0x00a0
-#define FOOTBALLER_ENTER_LEFT 0x0008        // off the left edge by this
-#define FOOTBALLER_ENTER_RIGHT 0x0148       // ...or this far along from it
+// Off the left edge by this, or this far along from it: the words of
+// `$81:C7B9 SBC #$0008` and `$81:C7C7 ADC #$0148`, read from the cartridge,
+// since widescreen moves them (`src/widescreen.h`).
+#define FOOTBALLER_ENTER_LEFT_AT 0x81c7bau
+#define FOOTBALLER_ENTER_RIGHT_AT 0x81c7c8u
 #define FOOTBALLER_WAY_RIGHT 0x0006
 #define FOOTBALLER_WAY_LEFT 0x000e
 // True if it comes on from the left.
-bool footballer_enter(Wram* w, PortCpu* c);
+bool footballer_enter(Wram* w, const Rom* rom, PortCpu* c);
 
 // Its start, `$81:C7E6`, once both tests have passed: a record, and its page
 // cleared, as far as the `RTS`. Where its record is on the screen is not

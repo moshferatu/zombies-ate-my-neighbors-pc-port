@@ -1921,6 +1921,8 @@
   X(creature_unhandled, "ts_*_dead", "a werewolf or a chainsaw maniac dead: no handler") \
   X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
   X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \
+  X(chainsaw_ended, "ts_chainsaw_ended", "...its weight given back, and its record freed") \
+  X(chainsaw_second_freed, "ts_chainsaw_freed", "...and the second record it had") \
   X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
   X(clone_freed, "ts_clone_freed", "...or the hunting clone's") \
   X(werewolf_counted, "ts_werewolf_counted", "a werewolf a player killed: counted, and its last pictures") \
@@ -2263,6 +2265,8 @@
   X(cut_first_list_over, "ts_cut_made", "the first list is over, and the maniac is drawn again") \
   X(cut_second_list_over, "ts_cut_tiled", "the second list is over, and the chips are given back") \
   X(cut_swapped, "cut_swap", "the hedge's block swapped for its pair") \
+  X(doll_stunned, "doll_frame", "a doll hit by id $61: one picture, and nothing reaches it") \
+  X(doll_stun_over, "doll_stun_over", "...32 ticks on, its handler back and seeking again") \
   X(death_no_end_due, "ts_death_sounded", "a player dead in a state with no end due") \
   X(death_state_ended, "ts_death_sounded", "...or with one, which is called") \
   X(death_of_the_monster, "ts_death_shown", "the potion's monster shows one picture thirty ticks") \

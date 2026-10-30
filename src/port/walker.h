@@ -54,6 +54,9 @@
 #define WALKER_PICTURE_FRAMES 4    // counted down past zero
 #define WALKER_NEAR 0x0060
 #define WALKER_FAR 0x00d0
+// The reach for a player past that, the word of `$81:D5B2 LDA #$00D0`, is
+// read from the cartridge, since widescreen moves it (`src/widescreen.h`).
+#define WALKER_PLAYER_REACH_AT 0x81d5b3u
 #define WALKER_LOST 0x0070
 #define WALKER_SLEEP_FRAMES 2
 

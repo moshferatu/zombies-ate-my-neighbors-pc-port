@@ -229,6 +229,8 @@
 //   $81:988F  ...counted and its killer paid,
 //   $81:989B  ...counted by the side that killed it, nothing to touch, and
 //             its last pictures
+//   $81:98BF  ...its weight given back and its record freed,
+//   $81:98D1  ...and its second record, if it has one, then its `RTL`
 //   $81:8EF0  the zombie of `$81:8ED5`: its record freed,
 //   $81:8EF6  ...and its weight given back
 //
@@ -1319,6 +1321,16 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define CHAINSAW_DP_KILLER 0x2e        // who killed it: bit 15 is the side
 #define CHAINSAW_PICTURE_BANK 0x0090
 #define CHAINSAW_LAST_PICTURES 0x98ddu
+// After the last pictures: `SEC : LDA $DE : SBC #$001C : STA $DE`, and a
+// `BMI` to itself should that go below nothing, which here is the ROM's.
+#define CHAINSAW_ENDED_PC 0x8198bfu
+#define CHAINSAW_LOAD 0x001c
+#define CHAINSAW_DP_RECORD 0x08
+#define CHAINSAW_FREE_CALL_PC 0x8198cdu      // `JSL actor_slot_free`
+#define CHAINSAW_FREED_PC 0x8198d1u
+#define CHAINSAW_DP_SECOND 0x40              // a second record, or `$FFFF`
+#define CHAINSAW_SECOND_FREE_PC 0x8198d8u    // `JSL actor_slot_free` again
+#define CHAINSAW_RTL_PC 0x8198dcu
 #define ZOMBIE_UNSCORED_PC 0x818ef0u
 #define ZOMBIE_FREE_CALL_PC 0x818ef2u  // `JSL actor_slot_free`
 #define ZOMBIE_FREED_PC 0x818ef6u
@@ -1989,6 +2001,8 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_CHAINSAW_SCORED, 0x81988f, 0x819897, 0) \
   X(TS_CHAINSAW_SIDE, 0x81989b, 0x8198a7, 0)  /* the JSL too */ \
   X(TS_CHAINSAW_COUNTED, 0x8198a7, 0x8198bb, 0) \
+  X(TS_CHAINSAW_ENDED, 0x8198bf, 0x8198cd, 0)  /* to the JSL */ \
+  X(TS_CHAINSAW_SECOND, 0x8198d1, 0x8198d8, 0)  /* LDA dp : CMP # : BEQ */ \
   X(TS_ZOMBIE_FREED, 0x818ef6, 0x818f02, 0)   /* to the RTL */ \
   X(TS_WOLF_COUNTED, 0x81ac48, 0x81ac5c, 0) \
   X(TS_WOLF_LAST, 0x81ac60, 0x81ac63, 0)       /* LDA # */ \
@@ -2146,6 +2160,14 @@ enum {
 
 typedef struct {
   uint16_t blocks[TS_BLOCK_COUNT];
+  // A stretch that pulls another page before any direct-page instruction says
+  // so here, and its runs are priced on that page's alignment, not the one it
+  // was entered on.
+  bool page_pulled;
+  uint16_t page;
+  // ...and one that moves to page zero partway: how many of its direct-page
+  // instructions ran there, which cost no more on an unaligned page.
+  uint16_t dp_on_page_zero;
 } ThreadStretchWork;
 
 // What a stretch needs of where it starts.
@@ -2195,6 +2217,7 @@ typedef enum {
   TS_NEEDS_SQUARE_TILED,   // ...the page and the `JSR`
   TS_NEEDS_SQUARE_FREED,   // the pass's return, and one of the five
   TS_NEEDS_FISHMAN_ENDED,  // its record, and a load to give its weight back
+  TS_NEEDS_CHAINSAW_ENDED,  // the same, the maniac's
                            // from
   TS_NEEDS_EXIT_DOOR_FIND,      // the search's `JSR` to return to, a player's
                            // record and which player
@@ -2385,6 +2408,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(chainsaw_dead, "$81:9887", CHAINSAW_DEATH_PC, creature_unhandled, ENDS, TS_NEEDS_NOTHING) \
   X(chainsaw_unhandled, "$81:988F", CHAINSAW_UNHANDLED_PC, chainsaw_unhandled, ENDS, TS_NEEDS_NOTHING) \
   X(chainsaw_scored, "$81:989B", CHAINSAW_SCORED_PC, chainsaw_scored, ENDS, TS_NEEDS_RECORD) \
+  X(chainsaw_ended, "$81:98BF", CHAINSAW_ENDED_PC, chainsaw_ended, ENDS, TS_NEEDS_CHAINSAW_ENDED) \
+  X(chainsaw_freed, "$81:98D1", CHAINSAW_FREED_PC, chainsaw_freed, ENDS, TS_NEEDS_NOTHING) \
   X(zombie_unscored, "$81:8EF0", ZOMBIE_UNSCORED_PC, zombie_unscored, ENDS, TS_NEEDS_NOTHING) \
   X(zombie_freed, "$81:8EF6", ZOMBIE_FREED_PC, zombie_freed, ENDS, TS_NEEDS_ZOMBIE_FREED) \
   X(clone_unscored, "$81:8F70", CLONE_UNSCORED_PC, zombie_unscored, ENDS, TS_NEEDS_NOTHING) \

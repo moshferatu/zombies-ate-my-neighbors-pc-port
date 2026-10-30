@@ -124,6 +124,18 @@
 #define DOLL_FRAME_LEAVE_PC 0x81b2eeu
 #define DOLL_YIELD_TICKS 1
 
+// `$81:B16E`, stunned: what `$81:B168` sets when id `$61` hits it, from its
+// collision handler. One of four pictures for the way it faces
+// (`$81:B199`, a word for each facing, read at half the facing), no handler
+// for 32 ticks so that nothing reaches it, then its handler back and seeking
+// again. The frame stops at the sleep; `doll_stun_over` is the rest.
+#define DOLL_STATE_STUNNED 0xb16eu
+#define DOLL_STUN_PICTURES 0x81b199u
+#define DOLL_STUN_SLEEP_PC 0x81b185u  // `JSL thread_yield`, with this in A
+#define DOLL_STUN_TICKS 0x0020
+#define DOLL_STUN_WAKE_PC 0x81b189u
+#define DOLL_STUN_LOOP_RETURN 0xb2e6u  // the frame's `PEA`, under the state
+
 // The animation tables `$16` points at: four bytes a frame, a mask for the
 // record's flags and a picture number. A mask with bit 15 is ANDed in, and
 // any other is ORed in, which is how a frame mirrors or does not.
@@ -239,6 +251,7 @@ typedef struct {
   int faced_down, faced_across;  // ...and those that had each to add
   bool tick_threw;     // tick: the throw cooldown was still counting
   bool tick_reset;     // ...the step timer went round
+  bool stunned;        // a frame: stunned, it stopped at the sleep
   bool c, v;           // carry and overflow as the call leaves them
   bool c_set, v_set;   // ...and whether it wrote each at all
 } DollLog;
@@ -258,7 +271,12 @@ void doll_tick(Wram* w, uint16_t page, DollLog* log);
 bool doll_frame_supported(const Wram* w, uint16_t page);
 
 // A whole frame: the state body and the tick. False when the doll is leaving.
+// A stunned doll's stops at the sleep instead (`log->stunned`).
 bool doll_frame(Wram* w, const Rom* rom, uint16_t page, DollLog* log);
+
+// `$81:B189`, the stunned doll's sleep over: its handler back, seeking again,
+// and the rest of the frame, the tick. False when the doll is leaving.
+bool doll_stun_over(Wram* w, const Rom* rom, uint16_t page, DollLog* log);
 
 // ---------------------------------------------------------------------------
 // The thread round the loop

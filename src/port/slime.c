@@ -25,8 +25,10 @@ typedef struct {
 // the slime's: scratch that whoever ran last left there.
 #define SLIME_STRIKE_WORD 0x0006u
 #define SLIME_STRIKE_WORD_LIMIT 0x0010
-// How far it looks for a player before it gives up and leaves.
-#define SLIME_REACH 0x0140
+// How far it looks for a player before it gives up and leaves: the word of
+// `$81:CAD1 LDA #$0140`, read from the cartridge, since widescreen moves it
+// (`src/widescreen.h`).
+#define SLIME_REACH_AT 0x81cad2u
 // A lunge is this many pictures.
 #define SLIME_PHASES 5
 // The hits it takes after a flash.
@@ -314,7 +316,8 @@ static void think(Slime* s) {
     set_field(s, SLIME_DP_STATE, SLIME_STATE_FACE);
     think_first(s);
   } else {
-    player_bearing(s->w, s->rom, SLIME_REACH, me.x, me.y, &s->log->players);
+    player_bearing(s->w, s->rom, rom_word(s->rom, SLIME_REACH_AT), me.x, me.y,
+                   &s->log->players);
     if (s->log->players.a != 0) {
       s->log->thought = SLIME_THOUGHT_CARRY_ON;
     } else {

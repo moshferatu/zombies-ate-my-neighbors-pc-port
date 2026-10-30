@@ -133,8 +133,11 @@
 #define VAMPIRE_FLEE_WAY_MASK 0x0007  // a draw's way, less one
 #define W_VAMPIRE_CAMERA_X 0x1b6au
 #define W_VAMPIRE_CAMERA_Y 0x1b6cu
-#define VAMPIRE_SCREEN_LEFT 0x0004   // what it may be left of the screen by
-#define VAMPIRE_SCREEN_WIDE 0x0144
+// What it may be left of the screen by, and the screen's width and a bit:
+// the words of `$82:EAC7 ADC #$0004` and `$82:EAD3 ADC #$0144`, read from the
+// cartridge, since widescreen moves them (`src/widescreen.h`).
+#define VAMPIRE_SCREEN_LEFT_AT 0x82eac8u
+#define VAMPIRE_SCREEN_WIDE_AT 0x82ead4u
 #define VAMPIRE_SCREEN_HIGH 0x0100
 // Where each of the four leaves, and what it leaves for.
 #define VAMPIRE_LAND_PC 0x82ea35u         // the state itself

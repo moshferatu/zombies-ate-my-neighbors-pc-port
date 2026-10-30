@@ -106,7 +106,7 @@ static void look(Walker* s) {
     ran(s, WK_RTS);
     return;
   }
-  player_bearing(s->w, s->rom, WALKER_FAR, field(s, WALKER_DP_X),
+  player_bearing(s->w, s->rom, rom_word(s->rom, WALKER_PLAYER_REACH_AT), field(s, WALKER_DP_X),
                  field(s, WALKER_DP_Y), &s->k->players);
   s->k->asked_players = true;
   c->a = s->k->players.a;

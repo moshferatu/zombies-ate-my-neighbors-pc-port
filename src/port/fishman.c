@@ -20,8 +20,11 @@ typedef struct {
 #define FISHMAN_KEEP_CLOSING_WITHIN 0x00af
 #define FISHMAN_STALK_NO_NEARER 0x001c
 #define FISHMAN_LEAP_WITHIN 0x00c8
-// ...and how near a player, for it to stay on the level at all.
-#define FISHMAN_PLAYERS_WITHIN 0x00d0
+// ...and how near a player, for it to stay on the level at all: `LDA #$00D0`
+// at `$81:D90F`, `$DA32`, `$DD69`, `$DE89`, `$DEDD`, `$DF5C` and `$E610`.
+// Widescreen moves all seven words alike (`src/widescreen.h`), so the last
+// is read from the cartridge for all of them.
+#define FISHMAN_PLAYERS_WITHIN_AT 0x81e611u
 
 // It stops to look about on a draw under the first, and leaps on one under
 // the second.
@@ -302,7 +305,8 @@ static bool nobody_about(Fishman* s) {
                           : &scratch;
   log->player_asks++;
   const Point me = position(s);
-  player_bearing(s->w, s->rom, FISHMAN_PLAYERS_WITHIN, me.x, me.y, r);
+  player_bearing(s->w, s->rom, rom_word(s->rom, FISHMAN_PLAYERS_WITHIN_AT),
+                 me.x, me.y, r);
   flags_carry(&s->flags, r->c);
   players_overflow(s, me, r);
   return r->a == 0;

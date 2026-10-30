@@ -477,6 +477,15 @@ static void pick_side(Martian* m) {
 
 // `$81:9DEF`: to its side of the target, and up or down to its height
 // above them.
+// A word of the target's record, read as the ROM's `LDA $0000,Y` reads it:
+// through the data bank, `$81`. A look that found nobody leaves whatever its
+// last search did in the target, and past `$8000` that is the cartridge.
+static uint16_t target_word(const Martian* m, uint16_t target, uint16_t at) {
+  const uint16_t a = (uint16_t)(target + at);
+  if (a >= 0x8000) return rom_word(m->rom, (uint32_t)MARTIAN_BANK << 16 | a);
+  return wram_r16(m->w, a);
+}
+
 static void arrive_on(Martian* m) {
   MartianLog* log = m->log;
   if (ran_out(m, MARTIAN_DP_SIDE_TIMER)) pick_side(m);
@@ -485,8 +494,7 @@ static void arrive_on(Martian* m) {
   uint16_t way_on = side;
 
   const uint16_t target = field(m, MARTIAN_DP_TARGET);
-  const uint16_t below = flags_sub(&m->flags,
-                                   wram_r16(m->w, (uint16_t)(target + ACTOR_Y)),
+  const uint16_t below = flags_sub(&m->flags, target_word(m, target, ACTOR_Y),
                                    field(m, MARTIAN_DP_Y));
   log->height_negative = is_negative(below);
   const uint16_t height = magnitude(below);

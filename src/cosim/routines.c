@@ -2886,6 +2886,48 @@ static const CosimRun THREAD_CALL_RESUME = {34 + 18 + 34 + 26 + 42, 6};
 // ...and not taken, so `LDA #$8000 : STA $1180,X` parks the thread first.
 static const CosimRun THREAD_CALL_PARK = {34 + 12 + 18 + 40 + 34 + 26 + 42, 12};
 
+// `$81:B592`, the axe's handler, by `tools/cycles816.py`: `CMP #$0007 :
+// BEQ`, then `CMP #$0008 : BEQ`, each 30 over 5 not taken and 36 taken. An
+// id it ignores falls to `CLC : RTL`; a hit is `STA $1E : DEC $0C : BMI`,
+// then `CLC : RTL` or, the last hit, `INC $0A : CLC : RTL`.
+static const CosimRun B592_TEST_FAILS = {30, 5, 0};
+static const CosimRun B592_TEST_HITS = {36, 5, 0};
+static const CosimRun B592_IGNORED = {54, 2, 0};
+static const CosimRun B592_HIT = {90, 6, 2};
+static const CosimRun B592_SURVIVED = {54, 2, 0};
+static const CosimRun B592_ENDED = {6 + 104, 4, 1};  // the `BMI` taken, and on
+
+static int b592_cycles(const ThreadCallWork* k, bool fast, bool unaligned) {
+  CosimRun run = {0, 0, 0};
+  if (k->b592_hit_by == 0) {
+    run_add(&run, &B592_TEST_FAILS, 2);
+    run_add(&run, &B592_IGNORED, 1);
+  } else {
+    if (k->b592_hit_by == 0x0008) run_add(&run, &B592_TEST_FAILS, 1);
+    run_add(&run, &B592_TEST_HITS, 1);
+    run_add(&run, &B592_HIT, 1);
+    run_add(&run, k->b592_ended ? &B592_ENDED : &B592_SURVIVED, 1);
+  }
+  return cosim_run_cycles_dp(&run, fast, unaligned);
+}
+
+// `$82:F4EF`, by `tools/cycles816.py --db=82`: `CMP #$0005 : BEQ` and
+// `CMP #$0006 : BEQ`, then `CLC : RTL`, or for a player `STA $18 : CLC : RTL`.
+static const CosimRun F4EF_LATCHED = {82, 4, 1};
+
+static int f4ef_cycles(const ThreadCallWork* k, bool fast, bool unaligned) {
+  CosimRun run = {0, 0, 0};
+  if (k->f4ef_hit_by == 0) {
+    run_add(&run, &B592_TEST_FAILS, 2);
+    run_add(&run, &B592_IGNORED, 1);
+  } else {
+    if (k->f4ef_hit_by == F4EF_LATCH_P2) run_add(&run, &B592_TEST_FAILS, 1);
+    run_add(&run, &B592_TEST_HITS, 1);
+    run_add(&run, &F4EF_LATCHED, 1);
+  }
+  return cosim_run_cycles_dp(&run, fast, unaligned);
+}
+
 static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
                                int* out) {
   bool fast = in->fastrom;
@@ -2946,6 +2988,12 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
       cycles += handler;
       break;
     }
+    case ENEMY_B592_COLLIDE_ENTRY:
+      cycles += b592_cycles(k, fast, dp_unaligned);
+      break;
+    case ACTOR_F4EF_COLLIDE_ENTRY:
+      cycles += f4ef_cycles(k, fast, dp_unaligned);
+      break;
     case ENEMY_9B6B_COLLIDE_ENTRY:
     case ENEMY_B95F_COLLIDE_ENTRY:
     case FRANKENSTEIN_COLLIDE_ENTRY:
@@ -9629,6 +9677,8 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_CHAINSAW_SCORED] = {102, 8, 1},
     [TS_CHAINSAW_SIDE] = {136, 12, 1},
     [TS_CHAINSAW_COUNTED] = {224, 20, 1},
+    [TS_CHAINSAW_ENDED] = {138, 14, 1},
+    [TS_CHAINSAW_SECOND] = {58, 7, 1},
     [TS_ZOMBIE_FREED] = {110, 12, 0},
     [TS_WOLF_COUNTED] = {218, 20, 1},
     [TS_WOLF_LAST] = {18, 3, 0},
@@ -9676,10 +9726,12 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
 static int thread_stretch_cycles(const ThreadStretchWork* k,
                                  const CosimRegs* in) {
   const bool fast = fetch_fast(in);
-  const bool unaligned = (in->d & 0x00ffu) != 0;
+  const uint16_t page = k->page_pulled ? k->page : in->d;
+  const bool unaligned = (page & 0x00ffu) != 0;
   int cycles = 0;
   for (int i = 0; i < TS_BLOCK_COUNT; i++)
     cycles += k->blocks[i] * cosim_run_cycles_dp(&TS_COST[i], fast, unaligned);
+  if (unaligned) cycles -= 6 * k->dp_on_page_zero;  // `cosim_run_cycles_dp`'s idle
   return cycles;
 }
 
@@ -9831,7 +9883,9 @@ static const uint32_t TS_EXITS_ENDS[] = {
     CHAINSAW_LAST_PICTURES_CALL_PC, ZOMBIE_FREE_CALL_PC,
     ZOMBIE_RTL_PC,              CLONE_FREE_CALL_PC,
     CLONE_RTL_PC,               WEREWOLF_COUNTED_SOUND_PC,
-    WEREWOLF_LAST_PICTURES_CALL_PC, VAMPIRE_COUNTED_END_PC};
+    WEREWOLF_LAST_PICTURES_CALL_PC, VAMPIRE_COUNTED_END_PC,
+    CHAINSAW_FREE_CALL_PC,      CHAINSAW_SECOND_FREE_PC,
+    CHAINSAW_RTL_PC};
 static const uint32_t TS_EXITS_BOLT[] = {BOLT_SOUND_CALL_PC, BOLT_ALLOC_PC,
                                          BOLT_SLEEP_PC};
 static const uint32_t TS_EXITS_PAUSE[] = {PAUSE_HELD_PC, PAUSE_VOLUME_UP_CALL_PC,
@@ -11365,13 +11419,16 @@ static void martian_arrive_on_bill(MartianBill* b) {
 //
 // A walker reads its target only on a pass that looks for one, so what it has
 // beforehand is no matter.
+// An arriving martian reads its target's height. A target that is no record
+// may be in the cartridge, which the port reads; not the console's registers.
 static bool martian_frame_ok(const Wram* w, const CosimRegs* in) {
   if (!body_ok(in) || in->d < 0x0100 || in->db != MARTIAN_BANK) return false;
   const bool walking =
       wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE)) == MARTIAN_STATE_WALK;
+  const uint16_t target = wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_TARGET));
   return wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_RECORD)) < 0x1f00 &&
-         (walking ||
-          wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00) &&
+         (walking || target < 0x1f00 ||
+          (target >= 0x8000 && target <= 0xfff0)) &&
          wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_PICTURES)) >= 0x8000 &&
          martian_frame_supported(w, in->d);
 }
@@ -11539,9 +11596,7 @@ static bool accepts_martian_wake(const Wram* w, const CosimRegs* in) {
          martian_woke(w, in) != MARTIAN_WOKE_ELSEWHERE;
 }
 
-// A look that chose no way returns without the step and the picture, and
-// what is left on the stack is then some call's of the look's: the ROM's.
-// So is one whose `actor_nearest` gave it no record.
+// A look whose `actor_nearest` gave it no record is the ROM's.
 static bool guard_martian_wake(Wram* scratch, const Rom* rom,
                                const CosimRegs* in) {
   MartianLog log = {0};
@@ -11552,9 +11607,12 @@ static bool guard_martian_wake(Wram* scratch, const Rom* rom,
   }
   martian_wake(scratch, rom, in->d, &log);
   if (log.look == MARTIAN_LOOK_NONE) return true;
-  return log.look != MARTIAN_LOOK_STAND && log.look != MARTIAN_LOOK_LEAVE &&
-         wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
+  return wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
 }
+
+// The return `$81:9D75 JSL player_bearing` pushes, which a look that stands
+// or leaves leaves under the stack: its last call.
+#define MARTIAN_RETURN_LOOK_PLAYERS 0x819d78u
 
 // Arriving: the shot's `RTS`, and through the pointer that one's and the
 // `BRA` after the call.
@@ -11601,8 +11659,16 @@ static void shim_martian_wake(Wram* w, const Rom* rom, const CosimRegs* in,
                              : MARTIAN_WALKER_YIELD_PC,
                      arrival ? MARTIAN_ARRIVAL_FATE_PC
                              : MARTIAN_WALKER_FATE_PC);
-  wram_w16(w, (uint16_t)(in->s + 3), MARTIAN_RETURN_SHOW);
-  wram_w16(w, (uint16_t)(in->s + 1), MARTIAN_RETURN_SHOW_SET);
+  if (log.look == MARTIAN_LOOK_STAND || log.look == MARTIAN_LOOK_LEAVE) {
+    // No step and no picture: the look's `RTS` to the loop. Its last call
+    // was `player_bearing`'s `JSL`, from where the two `RTS`s left it.
+    const uint32_t r = MARTIAN_RETURN_LOOK_PLAYERS;
+    wram_w8(w, (uint16_t)(in->s + 4), (uint8_t)(r >> 16));
+    wram_w16(w, (uint16_t)(in->s + 2), (uint16_t)r);
+  } else {
+    wram_w16(w, (uint16_t)(in->s + 3), MARTIAN_RETURN_SHOW);
+    wram_w16(w, (uint16_t)(in->s + 1), MARTIAN_RETURN_SHOW_SET);
+  }
   out->s = (uint16_t)(in->s + 6);
 }
 
@@ -17819,7 +17885,7 @@ static void shim_footballer_enter(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  const bool from_left = footballer_enter(w, &c);
+  const bool from_left = footballer_enter(w, rom, &c);
   cpu_to(&c, out);
   CosimRun run = {0, 0, 0};
   run_add(&run, &FOOTBALLER_RUN_ENTER_HEAD, 1);
@@ -20180,6 +20246,13 @@ static void shim_doll_tick(Wram* w, const Rom* rom, const CosimRegs* in,
 static const CosimRun DOLL_RUN_FRAME_DISPATCH = {142, 8, 1};  // $B2DF-$B2E6
 static const CosimRun DOLL_RUN_FRAME_TICK = {80, 7, 1};       // JSR : LDA $0A : BEQ
 static const CosimRun DOLL_RUN_FRAME_AGAIN = {46, 5, 1};      // STZ $5A : LDA #1
+// Stunned, `$81:B16E`-`$81:B184` to the sleep, and `$81:B189`-`$81:B198` to the
+// `RTS` after it, each with `$80:8475`'s 168 over 11 (`tools/cycles816.py
+// --db=81`).
+static const CosimRun DOLL_RUN_STUNNED = {116 + 40 + 18 + 12 + 54 + 168 + 18,
+                                          11 + 3 + 3 + 1 + 4 + 11 + 3, 2};
+static const CosimRun DOLL_RUN_STUN_OVER = {18 + 18 + 54 + 168 + 18 + 28 + 40,
+                                            3 + 3 + 4 + 11 + 3 + 2 + 1, 1};
 
 // Only the knocked body reads the target before seeking sets it, and the
 // target is `$FFFF` until a doll has sought once.
@@ -20200,6 +20273,27 @@ static void shim_doll_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
   DollBill b = {{0, 0, 0}, 0, in, &log, 0, rom};
   doll_add(&b, &DOLL_RUN_FRAME_DISPATCH);
+  if (log.stunned) {
+    // Asleep in the state: A the ticks, X the thread from `$80:8475`, Y the
+    // nought it was given, and the frame's `PEA` still under the stack, with
+    // the `JSL`'s return below that.
+    doll_add(&b, &DOLL_RUN_STUNNED);
+    cosim_cost(doll_total(&b));
+    out->a = DOLL_STUN_TICKS;
+    out->x = wram_r16(w, W_SCHED_CUR_TASK);
+    out->y = 0;
+    out->regs = COSIM_REG_ALL;
+    out->pc = DOLL_STUN_SLEEP_PC;
+    PortCpu stack = {.s = in->s};
+    push16(w, &stack, DOLL_STUN_LOOP_RETURN);
+    wram_w8(w, (uint16_t)(stack.s - 0), 0x81);
+    wram_w16(w, (uint16_t)(stack.s - 2), 0xb181);
+    out->s = stack.s;
+    out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+    if (log.c) out->p |= PORT_P_C;
+    out->p_keep = PORT_P_V;
+    return;
+  }
   switch (log.state) {
     case DOLL_STATE_SEEK_BEGIN: doll_seek_begin_bill(&b); break;
     case DOLL_STATE_SEEK: doll_seek_bill(&b); break;
@@ -20228,6 +20322,41 @@ static void shim_doll_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t DOLL_FRAME_EXITS[] = {DOLL_FRAME_YIELD_PC,
                                             DOLL_FRAME_LEAVE_PC};
+
+// `$81:B189`, the stunned doll's sleep over: the rest of the state and the
+// frame's tail, leaving as a frame does.
+static bool accepts_doll_stun_over(const Wram* w, const CosimRegs* in) {
+  return doll_page_ok(w, in) && in->db == 0x81 &&
+         wram_r16(w, (uint16_t)(in->s + 1)) == DOLL_STUN_LOOP_RETURN &&
+         doll_pictures_ok(w, in);
+}
+
+static void shim_doll_stun_over(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  DollLog log = {0};
+  const bool stays = doll_stun_over(w, rom, in->d, &log);
+
+  DollBill b = {{0, 0, 0}, 0, in, &log, 0, rom};
+  doll_add(&b, &DOLL_RUN_STUN_OVER);
+  doll_add(&b, &DOLL_RUN_FRAME_TICK);
+  doll_tick_bill(&b);
+  if (stays) {
+    doll_add(&b, &DOLL_RUN_TAKEN);
+    doll_add(&b, &DOLL_RUN_FRAME_AGAIN);
+  }
+  cosim_cost(doll_total(&b));
+
+  out->a = stays ? DOLL_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + DOLL_DP_LEAVE));
+  out->regs = COSIM_REG_A;
+  out->s = (uint16_t)(in->s + 2);
+  out->pc = stays ? DOLL_FRAME_YIELD_PC : DOLL_FRAME_LEAVE_PC;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
 
 // ---------------------------------------------------------------------------
 // $81:B2B0  the doll's thread round its loop -- see `port/doll.h`
@@ -20346,7 +20475,8 @@ static void shim_doll_any_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t DOLL_ANY_FRAME_EXITS[] = {
-    DOLL_FRAME_YIELD_PC, DOLL_FRAME_LEAVE_PC, DOLL_PICTURES_CALL_PC};
+    DOLL_FRAME_YIELD_PC, DOLL_FRAME_LEAVE_PC, DOLL_PICTURES_CALL_PC,
+    DOLL_STUN_SLEEP_PC};
 static const uint32_t DOLL_LAUNCH_EXITS[] = {DOLL_ALLOC_CALL_PC};
 static const uint32_t DOLL_FIRST_RECORD_EXITS[] = {DOLL_ALLOC_2_CALL_PC};
 static const uint32_t DOLL_DRESS_EXITS[] = {DOLL_FRAME_YIELD_PC,
@@ -26104,15 +26234,17 @@ static void shim_lob_landed(Wram* w, const Rom* rom, const CosimRegs* in,
                                  (in->d & 0xffu) != 0));
 }
 
+// A burst that tells an ordinary enemy of a hit it dies of or lives through
+// (`$81:8888`'s deep exits, which no table prices) is still the port's, at
+// the row's cycles: with no 65816 in the game, turning it down would stop it.
+// Widescreen keeps enemies near enough to be caught; the corpus has none.
 #define LOB_BURST_SHIMS(name, again)                                         \
   static bool guard_##name(Wram* scratch, const Rom* rom,                    \
                            const CosimRegs* in) {                            \
     static ActorNotifyWork told;                                             \
     PortCpu c;                                                               \
-    int cycles;                                                              \
     cpu_from(in, &c);                                                        \
-    return lob_burst(scratch, rom, &c, again, &told) &&                      \
-           notify_box_cycles(&told, in, &cycles);                            \
+    return lob_burst(scratch, rom, &c, again, &told);                        \
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
                           CosimRegs* out) {                                  \
@@ -26123,7 +26255,7 @@ static void shim_lob_landed(Wram* w, const Rom* rom, const CosimRegs* in,
     lob_burst(w, rom, &c, again, &told);                                     \
     cpu_to(&c, out);                                                         \
     out->p_keep = PORT_P_V; /* whatever those told left */                   \
-    notify_box_cycles(&told, in, &cycles);                                   \
+    if (!notify_box_cycles(&told, in, &cycles)) return;                      \
     CosimRun run = {0, 0, 0};                                                \
     run_add(&run, &LT_RUN_BURST, 1);                                         \
     run_add(&run, &LT_RUN_BOX, 1);                                           \
@@ -32647,6 +32779,17 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(DOLL_ANY_FRAME_EXITS),
         .uncalled = true,
         .cycles = 9000,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "doll_stun_over",
+        .symbol = "$81:B189",
+        .entry = DOLL_STUN_WAKE_PC,
+        .run = shim_doll_stun_over,
+        .accepts = accepts_doll_stun_over,
+        COSIM_EXITS(DOLL_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
         .stack_bytes = 16,
     },
 #define DOLL_ENTRY(n, sym, pc, rts, shim, ok, called, stack)                 \

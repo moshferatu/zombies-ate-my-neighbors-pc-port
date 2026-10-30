@@ -16,7 +16,10 @@ typedef struct {
 
 // How near a player has to be for it to go at them, and to stay at all.
 #define FOOTBALLER_REACH 0x0020
-#define FOOTBALLER_STAYS_WITHIN 0x0140
+// The second is the word of `$81:C850 LDA #$0140`, read from the cartridge,
+// since widescreen moves it (`src/widescreen.h`); so are the margin and the
+// width below, `$81:C746 SBC #$0008` and `$81:C751 ADC #$0150`.
+#define FOOTBALLER_STAYS_WITHIN_AT 0x81c851u
 // What a player's record collides as.
 #define PLAYER_A_ID 0x0005
 #define PLAYER_B_ID 0x0006
@@ -52,8 +55,8 @@ typedef struct {
 #define FOOTBALLER_OFF_STEPS 0xc780u     // ...and half a step, doubled again
 
 // Sent off, it is gone once its picture is this far past the screen.
-#define FOOTBALLER_OFF_MARGIN 0x0008
-#define FOOTBALLER_OFF_ACROSS 0x0150
+#define FOOTBALLER_OFF_MARGIN_AT 0x81c747u
+#define FOOTBALLER_OFF_ACROSS_AT 0x81c752u
 #define FOOTBALLER_OFF_DOWN 0x0110
 
 // The game's count of frames.
@@ -371,13 +374,13 @@ static void run_off(Footballer* f) {
   const Point shown = {record_field(f, ACTOR_X), record_field(f, ACTOR_Y)};
   log->off = FOOTBALLER_ON_SCREEN;
   uint16_t edge = flags_sub(&f->flags, wram_r16(f->w, W_CAMERA_X),
-                            FOOTBALLER_OFF_MARGIN);
+                            rom_word(f->rom, FOOTBALLER_OFF_MARGIN_AT));
   log->camera_near_left = negative(edge);
   if (!log->camera_near_left) {
     if (flags_at_least(&f->flags, edge, shown.x)) {
       log->off = FOOTBALLER_OFF_LEFT;
     } else {
-      edge = flags_add(&f->flags, edge, FOOTBALLER_OFF_ACROSS);
+      edge = flags_add(&f->flags, edge, rom_word(f->rom, FOOTBALLER_OFF_ACROSS_AT));
       if (!flags_at_least(&f->flags, edge, shown.x))
         log->off = FOOTBALLER_OFF_RIGHT;
     }
@@ -422,7 +425,7 @@ static void show(Footballer* f) {
   set_record_field(f, ACTOR_Z, 0);
   set_record_field(f, ACTOR_Y, me.y);
 
-  if (nearer_player(f, FOOTBALLER_STAYS_WITHIN)->a == 0) {
+  if (nearer_player(f, rom_word(f->rom, FOOTBALLER_STAYS_WITHIN_AT))->a == 0) {
     PORT_COVER(footballer_left);
     log->gone = true;
     set_field(f, FOOTBALLER_DP_FATE,
@@ -544,7 +547,7 @@ FootballerFate footballer_shown(Wram* w, const Rom* rom, uint16_t page,
 // $81:C7A5 and $81:C7E6  one coming on
 // ---------------------------------------------------------------------------
 
-bool footballer_enter(Wram* w, PortCpu* c) {
+bool footballer_enter(Wram* w, const Rom* rom, PortCpu* c) {
   const uint16_t page = c->d;
   const uint16_t camera = wram_r16(w, W_CAMERA_X);
   const bool from_left =
@@ -555,12 +558,12 @@ bool footballer_enter(Wram* w, PortCpu* c) {
     PORT_COVER(footballer_from_left);
     wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_WAY), FOOTBALLER_WAY_RIGHT);
     set_c(c, true);
-    x = sbc16(c, camera, FOOTBALLER_ENTER_LEFT);
+    x = sbc16(c, camera, rom_word(rom, FOOTBALLER_ENTER_LEFT_AT));
   } else {
     PORT_COVER(footballer_from_right);
     wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_WAY), FOOTBALLER_WAY_LEFT);
     set_c(c, false);
-    x = adc16(c, camera, FOOTBALLER_ENTER_RIGHT);
+    x = adc16(c, camera, rom_word(rom, FOOTBALLER_ENTER_RIGHT_AT));
   }
   wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_X), x);
   c->a = x;
@@ -605,7 +608,7 @@ FootballerStart footballer_start(Wram* w, const Rom* rom, PortCpu* c,
                                  FootballerStartLog* log) {
   *log = (FootballerStartLog){0};
   const uint16_t page = c->d;
-  log->from_left = footballer_enter(w, c);
+  log->from_left = footballer_enter(w, rom, c);
   const FootballerStart placed = place_tested(w, c, log);
   if (placed != FOOTBALLER_STARTED) {
     c->pc = FOOTBALLER_START_ENDED_PC;

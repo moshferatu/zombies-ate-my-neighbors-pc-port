@@ -16,6 +16,9 @@ typedef struct {
 
 // `$D0`: how far it looks for someone to go after.
 #define DOLL_REACH 0x00d0
+// ...and for a player, failing that: the word of `$81:AEDB LDA #$00D0`, read
+// from the cartridge, since widescreen moves it (`src/widescreen.h`).
+#define DOLL_PLAYER_REACH_AT 0x81aedcu
 // Within this on both axes it swings rather than steps.
 #define DOLL_SWING_REACH 0x0010
 // A charge stops this far short.
@@ -171,7 +174,7 @@ static uint16_t nearest_actor(Doll* d, uint16_t* dist) {
 static uint16_t player_near(Doll* d) {
   const Point me = position(d);
   PlayerPickRegs* r = &d->log->players;
-  player_in_range(d->w, DOLL_REACH, me.x, me.y, r);
+  player_in_range(d->w, rom_word(d->rom, DOLL_PLAYER_REACH_AT), me.x, me.y, r);
   set_carry(d, r->c);
   flags_overflow_unknown(&d->flags);
   return r->a;
@@ -662,6 +665,25 @@ static void leap_out(Doll* d) {
   wram_w16(d->w, (uint16_t)(W_THREAD_HANDLER_BANK + slot), DOLL_BANK);
 }
 
+// `$80:8475` for the running thread: who it tells of a hit, or nobody.
+static void set_handler(Doll* d, uint16_t handler, uint16_t bank) {
+  const uint16_t slot = wram_r16(d->w, W_SCHED_CUR_TASK);
+  wram_w16(d->w, (uint16_t)(W_THREAD_HANDLER + slot), handler);
+  wram_w16(d->w, (uint16_t)(W_THREAD_HANDLER_BANK + slot), bank);
+}
+
+// `$81:B16E`, as far as the sleep: the picture for its facing, and nobody
+// told of a hit. `LSR` leaves the facing's low bit in the carry.
+static void stunned(Doll* d) {
+  PORT_COVER(doll_stunned);
+  d->log->stunned = true;
+  const uint16_t facing = field(d, DOLL_DP_FACING);
+  set_carry(d, facing & 1);
+  set_record_field(d, d->record, ACTOR_META,
+                   rom_word(d->rom, DOLL_STUN_PICTURES + (facing >> 1)));
+  set_handler(d, 0, 0);
+}
+
 // The throw cooldown counts down to -1 and stays there, the step timer goes
 // round, and the picture goes where the doll is.
 static void tick(Doll* d) {
@@ -683,7 +705,9 @@ static void tick(Doll* d) {
 
 // ---------------------------------------------------------------------------
 
-typedef enum { SEEK_BEGIN, SEEK, DASH, KNOCKED, LEAP_OUT, TICK, FRAME } Body;
+typedef enum {
+  SEEK_BEGIN, SEEK, DASH, KNOCKED, LEAP_OUT, STUNNED, TICK, FRAME, STUN_OVER
+} Body;
 
 // Which body a state address is, or false for one that is not here.
 static bool body_of(uint16_t state, Body* body) {
@@ -693,6 +717,7 @@ static bool body_of(uint16_t state, Body* body) {
     case DOLL_STATE_DASH: *body = DASH; return true;
     case DOLL_STATE_KNOCKED: *body = KNOCKED; return true;
     case DOLL_STATE_LEAP_OUT: *body = LEAP_OUT; return true;
+    case DOLL_STATE_STUNNED: *body = STUNNED; return true;
     default: return false;
   }
 }
@@ -704,21 +729,37 @@ static void act(Doll* d, Body body) {
     case DASH: dash(d); break;
     case KNOCKED: knocked(d); break;
     case LEAP_OUT: leap_out(d); break;
+    case STUNNED: stunned(d); break;
     default: break;
   }
 }
 
-// The loop's frame: the state body, the tick, and unless it is leaving, the
-// hit forgotten for the next.
+// After the state body's `RTS`: the tick, and unless it is leaving, the hit
+// forgotten for the next frame.
+static bool frame_tail(Doll* d) {
+  tick(d);
+  if (field(d, DOLL_DP_LEAVE) != 0) return false;
+  set_field(d, DOLL_DP_HIT_ID, 0);
+  return true;
+}
+
+// The loop's frame: the state body, then the tail, unless the body slept.
 static bool frame(Doll* d) {
   Body body = SEEK;
   d->log->state = field(d, DOLL_DP_STATE);
   body_of(d->log->state, &body);
   act(d, body);
-  tick(d);
-  if (field(d, DOLL_DP_LEAVE) != 0) return false;
-  set_field(d, DOLL_DP_HIT_ID, 0);
-  return true;
+  if (d->log->stunned) return true;
+  return frame_tail(d);
+}
+
+// `$81:B189`: its handler back, seeking from the start, and the `RTS` to the
+// frame's tail.
+static bool stun_over(Doll* d) {
+  PORT_COVER(doll_stun_over);
+  set_handler(d, DOLL_COLLIDE, DOLL_BANK);
+  set_state(d, DOLL_STATE_SEEK_BEGIN);
+  return frame_tail(d);
 }
 
 static bool run(Body body, Wram* w, const Rom* rom, uint16_t page,
@@ -728,6 +769,7 @@ static bool run(Body body, Wram* w, const Rom* rom, uint16_t page,
             log ? log : &scratch, {false, false, false, false}};
   bool stays = true;
   if (body == FRAME) stays = frame(&d);
+  else if (body == STUN_OVER) stays = stun_over(&d);
   else if (body == TICK) tick(&d);
   else act(&d, body);
   d.log->c = d.flags.c;
@@ -744,6 +786,10 @@ bool doll_frame_supported(const Wram* w, uint16_t page) {
 
 bool doll_frame(Wram* w, const Rom* rom, uint16_t page, DollLog* log) {
   return run(FRAME, w, rom, page, log);
+}
+
+bool doll_stun_over(Wram* w, const Rom* rom, uint16_t page, DollLog* log) {
+  return run(STUN_OVER, w, rom, page, log);
 }
 
 void doll_seek_begin(Wram* w, const Rom* rom, uint16_t page, DollLog* log) {
