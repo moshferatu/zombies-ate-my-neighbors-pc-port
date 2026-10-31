@@ -119,6 +119,15 @@
 // What a frame that stops in a hit leaves on the stack: the return of the
 // `JSR $D01B` at `$80:CE01`.
 #define PLAYER_FRAME_HIT_RETURN 0xce03u
+// ...and one that stops in the state: the return of the `JSR $D1EA` before it.
+#define PLAYER_FRAME_STATE_RETURN 0xce00u
+// The monster's last frame: `STZ $72 : JMP $DA54`, its end.
+#define PLAYER_MONSTER_OVER_PC 0x80d318u
+// ...and slot 3's potion's state, `$80:D31C`: its `RTS`, and its last frame's
+// `STZ $72 : JMP $DB08`.
+#define PLAYER_GHOST_STATE_PC 0x80d31cu
+#define PLAYER_GHOST_STATE_RTS_PC 0x80d342u
+#define PLAYER_GHOST_OVER_PC 0x80d33fu
 // ...and one that stops in the pose: the `PEA` before its computed `RTS`.
 #define PLAYER_FRAME_POSE_RETURN 0xce0bu
 #define PLAYER_SPLASHED_PC 0x80dd90u
@@ -148,6 +157,7 @@
 
 #define PLAYER_STATE_NORMAL 0x0000u
 #define PLAYER_STATE_MONSTER 0x0002u    // `$80:D2EA`: the potion's monster
+#define PLAYER_STATE_GHOST 0x0004u      // `$80:D31C`: slot 3's potion
 #define PLAYER_STATE_TURNING 0x0006u    // these two share a handler,
 #define PLAYER_STATE_TURNING_B 0x000eu  // `$80:D343`
 #define PLAYER_STATE_FLASHING 0x000au   // `$80:D404`
@@ -182,6 +192,7 @@
 #define PLAYER_MOVEMENT_WALK 0xe4bau
 #define PLAYER_MOVEMENT_MONSTER_WALK 0xe595u
 #define PLAYER_MOVEMENT_STUCK_WALK 0xe6c2u
+#define PLAYER_MOVEMENT_GHOST_WALK 0xe5ffu
 #define PLAYER_MOVEMENT_SWIM 0xe543u
 
 typedef enum {
@@ -202,6 +213,8 @@ typedef struct {
   bool timer_ran;          // ......and the pose timer had not run out
   bool punched;            // ...or the monster: a button to punch with is down
   bool potion_ran;         // ......and the potion has frames left
+  bool monster_over;       // .........until this one: it stops at `JMP $DA54`
+  bool ghost_over;         // ...or slot 3's: it stops at `JMP $DB08`
   bool under_turning;      // ...or flashing: over the turning state
   ActorNotifyWork told;    // ......what was in reach, and told
   bool flickered;          // ......an even frame, and the picture's flag flipped
@@ -241,7 +254,13 @@ void player_soaked(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
 // `log->unported` says it reached something that is the ROM's, so a caller
 // asks it of a copy first.
 void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
-                       bool v, PlayerFrameLog* log);
+                       bool v, bool first_of_two, PlayerFrameLog* log);
+
+// `$80:F1C2`, the monster back from the pictures a wall played: the rest of
+// its walk and of the frame, to the sleep. `c` and `v` are what the
+// pictures left.
+void player_wall_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
+                       bool c, bool v, PlayerFrameLog* log);
 
 // Would the port run this frame the way the ROM does? It runs the frame to
 // find out, so `w` is a copy.
@@ -260,6 +279,10 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log);
 #define PLAYER_MONSTER_STATE_RTS_PC 0x80d31bu
 bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
                           PlayerFrameLog* log);
+
+// `$80:D31C` on its own: slot 3's potion's state. Always the port's.
+void player_ghost_state(Wram* w, const Rom* rom, uint16_t page,
+                        PlayerFrameLog* log);
 
 // `$80:D343` on its own, the same way: the state the pad only turns the
 // player in.

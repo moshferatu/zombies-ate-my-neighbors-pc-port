@@ -1393,6 +1393,8 @@ static const CosimRun USE_RUN[USE_RUNS] = {
     [USE_LESS] = {278, 24, 2},
     [USE_MONSTER] = {110, 8, 2},     [USE_MONSTER_ON] = {46, 5, 1},
 };
+// The random potion's `STZ $24`.
+static const CosimRun USE_RUN_RANDOM = {28, 2, 1};
 
 static int item_use_cycles(const ItemUseLog* u, const Rom* rom, bool fast,
                            bool unaligned) {
@@ -1468,6 +1470,26 @@ static int item_use_cycles(const ItemUseLog* u, const Rom* rom, bool fast,
         run_add(&own, &RUN_RTS, 1);
       }
       run_add(&own, &USE_RUN[USE_MONSTER_ON], 1);
+      return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+    case ITEM_USE_GHOST:
+      // `JSR $EB48`, as the monster's, and `STZ $24 : JMP $DACB`.
+      run_add(&own, &RUN_JSR, 1);
+      run_add(&own, &USE_RUN[USE_LESS], 1);
+      if (u->ran_out) {
+        run_add(&own, &USE_RUN[USE_JMP_LESS], 1);
+        calls += select_cycles(&u->next, false, fast, unaligned);
+      } else {
+        run_add(&own, &RUN_TAKEN, 1);
+        run_add(&own, &RUN_RTS, 1);
+      }
+      run_add(&own, &USE_RUN[USE_MONSTER_ON], 1);
+      return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+    case ITEM_USE_RANDOM:
+      // `STZ $24`, to the `JSR $EDE0` the frame stops at.
+      run_add(&own, &USE_RUN_RANDOM, 1);
+      return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+    case ITEM_USE_BOX:
+      // `JMP ($EB07,X)` to the `JSR $EBE6` the frame stops at.
       return calls + cosim_run_cycles_dp(&own, fast, unaligned);
     default:  // `ITEM_USE_NOTHING`
       break;
@@ -2928,6 +2950,35 @@ static int f4ef_cycles(const ThreadCallWork* k, bool fast, bool unaligned) {
   return cosim_run_cycles_dp(&run, fast, unaligned);
 }
 
+// `$80:DB96`, the wanderer's: its two flat ways out, and the one that cannot
+// be met. A bubble, a freeze or a hurt is the enemy reactions', unpriced.
+static const CosimRun WANDERER_IGNORED_RUN = {84, 7, 0};  // CMP : BCS : CLC : RTL
+static const CosimRun WANDERER_HIT_RUN = {30 + 6 + 78 + 146, 5 + 13 + 14, 1};
+static const CosimRun WANDERER_DOWNED_RUN = {6 + 168, 12, 2};
+static const CosimRun WANDERER_SAME_RUN = {52 + 6 + 54, 5 + 2, 0};
+
+static bool wanderer_cycles(const ThreadCallWork* k, bool fast,
+                            bool unaligned, int* out) {
+  CosimRun run = {0, 0, 0};
+  switch (k->wanderer_exit) {
+    case WANDERER_IGNORED:
+      run_add(&run, &WANDERER_IGNORED_RUN, 1);
+      break;
+    case WANDERER_DOWNED:
+      run_add(&run, &WANDERER_HIT_RUN, 1);
+      run_add(&run, &WANDERER_DOWNED_RUN, 1);
+      break;
+    case WANDERER_SAME:
+      run_add(&run, &WANDERER_HIT_RUN, 1);
+      run_add(&run, &WANDERER_SAME_RUN, 1);
+      break;
+    default:
+      return false;
+  }
+  *out = cosim_run_cycles_dp(&run, fast, unaligned);
+  return true;
+}
+
 static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
                                int* out) {
   bool fast = in->fastrom;
@@ -2991,6 +3042,12 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     case ENEMY_B592_COLLIDE_ENTRY:
       cycles += b592_cycles(k, fast, dp_unaligned);
       break;
+    case WANDERER_COLLIDE_ENTRY: {
+      int handler;
+      if (!wanderer_cycles(k, fast, dp_unaligned, &handler)) return false;
+      cycles += handler;
+      break;
+    }
     case ACTOR_F4EF_COLLIDE_ENTRY:
       cycles += f4ef_cycles(k, fast, dp_unaligned);
       break;
@@ -4914,7 +4971,10 @@ static void shim_player_potion(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(psn_cycles(&r, rom, in->fastrom, (in->d & 0x00ffu) != 0));
   wram_w16(w, (uint16_t)(in->s - 1), PSN_USE_RETURN);
   out->s = (uint16_t)(in->s - 2);
-  out->pc = ITEM_MONSTER_PC;
+  out->pc = r.use.end == ITEM_USE_GHOST    ? ITEM_GHOST_PC
+            : r.use.end == ITEM_USE_RANDOM ? ITEM_RANDOM_PC
+            : r.use.end == ITEM_USE_BOX    ? ITEM_BOX_PC
+                                           : ITEM_MONSTER_PC;
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -4927,7 +4987,8 @@ static void shim_player_potion(Wram* w, const Rom* rom, const CosimRegs* in,
   out->p_keep = 0;
 }
 
-static const uint32_t PLAYER_POTION_EXITS[] = {ITEM_MONSTER_PC};
+static const uint32_t PLAYER_POTION_EXITS[] = {ITEM_MONSTER_PC, ITEM_GHOST_PC,
+                                               ITEM_RANDOM_PC, ITEM_BOX_PC};
 
 // `$80:D28C`, the third button's `JSR` back: its `BRA`, the countdowns and
 // the `RTS`.
@@ -7254,7 +7315,25 @@ static int registry_cycles(const char* name, int* cache) {
 // with neither taken, and a `BRA`: 176, less the 6 the loop below adds for a
 // yes. And someone standing there stops it, so that branch is a `BCS`.
 static const CosimRun MONSTER_WALK_WALL = {170, 19, 0};
+// A wall the monster pushes against: `JSR $E790`, the kind's compares and
+// `JMP $F1A5`, and `LDA $24 : BEQ`. With no direction held, the `BEQ` taken
+// to the `RTS` and the axis's `BRA`. With one, its sound, with the sound chip
+// caught up, and the pictures' list, to their `JSL`.
+static const CosimRun MONSTER_WALL_KIND = {48, 8, 0};    // AND : CMP : BEQ
+static const CosimRun MONSTER_WALL_KIND_B = {30, 5, 0};  // CMP : BEQ
+static const CosimRun MONSTER_WALL_JMP = {18, 3, 0};
+static const CosimRun MONSTER_WALL_WAY = {40, 4, 1};     // LDA $24 : BEQ
+static const CosimRun MONSTER_WALL_SOUND = {72 + 266 + 218, 7 + 17 + 22, 0};
+static const CosimRun MONSTER_WALL_PICK = {176, 16, 2};  // $80:F1B0-$F1BD
 static const CosimRun MONSTER_WALK_OPENING = {40, 3, 0};  // JSR $E450
+// The wanderer's: `BIT $54 : BVS`, and when not slow `LDA $0020 : AND : BEQ`,
+// and on an odd frame `JSR $E662`, before its first walk's `JSR $E450`. Its
+// walks are the slime's but for the ground's branch, taken on solid ground.
+static const CosimRun WANDER_WALK_SLOW_TEST = {40, 4, 1};
+static const CosimRun WANDER_WALK_ODD_TEST = {64, 8, 0};
+// The double step: `BIT $54 : BPL` not taken, `JSR $E4C1` and the first
+// walk's `JSR $E450`.
+static const CosimRun WALK_OPENING_TWICE = {40 + 40 + 40, 4 + 3 + 3, 1};
 // The stuck player's, `$80:E6C2`: solid ground is `ASL : BIT #$0C00 : BEQ`,
 // someone there stops it as it does the monster, and a step taken moves what
 // covers the player: `LDY $0A : STA $0002,Y`, with an `INC` for down.
@@ -7520,22 +7599,43 @@ static int walk_cycles_as(const WalkLog* log, const Rom* rom,
   // A walk back from a door's block begins at the door's `RTS` and the way
   // back to the axis.
   int cycles =
-      log->resumed
+      log->wall_resumed
+          ? cosim_run_cycles(&RUN_RTS, fast) + cosim_run_cycles(&RUN_BRA, fast)
+      : log->resumed
           ? cosim_run_cycles(&RUN_RTS, fast) +
                 cosim_run_cycles(&WALK_REACTION_BACK, fast)
           : cosim_run_cycles_dp(kind != WALK_ORDINARY ? &MONSTER_WALK_OPENING
+                                : log->twice          ? &WALK_OPENING_TWICE
                                                       : &WALK_OPENING,
                                 fast, unaligned) +
                 step_propose_cycles(log->doubled, in->fastrom, unaligned);
+  if (kind == WALK_WANDER && !log->resumed && !log->wall_resumed) {
+    CosimRun open = {0, 0, 0};
+    run_add(&open, &WANDER_WALK_SLOW_TEST, 1);
+    if (log->wander_slow) {
+      run_add(&open, &RUN_TAKEN, 1);
+    } else {
+      run_add(&open, &WANDER_WALK_ODD_TEST, 1);
+      run_add(&open, log->wander_odd ? &RUN_JSR : &RUN_TAKEN, 1);
+    }
+    cycles += cosim_run_cycles_dp(&open, fast, unaligned);
+  }
+  // The double step's second walk: the first's `RTS`, and its own `JSR`.
+  if (log->twice && !log->stopped_first)
+    cycles += cosim_run_cycles(&RUN_RTS, fast) +
+              cosim_run_cycles(&MONSTER_WALK_OPENING, fast) +
+              step_propose_cycles(log->doubled_second, in->fastrom, unaligned);
   for (int q = 0; q < WALK_ASK_COUNT; q++) {
     for (int yes = 0; yes < 2; yes++) {
       const int n = log->asked[q][yes];
       if (n == 0) continue;
       const CosimRun* around = &WALK_AROUND[q];
       if (q == WALK_ASK_REACTION && monster) around = &MONSTER_WALK_WALL;
-      if (q == WALK_ASK_REACTION && stuck) around = &STUCK_WALK_GROUND;
+      if (q == WALK_ASK_REACTION && (stuck || kind == WALK_GHOST))
+        around = &STUCK_WALK_GROUND;
       const bool on_yes = WALK_BRANCH_ON_YES[q] ||
-                          (kind != WALK_ORDINARY && q == WALK_ASK_THERE);
+                          (kind != WALK_ORDINARY && q == WALK_ASK_THERE) ||
+                          (kind == WALK_WANDER && q == WALK_ASK_GROUND);
       int each = cosim_run_cycles_dp(around, fast, unaligned);
       if (on_yes == (yes != 0))
         each += cosim_run_cycles(&WALK_TAKEN_BRANCH, fast);
@@ -7549,6 +7649,23 @@ static int walk_cycles_as(const WalkLog* log, const Rom* rom,
     cycles += leap_cycles(&log->leap[i], &log->leap_span[i], in);
   for (int i = 0; i < log->bounces; i++)
     cycles += bounce_begin_cycles(&log->bounce[i], in);
+  if (log->walls) {
+    CosimRun wall = {0, 0, 0};
+    run_add(&wall, &RUN_JSR, log->walls);
+    run_add(&wall, &MONSTER_WALL_KIND, log->walls);
+    run_add(&wall, &MONSTER_WALL_KIND_B, log->walls_b);
+    run_add(&wall, &RUN_TAKEN, log->walls);
+    run_add(&wall, &MONSTER_WALL_JMP, log->walls);
+    run_add(&wall, &MONSTER_WALL_WAY, log->walls);
+    run_add(&wall, &RUN_TAKEN, log->walls_still);
+    run_add(&wall, &RUN_RTS, log->walls_still);
+    run_add(&wall, &RUN_BRA, log->walls_still);
+    if (log->wall_stopped) {
+      run_add(&wall, &MONSTER_WALL_SOUND, 1);
+      run_add(&wall, &MONSTER_WALL_PICK, 1);
+    }
+    cycles += cosim_run_cycles_dp(&wall, fast, unaligned);
+  }
   if (stuck && log->took[0])
     cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_X, fast, unaligned);
   if (stuck && log->took[1])
@@ -7615,16 +7732,33 @@ static bool supported_monster_walk(Wram* scratch, const Rom* rom,
   return monster_walk_checked(scratch, rom, in->d, NULL);
 }
 
+// The walk ends at its `RTS`, or at the pictures of a wall it pushes
+// against, with the axis's `JSR $E790` under them.
 static void shim_monster_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   WalkLog log = {0};
   monster_walk_checked(w, rom, in->d, &log);
   cosim_cost(walk_cycles_as(&log, rom, in, WALK_OF_MONSTER));
-  out->c = log.last_yes;
-  out->v = log.overflow;
-  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  if (log.stopped) {
+    wram_w16(w, (uint16_t)(in->s - 1), log.stop_return);
+    PortCpu c = log.stop;
+    const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
+    c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
+    c.s = (uint16_t)(in->s - 2);
+    cpu_to(&c, out);
+    return;
+  }
+  out->s = in->s;
+  out->pc = MONSTER_WALK_RTS_PC;
   out->regs = 0;
+  out->p = (uint8_t)(in->p & ~(PORT_P_C | PORT_P_V));
+  if (log.last_yes) out->p |= PORT_P_C;
+  if (log.overflow) out->p |= PORT_P_V;
+  out->p_keep = PORT_P_N | PORT_P_Z;
 }
+
+static const uint32_t MONSTER_WALK_EXITS[] = {MONSTER_WALK_RTS_PC,
+                                              MONSTER_WALL_PICTURES_PC};
 
 // What covers the player is a record in low WRAM.
 static bool accepts_stuck_walk(const Wram* w, const CosimRegs* in) {
@@ -7637,6 +7771,28 @@ static void shim_stuck_walk(Wram* w, const Rom* rom, const CosimRegs* in,
   WalkLog log = {0};
   stuck_walk(w, rom, in->d, &log);
   cosim_cost(walk_cycles_as(&log, rom, in, WALK_STUCK));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
+
+static void shim_wander_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  WalkLog log = {0};
+  wander_walk(w, rom, in->d, &log);
+  cosim_cost(walk_cycles_as(&log, rom, in, WALK_WANDER));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
+
+static void shim_ghost_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  WalkLog log = {0};
+  ghost_walk(w, rom, in->d, &log);
+  cosim_cost(walk_cycles_as(&log, rom, in, WALK_GHOST));
   out->c = log.last_yes;
   out->v = log.overflow;
   out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
@@ -9475,6 +9631,7 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_GONE_CLEARED] = {86, 8, 1},
     [TS_MONSTER_ENDS_ASK] = {40, 4, 1},
     [TS_MONSTER_ENDED] = {112, 8, 4},
+    [TS_MONSTER_ENDS_PICTURES] = {64, 7, 1},
     [TS_PUNCH_TOLD_HEAD] = {40, 4, 1},
     [TS_PUNCH_BOX] = {670, 59, 4},
     [TS_PUNCH_AGAIN] = {58, 6, 1},
@@ -9720,6 +9877,130 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     // `rng_cycles`'s two.
     [TS_RNG_ONCE] = {338, 31, 0},
     [TS_RNG_TWICE] = {372, 34, 0},
+    [TS_CLC] = {12, 1, 0},
+    [TS_POTION_PICTURED] = {64, 7, 1},
+    [TS_RANDOM_DRAW] = {54, 4, 0},
+    [TS_BOX_TEST] = {64, 8, 0},
+    [TS_SP_MADE] = {854, 77, 10},
+    [TS_SP_DRAWN] = {48, 7, 0},
+    [TS_SP_PLACED] = {104, 11, 2},
+    [TS_SP_SEEK] = {86, 8, 1},
+    [TS_SP_JMP] = {18, 3, 0},
+    [TS_SR_HEAD] = {56, 4, 2},
+    [TS_SR_COUNT] = {62, 4, 1},
+    [TS_SR_NONE] = {52, 2, 0},
+    [TS_SR_NEXT] = {112, 13, 1},
+    [TS_SR_WRAP] = {58, 7, 1},
+    [TS_SR_FLAGS] = {52, 5, 0},
+    [TS_SR_LSR] = {24, 3, 0},
+    [TS_SR_KIND] = {70, 8, 0},
+    [TS_SR_KIND4] = {30, 5, 0},
+    [TS_SR_SUB] = {104, 9, 0},
+    [TS_SR_NEG] = {30, 4, 0},
+    [TS_SR_FOUND] = {80, 4, 1},
+    [TS_SP_FLYOFF] = {102, 8, 1},
+    [TS_SP_WOKE] = {70, 8, 1},
+    [TS_SP_PICTURE] = {58, 6, 1},
+    [TS_SP_CK_TARGET] = {80, 7, 1},
+    [TS_SP_CK_SUB] = {132, 11, 1},
+    [TS_SP_CK_SUB_Y] = {104, 9, 0},
+    [TS_SP_BOX] = {462, 46, 2},
+    [TS_SP_TRIES] = {62, 4, 1},
+    [TS_SP_ASK] = {56, 4, 2},
+    [TS_SP_TURN_TEST] = {96, 8, 3},
+    [TS_SP_TURN_CW] = {80, 7, 2},
+    [TS_SP_TURN_ADD] = {30, 4, 0},
+    [TS_SP_TURN_CCW] = {108, 9, 3},
+    [TS_SP_TURN_CMP] = {40, 4, 1},
+    [TS_SP_TURN_TIE] = {40, 4, 1},
+    [TS_SP_TURN_UP] = {112, 6, 2},
+    [TS_SP_TURN_DOWN] = {78, 4, 2},
+    [TS_SP_TURN_WRAP] = {40, 4, 1},
+    [TS_SP_TURN_EIGHT] = {30, 5, 0},
+    [TS_SP_WAY] = {238, 24, 4},
+    [TS_SP_MOVE] = {362, 26, 8},
+    [TS_SP_FLY_WAY] = {194, 21, 2},
+    [TS_SP_FLY_MOVE] = {268, 20, 3},
+    [TS_SP_FLY_COUNT] = {62, 4, 1},
+    [TS_BOX_HEARD] = {308, 28, 7},
+    [TS_BOX_SPAWNED] = {74, 6, 0},
+    [TS_BOX_WAITED] = {46, 5, 0},
+    [TS_BOX_BACK] = {12, 2, 0},
+    [TS_STZ_24] = {28, 2, 1},
+    [TS_RANDOM_DRAWN] = {42, 5, 0},
+    [TS_WANDER_BEGIN] = {122, 14, 1},
+    [TS_WANDER_HEARD] = {270, 28, 5},
+    [TS_WANDER_RESTED] = {110, 13, 2},
+    [TS_WANDER_FLASHED] = {36, 6, 0},
+    [TS_WANDER_AND] = {18, 3, 0},
+    [TS_WANDER_IS] = {30, 5, 0},
+    [TS_WANDER_AWAY_PAD] = {80, 7, 1},
+    [TS_WANDER_AWAY] = {88, 10, 1},
+    [TS_WANDER_PAD] = {80, 6, 1},
+    [TS_WANDER_PAD_SAME] = {40, 4, 1},
+    [TS_WANDER_ASK] = {56, 4, 2},
+    [TS_WANDER_NEAR_TEST] = {30, 5, 0},
+    [TS_WANDER_NEAR] = {68, 5, 2},
+    [TS_WANDER_FAR] = {114, 11, 3},
+    [TS_WANDER_FAR_Y] = {68, 6, 2},
+    [TS_WANDER_REDRAWN] = {90, 10, 0},
+    [TS_WANDER_MOVED] = {124, 10, 4},
+    [TS_WANDER_WAY] = {80, 7, 2},
+    [TS_WANDER_FACE] = {40, 4, 1},
+    [TS_WANDER_TIMER] = {40, 4, 1},
+    [TS_WANDER_TIMER_DEC] = {50, 2, 1},
+    [TS_WANDER_LEFT] = {40, 4, 1},
+    [TS_WANDER_LEFT_DEC] = {62, 4, 1},
+    [TS_WANDER_OVER] = {56, 4, 2},
+    [TS_WANDER_ENDS_TEST] = {40, 4, 1},
+    [TS_WANDER_ENDS_FLASH] = {54, 9, 0},
+    [TS_WANDER_ENDED] = {256, 22, 5},
+    [TS_RANDOM_JMP] = {36, 5, 0},
+    [TS_RANDOM_MONSTER] = {56, 4, 2},
+    [TS_RANDOM_HEALED] = {86, 8, 1},
+    [TS_RANDOM_POISONED] = {178, 15, 2},
+    [TS_RANDOM_SPED] = {92, 10, 2},
+    [TS_ONE_FEWER] = {278, 24, 2},
+    [TS_FLASH_BEGIN] = {222, 18, 3},
+    [TS_FLASH_HIDE] = {154, 13, 2},
+    [TS_FLASH_SHOW] = {154, 13, 2},
+    [TS_FLASH_COUNT] = {62, 4, 1},
+    [TS_GHOST_BEGIN] = {56, 4, 2},
+    [TS_GHOST_HEARD] = {46, 5, 1},
+    [TS_GHOST_RESTED] = {174, 21, 3},
+    [TS_GHOST_FLASHED] = {36, 6, 0},
+    [TS_GHOST_ENDS_TEST] = {40, 4, 1},
+    [TS_GHOST_ENDS_ASK] = {56, 4, 2},
+    [TS_GHOST_ENDS_ASKED] = {12, 2, 0},
+    [TS_GHOST_ENDS_LATER] = {46, 5, 1},
+    [TS_GHOST_ENDS_FLASH] = {54, 9, 0},
+    [TS_GHOST_ENDED] = {210, 17, 4},
+    [TS_ARTIFACT_ENTER] = {138, 13, 0},
+    [TS_ARTIFACT_ASK] = {210, 17, 4},
+    [TS_ARTIFACT_MADE] = {664, 64, 3},
+    [TS_ARTIFACT_SET] = {40, 1, 0},
+    [TS_ARTIFACT_HEARD] = {46, 5, 1},
+    [TS_ARTIFACT_STEP] = {158, 11, 3},
+    [TS_ARTIFACT_SHOW] = {68, 5, 1},
+    [TS_ARTIFACT_PICTURE] = {110, 10, 2},
+    [TS_ARTIFACT_ORA] = {92, 8, 0},
+    [TS_ARTIFACT_AND] = {80, 6, 0},
+    [TS_ARTIFACT_SHOWN] = {150, 10, 1},
+    [TS_ARTIFACT_PLACE] = {414, 34, 3},
+    [TS_SPARKLE_PLACE] = {236, 15, 7},
+    [TS_SPARKLE_MADE] = {650, 59, 3},
+    [TS_SPARKLE_SET] = {40, 1, 0},
+    [TS_SPARKLE_ASK] = {74, 7, 2},
+    [TS_SPARKLE_FOUND_TEST] = {24, 3, 0},
+    [TS_SPARKLE_COUNT] = {52, 5, 1},
+    [TS_SPARKLE_BLINK] = {226, 19, 2},
+    [TS_SPARKLE_SOUNDS] = {92, 9, 0},
+    [TS_SPARKLE_AGAIN] = {120, 7, 1},
+    [TS_SPARKLE_BACK] = {40, 4, 1},
+    [TS_SPARKLE_PICTURED] = {162, 17, 1},
+    [TS_SPARKLE_GONE] = {90, 3, 1},
+    [TS_FADE_OUT_STEP] = {68, 5, 0},
+    [TS_FADE_OUT_BLANK] = {52, 6, 0},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -9766,7 +10047,9 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu, 0x81cd08u, 0x808581u, 0x808a03u, 0x80d9afu, 0x82de52u};
+    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu, 0x81cd08u, 0x808581u, 0x808a03u, 0x80d9afu, 0x82de52u,
+    FADE_OUT_YIELD_PC, 0x83b5c4u, 0x83b5e0u, 0x80dad8u, 0x80ee13u, 0x80ee29u,
+    0x80ee57u, 0x80db5au, 0x80ebf7u};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_BYSTANDER_MEETS[] = {
     BYSTANDER_TOO_SOON_PC, BYSTANDER_MEETS_SLEEP_PC, BYSTANDER_HUSH_CALL_PC,
@@ -9775,9 +10058,39 @@ static const uint32_t TS_EXITS_BYSTANDER_BACK[] = {BYSTANDER_YIELD_PC,
                                                    BYSTANDER_END_PC};
 static const uint32_t TS_EXITS_WAIT_FRAMES[] = {WAIT_FRAMES_WAI_PC,
                                                 WAIT_FRAMES_RTL_PC};
+static const uint32_t TS_EXITS_FADE_OUT[] = {FADE_OUT_YIELD_PC,
+                                             FADE_OUT_WAI_PC};
+static const uint32_t TS_EXITS_POTION[] = {
+    POTION_PICTURES_CALL_PC, FLASH_HIDE_YIELD_PC,     FLASH_SHOW_YIELD_PC,
+    FLASH_RTS_PC,            GHOST_DRINK_CALL_PC,     GHOST_REST_CALL_PC,
+    GHOST_FLASH_CALL_PC,     GHOST_SWAP_CALL_PC,      GHOST_ENDS_ASK_CALL_PC,
+    GHOST_ENDS_LATER_PC,     GHOST_ENDS_UNHANDLED_PC, GHOST_ENDS_FLASH_CALL_PC,
+    GHOST_ENDED_CALL_PC,     RANDOM_MONSTER_ASK_CALL_PC, RANDOM_NOTHING_PC,
+    RANDOM_MONSTER_FEWER_PC, RANDOM_HEALED_FEWER_PC, RANDOM_POISONED_FEWER_PC,
+    RANDOM_SPED_RTS_PC,      ONE_FEWER_NEXT_PC,
+    BOX_BUSY_RTS_PC,         BOX_UNHANDLED_CALL_PC,  BOX_SPAWN_CALL_PC,
+    BOX_SLEEP_PC,            BOX_SLEEP_2_PC,         BOX_WAIT_PC,
+    BOX_HANDLED_CALL_PC,     BOX_REFUSED_PC,         BOX_FEWER_PC,
+    BOX_FEWER_LEFT_PC,       BOX_FEWER_NEXT_PC,
+    WANDER_HANDLER_CALL_PC,  WANDER_REST_CALL_PC,    WANDER_FLASH_CALL_PC,
+    WANDER_SWAP_PC,          WANDER_NEAREST_CALL_PC, WANDER_BEARING_CALL_PC,
+    WANDER_REDRAW_CALL_PC,   WANDER_STATE_RTS_PC,    WANDER_OVER_PC,
+    WANDER_ENDS_FLASH_CALL_PC, WANDER_ENDED_CALL_PC,
+    0x80ee0du, 0x80ee23u, 0x80ee40u, 0x80ee47u, 0x80ee4eu};
+static const uint32_t TS_EXITS_SPIRIT[] = {
+    SPIRIT_ALLOC_CALL_PC, SPIRIT_HANDLER_CALL_PC, SPIRIT_MULTIPLY_CALL_PC,
+    SPIRIT_YIELD_PC,      SPIRIT_TELL_CALL_PC,    SPIRIT_BEARING_CALL_PC,
+    SPIRIT_FLY_CALL_PC,   SPIRIT_END_PC};
+static const uint32_t TS_EXITS_ARTIFACT[] = {
+    ARTIFACT_ALLOC_CALL_PC, ARTIFACT_HANDLER_CALL_PC, ARTIFACT_SOUND_CALL_PC,
+    ARTIFACT_YIELD_PC,      ARTIFACT_END_PC};
+static const uint32_t TS_EXITS_SPARKLE[] = {
+    SPARKLE_MARK_CALL_PC,   SPARKLE_ALLOC_CALL_PC,  SPARKLE_HANDLER_CALL_PC,
+    SPARKLE_YIELD_PC,       SPARKLE_ASK_CALL_PC,    SPARKLE_TICK_SOUND_PC,
+    SPARKLE_FOUND_SOUND_PC, SPARKLE_GONE_SOUND_PC,  SPARKLE_FREE_CALL_PC};
 static const uint32_t TS_EXITS_MONSTER[] = {
     MONSTER_PICTURES_CALL_PC, MONSTER_SWAP_CALL_PC, MONSTER_ENDS_SHOWN_PC,
-    MONSTER_ENDS_CALL_PC};
+    MONSTER_ENDS_CALL_PC, MONSTER_ENDS_PICTURES_CALL_PC};
 static const uint32_t TS_EXITS_LEAVES[] = {
     PLAYER_LEAVES_RTS_PC,      PLAYER_LEFT_CALL_PC, PLAYER_LEFT_PANEL_CALL_PC,
     PLAYER_LEFT_SLEEP_PC,      PLAYER_GONE_SLEEP_PC};
@@ -9798,11 +10111,12 @@ static const uint32_t TS_EXITS_SMALL[] = {
     PAGE_CLEAR_RTS_PC,    PAGE_PULL_RTL_PC,     CARRY_SET_RTS_PC,
     VICTIM_GONE_CALL_PC,  GAME_LOST_RTL_PC,     STUCK_FREED_RTS_PC,
     PANEL_SIDE_1_CALL_PC, PANEL_SIDE_2_CALL_PC, MAIN_BACK_NEXT_PC,
-    MAIN_BACK_OVER_PC};
+    MAIN_BACK_OVER_PC,    LEVEL_DONE_RTL_PC,    BOX_BUSY_RTS_PC};
 static const uint32_t TS_EXITS_PLAYER_HIT[] = {PLAYER_HIT_SHOW_CALL_PC,
                                                PLAYER_HIT_SHOWN_CALL_PC,
                                                FLASHING_END_CALL_PC};
-static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u, 0x808165u, 0x81f258u, 0x82f925u};
+static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u, 0x808165u, 0x81f258u, 0x82f925u,
+                                         0x80ec29u, 0x80ec3du};
 static const uint32_t TS_EXITS_LEAP[] = {LEAP_SPLASH_CALL_PC,
                                          SOAK_SPLASH_CALL_PC};
 static const uint32_t TS_EXITS_STAGGER[] = {
@@ -18224,7 +18538,7 @@ static int pose_calls(const PoseLog* log, const Rom* rom,
   calls += log->handlers_set * cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
   calls += log->tile_looks * cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
   if (log->bounce_down) calls += bit3_cycles(log->on_trampoline, in->fastrom);
-  if (log->jumped_off)
+  if (log->partner_asked)
     calls += partner_near_cycles(&log->partner, in->fastrom);
   return calls;
 }
@@ -18574,6 +18888,27 @@ static const CosimRun POSE_RUN_OFF_AGAIN = {166, 17, 4};   // $80:E1D9-$E1E7
 static const CosimRun POSE_RUN_OFF_GROUND = {232, 26, 3};  // $80:E1EA, $E2C5-$E2D7
 // `$80:E2DA`, up again: after its two `JSR`s, to the `BEQ` past the water.
 static const CosimRun POSE_RUN_GOT_UP = {212, 20, 3};  // $80:E2E4-$E2F6
+// The other bounce. A wait that does not jump off: the `BCC` after the
+// other player is asked about, taken, and the `JMP $E090` they all reach.
+static const CosimRun POSE_RUN_JUMP_FAR = {12, 2, 0};  // $80:E05A
+// `$80:E090`: its sound as the jump off's, then the speed.
+static const CosimRun POSE_RUN_AGAIN_TEST = {58, 7, 1};  // $80:E097-$E09D
+static const CosimRun POSE_RUN_AGAIN_RAISE = {62 + 6, 4, 1};  // INC : BRA
+static const CosimRun POSE_RUN_AGAIN_SET = {138, 15, 3};  // $80:E0A2-$E0B0
+// `$80:E0B1`, after its `JSR $F6F7`.
+static const CosimRun POSE_RUN_UP_SHOW = {58, 6, 0};    // $80:E0B4-$E0B9
+static const CosimRun POSE_RUN_UP_TEST = {58, 7, 1};    // $80:E0BA-$E0C0
+static const CosimRun POSE_RUN_UP_NEXT = {82, 11, 1};   // $80:E0C5-$E0CF
+// `$80:E0D0`, after its `JSR $F6F7`.
+static const CosimRun POSE_RUN_TOP_SIGN = {40, 4, 1};   // $80:E0D3-$E0D6
+static const CosimRun POSE_RUN_TOP_TEST = {30, 5, 0};   // CMP # : BCC or BCS
+static const CosimRun POSE_RUN_TOP_SHOW = {36, 6, 0};   // LDA # : JMP $F70E
+static const CosimRun POSE_RUN_TOP_NEXT = {82, 11, 1};  // $80:E0FB-$E105
+// `$80:E106`.
+static const CosimRun POSE_RUN_FALL_TEST = {80, 7, 1};  // $80:E106-$E10C
+static const CosimRun POSE_RUN_FALL_SIGN = {12, 2, 0};  // $80:E10D
+// `$80:E855`, to the `BCC` after `JSL terrain_tile_bit3`.
+static const CosimRun POSE_RUN_SETTLE = {218, 18, 2};
 
 static void pose_rise_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_ARC_RISE);
@@ -18622,6 +18957,107 @@ static void pose_bounce_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_ARC_AT);
 }
 
+static void pose_stand_begin_bill(PoseBill* b);
+
+// `$80:E855`: a wait begun on bit 3, or a stand.
+static void pose_settle_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_SETTLE);
+  if (b->log->on_trampoline) {
+    pose_add(b, &POSE_RUN_JMP);
+    pose_add(b, &POSE_RUN_BOUNCE_WAIT_BEGIN);
+    pose_add(b, &POSE_RUN_ARC_AT);
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_JMP);
+    pose_stand_begin_bill(b);
+  }
+}
+
+// `$80:E090`, from a `JMP`.
+static void pose_bounce_again_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_JMP);
+  pose_add(b, &POSE_RUN_JUMP_SOUND);
+  pose_add(b, &POSE_RUN_AGAIN_TEST);
+  if (b->log->launch_raised) pose_add(b, &POSE_RUN_AGAIN_RAISE);
+  else pose_taken(b);
+  pose_add(b, &POSE_RUN_AGAIN_SET);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E0B1`.
+static void pose_bounce_up_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_JSR);
+  pose_rise_bill(b);
+  pose_add(b, &POSE_RUN_UP_SHOW);
+  pose_add(b, &POSE_RUN_ARC_AT);
+  pose_add(b, &POSE_RUN_UP_TEST);
+  if (b->log->rising_fast) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_JMP);
+  pose_add(b, &POSE_RUN_UP_NEXT);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E0D0`. Its four ends each load a picture and `JMP $F70E`; the
+// third is reached by a `BCC` from the first test or a `BCS` from the
+// second.
+static void pose_bounce_top_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_JSR);
+  pose_rise_bill(b);
+  pose_add(b, &POSE_RUN_TOP_SIGN);
+  const uint16_t picture = (uint16_t)log->top_picture;
+  if (!log->top_negative) {
+    pose_add(b, &POSE_RUN_TOP_TEST);
+    if (picture == 0x18) pose_taken(b);
+    pose_add(b, &POSE_RUN_TOP_SHOW);
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_TOP_TEST);
+    if (picture == 0x18) {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_TOP_SHOW);
+    } else {
+      pose_add(b, &POSE_RUN_TOP_TEST);
+      if (picture == 0x1c) {
+        pose_add(b, &POSE_RUN_TOP_SHOW);
+      } else {
+        pose_taken(b);
+        pose_add(b, &POSE_RUN_JMP);
+        pose_add(b, &POSE_RUN_TOP_NEXT);
+      }
+    }
+  }
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E106`.
+static void pose_bounce_fall_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_FALL_TEST);
+  if (log->fall_down && !log->fall_under) {
+    // `BEQ` taken, at nought.
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_JMP);
+    pose_settle_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_FALL_SIGN);
+  if (log->fall_down) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_JMP);
+    pose_settle_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_JSR);
+  pose_rise_bill(b);
+  pose_add(b, &POSE_RUN_TOP_SHOW);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
 // `$80:E11B`, from its `JMP`. The bit tests after the looks: `BNE` taken
 // with bit 3 at the first, `BEQ` taken without bit 0, or `BNE` taken with
 // bit 8 after it.
@@ -18638,22 +19074,44 @@ static void pose_jump_off_bill(PoseBill* b) {
   else pose_add(b, &POSE_RUN_JUMP_LOOK_ON);
   pose_add(b, &POSE_RUN_JUMP_BIT);
   if (log->off_bit0) pose_add(b, &POSE_RUN_JUMP_BIT);
+  if (log->bounced_again) {
+    pose_bounce_again_bill(b);
+    return;
+  }
   pose_taken(b);
   pose_add(b, &POSE_RUN_JUMP_TILE);
   pose_add(b, &POSE_RUN_ARC_AT);
 }
 
-// `$80:E035`: the timer, or a jump off.
+// `$80:E035`: the timer, or a jump off, or the other bounce, which each test
+// that does not jump off reaches by a branch to `$80:E068  JMP $E090`.
 static void pose_bounce_wait_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
   pose_add(b, &POSE_RUN_ARC_TIMER);
-  if (b->log->waiting) {
+  if (log->waiting) {
     pose_taken(b);
     pose_add(b, &POSE_RUN_RTS);
     return;
   }
   pose_add(b, &POSE_RUN_JUMP_SPEED);
+  if (log->wait_low) {
+    pose_taken(b);
+    pose_bounce_again_bill(b);
+    return;
+  }
   pose_add(b, &POSE_RUN_JUMP_WAY);
+  if (log->wait_still) {
+    pose_taken(b);
+    pose_bounce_again_bill(b);
+    return;
+  }
   pose_add(b, &POSE_RUN_JUMP_ASK);
+  if (!log->jumped_off) {
+    pose_add(b, &POSE_RUN_JUMP_FAR);
+    pose_taken(b);
+    pose_bounce_again_bill(b);
+    return;
+  }
   pose_add(b, &POSE_RUN_JUMP_GO);
   pose_jump_off_bill(b);
 }
@@ -18763,6 +19221,31 @@ static int leap_cycles(const PoseLog* log, const PlayerSpan* span,
   return pose_total(&b, in) + cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
 }
 
+// `$80:DD0D` as an entry of its own: weapon 5's kick into the water ends at
+// its `JMP` (`port/lunge.h`). Nothing in it is the ROM's.
+static bool pose_page_ok(const Wram* scratch, const CosimRegs* in);
+
+static bool guard_pose_leap(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  (void)rom;
+  return pose_page_ok(scratch, in);
+}
+
+static void shim_pose_leap(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  static PoseLog log;
+  PlayerSpan span;
+  log = (PoseLog){0};
+  pose_leap(w, rom, in->d, &log, &span);
+  cosim_cost(leap_cycles(&log, &span, in));
+  out->regs = 0;
+  out->flags = 0;
+  out->c = log.c;
+  out->v = log.v;
+  if (log.c_set) out->flags |= COSIM_FLAG_C;
+  if (log.v_set) out->flags |= COSIM_FLAG_V;
+}
+
 // `$80:DDBD`, from the bank test's `JMP` to the `RTS` it ends with, which is
 // the swim's. Its sound is `apu_play_sfx` with the sound chip caught up.
 static const CosimRun POSE_RUN_CLIMB_SOUND = {72 + 266 + 218, 7 + 17 + 22, 0};
@@ -18864,17 +19347,24 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
 }
 
 // A handler, or a piece of one, that is asked by running it on the copy.
-// The monster's punch tells those in its box, and each has to have a price.
+// The monster's punch tells those in its box. One told of a hit it dies of
+// or lives through (`$81:8888`'s deep exits, which no table prices) is still
+// the port's, at the row's cycles: with no 65816 in the game, turning it down
+// would stop it. Every shot that kills does the same.
 static bool pose_tried(void (*piece)(Wram*, const Rom*, uint16_t, PoseLog*),
                        bool (*page_ok)(const Wram*, const CosimRegs*),
                        Wram* scratch, const Rom* rom, const CosimRegs* in) {
   static PoseLog log;
-  int told;
   if (!page_ok(scratch, in)) return false;
   log = (PoseLog){0};
   piece(scratch, rom, in->d, &log);
-  return !log.unported &&
-         (!log.punched || notify_box_cycles(&log.told, in, &told));
+  return !log.unported;
+}
+
+// ...and its price, when every one it told has one.
+static bool pose_told_priced(const PoseLog* log, const CosimRegs* in) {
+  int told;
+  return !log->punched || notify_box_cycles(&log->told, in, &told);
 }
 
 // `$80:D4E9`, reached by `JMP`.
@@ -18958,10 +19448,11 @@ static void pose_leave(Wram* w, const CosimRegs* in, const PoseLog* log,
     name(w, rom, in->d, &log);                                               \
     PoseBill b = {{0, 0, 0}, &log};                                          \
     name##_bill(&b);                                                         \
-    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in) -              \
-               (log.sleep == POSE_AWAKE && !log.punch_begun                  \
-                    ? cosim_run_cycles(&RUN_RTS, fetch_fast(in))             \
-                    : 0));                                                   \
+    if (pose_told_priced(&log, in))                                          \
+      cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in) -            \
+                 (log.sleep == POSE_AWAKE && !log.punch_begun                \
+                      ? cosim_run_cycles(&RUN_RTS, fetch_fast(in))           \
+                      : 0));                                                 \
     pose_leave(w, in, &log, out);                                            \
   }
 
@@ -19185,6 +19676,13 @@ static const CosimRun PFRAME_RUN_MONSTER_DIR = {80, 7, 1};
 static const CosimRun PFRAME_RUN_MONSTER_FACE = {46, 4, 1};
 static const CosimRun PFRAME_RUN_MONSTER_POTION = {108, 8, 2};
 static const CosimRun PFRAME_RUN_MONSTER_SPENT = {46, 4, 1};
+// `$80:D31C`, slot 3's potion's state: after its `JSR`, to the `BEQ` on the
+// direction, and `STA $26` when one is held. Its `$56` is the monster's.
+static const CosimRun PFRAME_RUN_GHOST_HEAD = {164 + 12, 14, 3};
+static const CosimRun PFRAME_RUN_MONSTER_FACE_STA = {28, 2, 1};
+// ...and the last frame: the `BNE` not taken and `STZ $72`, to the end's
+// `JMP $DA54`, which the harness makes.
+static const CosimRun PFRAME_RUN_MONSTER_OVER = {102 + 28, 10, 3};
 // `$80:D404`, the flashing: the test of what is under it, the box and its
 // `JSL`, the hurt timer and the test of the frame, the flip, and `DEC $74 :
 // BPL` taken.
@@ -19364,6 +19862,41 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
       run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE : &RUN_TAKEN, 1);
       run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
       run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+      if (log.monster_over) {
+        // Stopped at the end's `JMP`, with the state's return under it.
+        run_add(&own, &PFRAME_RUN_MONSTER_OVER, 1);
+        cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+        wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_STATE_RETURN);
+        out->s = (uint16_t)(in->s - 2);
+        out->pc = PLAYER_MONSTER_OVER_PC;
+        out->regs = 0;
+        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C)) |
+                           PORT_P_Z | (log.c ? PORT_P_C : 0));
+        return;
+      }
+      run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
+                                   : &PFRAME_RUN_MONSTER_SPENT, 1);
+      run_add(&own, &RUN_RTS, 1);
+      break;
+    case PLAYER_STATE_GHOST:
+      run_add(&own, &RUN_JSR, 1);  // $80:D31C  JSR floor_effect
+      calls += floor_cycles(&log.floor, in->fastrom, unaligned);
+      run_add(&own, &PFRAME_RUN_GHOST_HEAD, 1);
+      run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE_STA : &RUN_TAKEN, 1);
+      run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
+      run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+      if (log.ghost_over) {
+        // Stopped at the end's `JMP`, with the state's return under it.
+        run_add(&own, &PFRAME_RUN_MONSTER_OVER, 1);
+        cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+        wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_STATE_RETURN);
+        out->s = (uint16_t)(in->s - 2);
+        out->pc = PLAYER_GHOST_OVER_PC;
+        out->regs = 0;
+        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C)) |
+                           PORT_P_Z | (log.c ? PORT_P_C : 0));
+        return;
+      }
       run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
                                    : &PFRAME_RUN_MONSTER_SPENT, 1);
       run_add(&own, &RUN_RTS, 1);
@@ -19424,6 +19957,9 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case POSE_HANDLER_BOUNCE_WAIT: pose_bounce_wait_bill(&pose); break;
     case POSE_HANDLER_BOUNCE_OFF: pose_bounce_off_bill(&pose); break;
     case POSE_HANDLER_BOUNCE_LANDED: pose_bounce_landed_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_UP: pose_bounce_up_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_TOP: pose_bounce_top_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_FALL: pose_bounce_fall_bill(&pose); break;
     case POSE_HANDLER_SWIM: pose_swim_bill(&pose); break;
     default: pose_walk_firing_bill(&pose); break;
   }
@@ -19475,15 +20011,29 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     // the reaction's under it.
     calls += pframe_move_bill(&own, &log, rom, in);
     cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+    if (log.walk.wall_stopped) {
+      // ...or at a wall's pictures, with the axis's `JSR $E790` under them.
+      wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_MOVE_RETURN);
+      wram_w16(w, (uint16_t)(in->s - 3), log.walk.stop_return);
+      PortCpu c = log.walk.stop;
+      const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
+      c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
+      c.s = (uint16_t)(in->s - 4);
+      cpu_to(&c, out);
+      return;
+    }
+    // The double step's first walk has its `JSR $E4C1` under the axis's.
+    const uint16_t under = log.walk.stopped_first ? 2 : 0;
     wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_MOVE_RETURN);
-    wram_w16(w, (uint16_t)(in->s - 3),
+    if (under) wram_w16(w, (uint16_t)(in->s - 3), WALK_TWICE_RETURN);
+    wram_w16(w, (uint16_t)(in->s - 3 - under),
              log.walk.stop_axis == 0 ? WALK_ACROSS_RETURN
                                      : WALK_UP_DOWN_RETURN);
-    wram_w16(w, (uint16_t)(in->s - 5), log.walk.stop_return);
+    wram_w16(w, (uint16_t)(in->s - 5 - under), log.walk.stop_return);
     PortCpu c = log.walk.stop;
     const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
     c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
-    c.s = (uint16_t)(in->s - 6);
+    c.s = (uint16_t)(in->s - 6 - under);
     cpu_to(&c, out);
     return;
   }
@@ -19494,6 +20044,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t PLAYER_FRAME_EXITS[] = {
     PLAYER_FRAME_YIELD_PC, HIT_FLINCH_PC,           HIT_OTHER_PC,
+    PLAYER_MONSTER_OVER_PC, MONSTER_WALL_PICTURES_PC, PLAYER_GHOST_OVER_PC,
     POSE_SPLASH_SOUND_PC,  POSE_RECOIL_YIELD_PC,    POSE_BAND_B_AIM_YIELD_PC,
     POSE_SOAK_SOUND_PC,
     WALK_DOOR_PUT_PC,      WALK_DOOR_B_PUT_PC,      WALK_FOURTH_PUT_PC};
@@ -19510,9 +20061,17 @@ static bool accepts_woken(const Wram* w, const CosimRegs* in, uint16_t back,
                         (uint32_t)wram_r8(w, in->s) << 16;
   if (left != put_return) return false;
   const uint16_t axis = wram_r16(w, (uint16_t)(in->s + 3));
+  const uint16_t under = wram_r16(w, (uint16_t)(in->s + 5));
   return wram_r16(w, (uint16_t)(in->s + 1)) == back &&
          (axis == WALK_ACROSS_RETURN || axis == WALK_UP_DOWN_RETURN) &&
-         wram_r16(w, (uint16_t)(in->s + 5)) == PLAYER_FRAME_MOVE_RETURN;
+         (under == PLAYER_FRAME_MOVE_RETURN ||
+          (under == WALK_TWICE_RETURN &&
+           wram_r16(w, (uint16_t)(in->s + 7)) == PLAYER_FRAME_MOVE_RETURN));
+}
+
+// The first of the double step's two walks: its `JSR $E4C1` under the axis's.
+static bool woken_first_of_two(const Wram* w, const CosimRegs* in) {
+  return wram_r16(w, (uint16_t)(in->s + 5)) == WALK_TWICE_RETURN;
 }
 
 static bool accepts_door_woken(const Wram* w, const CosimRegs* in) {
@@ -19541,25 +20100,63 @@ static bool supported_walk_woken(Wram* scratch, const Rom* rom,
                                  const CosimRegs* in) {
   static PlayerFrameLog log;
   player_walk_woken(scratch, rom, in->d, woken_axis(scratch, in),
-                    (in->p & PORT_P_V) != 0, &log);
+                    (in->p & PORT_P_V) != 0, woken_first_of_two(scratch, in),
+                    &log);
   return !log.unported;
 }
 
 static void shim_walk_woken(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   static PlayerFrameLog log;
+  const bool first_of_two = woken_first_of_two(w, in);
   player_walk_woken(w, rom, in->d, woken_axis(w, in), (in->p & PORT_P_V) != 0,
-                    &log);
+                    first_of_two, &log);
   CosimRun own = {0, 0, 0};
   const int calls = walk_cycles_as(&log.walk, rom, in, WALK_ORDINARY) +
                     pframe_after_move_bill(&own, &log, in);
   cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in),
                                          (in->d & 0x00ffu) != 0));
   pframe_yield(&log, in, out);
-  out->s = (uint16_t)(in->s + 6);
+  out->s = (uint16_t)(in->s + 6 + (first_of_two ? 2 : 0));
 }
 
 static const uint32_t WALK_WOKEN_EXITS[] = {PLAYER_FRAME_YIELD_PC};
+
+// `$80:F1C2`, the monster back from a wall's pictures: their `RTS` to the
+// axis's `BRA`, the rest of the walk, and the frame's tail.
+static bool accepts_wall_woken(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != PLAYER_FRAME_BANK)
+    return false;
+  const uint16_t axis = wram_r16(w, (uint16_t)(in->s + 1));
+  return (axis == MONSTER_ACROSS_RETURN || axis == MONSTER_UP_DOWN_RETURN) &&
+         wram_r16(w, (uint16_t)(in->s + 3)) == PLAYER_FRAME_MOVE_RETURN;
+}
+
+static int wall_woken_axis(const Wram* w, const CosimRegs* in) {
+  return wram_r16(w, (uint16_t)(in->s + 1)) == MONSTER_ACROSS_RETURN ? 0 : 1;
+}
+
+static bool supported_wall_woken(Wram* scratch, const Rom* rom,
+                                 const CosimRegs* in) {
+  static PlayerFrameLog log;
+  player_wall_woken(scratch, rom, in->d, wall_woken_axis(scratch, in),
+                    (in->p & PORT_P_C) != 0, (in->p & PORT_P_V) != 0, &log);
+  return !log.unported;
+}
+
+static void shim_wall_woken(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  static PlayerFrameLog log;
+  player_wall_woken(w, rom, in->d, wall_woken_axis(w, in),
+                    (in->p & PORT_P_C) != 0, (in->p & PORT_P_V) != 0, &log);
+  CosimRun own = {0, 0, 0};
+  const int calls = walk_cycles_as(&log.walk, rom, in, WALK_OF_MONSTER) +
+                    pframe_after_move_bill(&own, &log, in);
+  cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+  pframe_yield(&log, in, out);
+  out->s = (uint16_t)(in->s + 4);
+}
 
 // `$80:DD90`, where the splash comes back to -- see `port/player_frame.h`.
 // Its own runs, round `JSR`s to three leaves, and then the frame's tail.
@@ -19659,16 +20256,60 @@ static void shim_player_monster_state(Wram* w, const Rom* rom,
   run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE : &RUN_TAKEN, 1);
   run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
   run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
-  run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
-                               : &PFRAME_RUN_MONSTER_SPENT, 1);
-  run_add(&own, &RUN_RTS, 1);
+  if (log.monster_over) {
+    run_add(&own, &PFRAME_RUN_MONSTER_OVER, 1);
+  } else {
+    run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
+                                 : &PFRAME_RUN_MONSTER_SPENT, 1);
+    run_add(&own, &RUN_RTS, 1);
+  }
   cosim_cost(floor_cycles(&log.floor, in->fastrom, unaligned) +
              cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
 
+  // The `RTS`, or the end's `JMP` on the potion's last frame.
+  out->s = in->s;
+  out->pc = log.monster_over ? PLAYER_MONSTER_OVER_PC
+                             : PLAYER_MONSTER_STATE_RTS_PC;
   out->regs = 0;
-  out->flags = COSIM_FLAG_C;
-  out->c = log.c;
+  out->p = (uint8_t)(in->p & ~PORT_P_C);
+  if (log.c) out->p |= PORT_P_C;
+  out->p_keep = PORT_P_N | PORT_P_Z | PORT_P_V;
 }
+
+static const uint32_t PLAYER_MONSTER_STATE_EXITS[] = {
+    PLAYER_MONSTER_STATE_RTS_PC, PLAYER_MONSTER_OVER_PC};
+
+// `$80:D31C` on its own, the same way.
+static void shim_player_ghost_state(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  static PlayerFrameLog log;
+  player_ghost_state(w, rom, in->d, &log);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &RUN_JSR, 1);
+  run_add(&own, &PFRAME_RUN_GHOST_HEAD, 1);
+  run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE_STA : &RUN_TAKEN, 1);
+  run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
+  run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+  if (log.ghost_over) {
+    run_add(&own, &PFRAME_RUN_MONSTER_OVER, 1);
+  } else {
+    run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
+                                 : &PFRAME_RUN_MONSTER_SPENT, 1);
+    run_add(&own, &RUN_RTS, 1);
+  }
+  cosim_cost(floor_cycles(&log.floor, in->fastrom, unaligned) +
+             cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
+  out->s = in->s;
+  out->pc = log.ghost_over ? PLAYER_GHOST_OVER_PC : PLAYER_GHOST_STATE_RTS_PC;
+  out->regs = 0;
+  out->p = (uint8_t)(in->p & ~PORT_P_C);
+  if (log.c) out->p |= PORT_P_C;
+  out->p_keep = PORT_P_N | PORT_P_Z | PORT_P_V;
+}
+
+static const uint32_t PLAYER_GHOST_STATE_EXITS[] = {PLAYER_GHOST_STATE_RTS_PC,
+                                                    PLAYER_GHOST_OVER_PC};
 
 // `$80:D343` on its own, the same way. It leaves the carry it was called
 // with.
@@ -20709,6 +21350,28 @@ static const uint32_t PLAYER_DEAD_EXITS[] = {
 // register, which `cosim_hw` adds. The tables are in low WRAM, 8 a byte
 // whatever the data bank. Every job runs on page zero.
 static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
+    [BX_SET_A] = {30, 4, 0},
+    [BX_IMM8] = {12, 2, 0},
+    [BX_SET_C] = {38, 5, 0},
+    [BX_SET_TAIL] = {54, 8, 0},
+    [BX_STEP] = {194, 17, 0},
+    [BX_SEP] = {18, 2, 0},
+    [BX_KEEP] = {72, 4, 0},
+    [BX_QUEUE] = {90, 10, 0},
+    [BX_QA_HEAD] = {92, 9, 0},
+    [BX_QA_FIRST] = {18, 3, 0},
+    [BX_QA_TEST] = {52, 5, 0},
+    [BX_QA_NEXT] = {60, 6, 0},
+    [BX_QA_STORE] = {248, 14, 0},
+    [BX_QA_FULL] = {76, 2, 0},
+    [BX_DROP] = {54, 2, 0},
+    [BX_RESET_A] = {30, 4, 0},
+    [BX_DONE] = {72, 4, 0},
+    [PM_FIRST] = {18, 2, 0},
+    [PM_XBA] = {18, 1, 0},
+    [PM_READ] = {48, 5, 0},
+    [PM_LDX] = {24, 3, 0},
+    [PM_TAIL] = {60, 3, 0},
     [VBL_STORE] = {18, 3, 0},
     [VBL_TAKEN] = {6, 0, 0},
     [VBL_LOAD] = {58, 6, 0},
@@ -20833,6 +21496,24 @@ VBL_SHIM(mosaic_job)
 VBL_SHIM(boss_shake_job)
 VBL_SHIM(snakeoid_shake_job)
 VBL_SHIM(boss_bg_clear_job)
+VBL_SHIM(box_colours_set)
+VBL_SHIM(box_up_job)
+VBL_SHIM(box_down_job)
+VBL_SHIM(ppu_multiply)
+
+// The box's colours, on the player's page; the multiplier, from a thread in
+// any bank that shows the registers.
+static bool accepts_box_colours(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static bool accepts_ppu_multiply(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return bank_sees_low_wram(in->db);
+}
+
+static const uint32_t BOX_COLOURS_EXITS[] = {BOX_COLOURS_QUEUE_PC};
 
 // `$80:9C63` and `$80:9C7D`, which write no register.
 static const CosimRun BU_STEP = {120, 11, 0};  // INC : LDA : CMP : BEQ
@@ -26998,6 +27679,7 @@ static const CosimRun LU_COST[LU_BLOCK_COUNT] = {
     [LU_TEST] = {122, 10, 2},
     [LU_THING] = {150, 12, 3},
     [LU_PUT] = {238, 19, 5},
+    [LU_WATER] = {350, 32, 5},
     [LU_AGAIN] = {18, 3, 0},
     [LU_TAKEN] = {6, 0, 0},
 };
@@ -27011,17 +27693,16 @@ static bool guard_lunge_frame(Wram* scratch, const Rom* rom,
   PortCpu c;
   LungeWork k = {0};
   cpu_from(in, &c);
-  lunge_frame(scratch, &c, &k);
-  return !k.declined;
+  lunge_frame(scratch, rom, &c, &k);
+  return true;
 }
 
 static void shim_lunge_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
-  (void)rom;
   PortCpu c;
   LungeWork k = {0};
   cpu_from(in, &c);
-  lunge_frame(w, &c, &k);
+  lunge_frame(w, rom, &c, &k);
   cpu_to(&c, out);
   // Overflow is the tests', and two of them hand back no N or Z.
   if (k.tried)
@@ -27037,12 +27718,16 @@ static void shim_lunge_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   // The second asking found what the first did, or it was not made.
   cycles += k.edges * bounds_cycles(k.edge.exit, in->fastrom);
   if (k.asked_thing) cycles += obstacle_cycles(&k.thing, in->fastrom);
+  if (k.water)
+    cycles += terrain_bit8_cycles(k.ahead.blocked, in->fastrom) +
+              2 * k.slow_reads;
   for (int i = 0; i < LU_BLOCK_COUNT; i++)
     cycles += k.blocks[i] * cosim_run_cycles_dp(&LU_COST[i], fast, unaligned);
   cosim_cost(cycles);
 }
 
-static const uint32_t LUNGE_EXITS[] = {LUNGE_SLEEP_PC, LUNGE_ENDED_PC};
+static const uint32_t LUNGE_EXITS[] = {LUNGE_SLEEP_PC, LUNGE_ENDED_PC,
+                                       LUNGE_LEAP_PC};
 
 // `$81:F16D`.
 static const CosimRun DC_LOOK_END = {140 + 6, 13, 2};  // $F16D-$F179
@@ -32648,11 +33333,11 @@ static const CosimRoutine ROUTINES[] = {
         .name = "monster_walk",
         .symbol = "$80:E595",
         .entry = MONSTER_WALK_PC,
-        .ret_op = MONSTER_WALK_RTS_PC,
-        .ret_kind = COSIM_RTS,
         .run = shim_monster_walk,
         .accepts = accepts_player_walk,
         .supported = supported_monster_walk,
+        COSIM_EXITS(MONSTER_WALK_EXITS),
+        .returns_on_entry_stack = true,
         .uncalled = true,
         .cycles = 6000,
         .stack_bytes = 7,
@@ -32666,6 +33351,32 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTS,
         .run = shim_stuck_walk,
         .accepts = accepts_stuck_walk,
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 7,
+    },
+    // ...and the random potion's wanderer by a sixth.
+    {
+        .name = "wander_walk",
+        .symbol = "$80:E653",
+        .entry = WANDER_WALK_PC,
+        .ret_op = WANDER_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_wander_walk,
+        .accepts = accepts_player_walk,
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 9,
+    },
+    // ...and one who drank slot 3's potion by a fifth.
+    {
+        .name = "ghost_walk",
+        .symbol = "$80:E5FF",
+        .entry = GHOST_WALK_PC,
+        .ret_op = GHOST_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_ghost_walk,
+        .accepts = accepts_player_walk,
         .uncalled = true,
         .cycles = 6000,
         .stack_bytes = 7,
@@ -33798,6 +34509,20 @@ static const CosimRoutine ROUTINES[] = {
     POSE_EXITS_ENTRY(pose_stand_begin, "$80:D4F4", POSE_STAND_BEGIN_PC),
     POSE_ENTRY(pose_walk_begin, "$80:D65B", POSE_WALK_BEGIN_PC,
                POSE_WALK_BEGIN_RTS_PC),
+    // ...and a leap, which weapon 5's kick into the water ends at. Its
+    // deepest is `player_span`'s `JSR` and what that pushes.
+    {
+        .name = "pose_leap",
+        .symbol = "$80:DD0D",
+        .entry = POSE_LEAP_PC,
+        .ret_op = POSE_SHOW_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_pose_leap,
+        .supported = guard_pose_leap,
+        .uncalled = true,
+        .cycles = 2400,
+        .stack_bytes = 5,
+    },
     // ...and the shot, by `JSR`. Weapon 5's ends at its pose's sleep.
     {
         .name = "pose_fire",
@@ -33837,11 +34562,24 @@ static const CosimRoutine ROUTINES[] = {
         .name = "player_monster_state",
         .symbol = "$80:D2EA",
         .entry = PLAYER_MONSTER_STATE_PC,
-        .ret_op = PLAYER_MONSTER_STATE_RTS_PC,
-        .ret_kind = COSIM_RTS,
         .run = shim_player_monster_state,
         .accepts = player_frame_ok,
         .supported = guard_player_monster_state,
+        COSIM_EXITS(PLAYER_MONSTER_STATE_EXITS),
+        .returns_on_entry_stack = true,
+        .uncalled = true,
+        .cycles = 600,
+        .stack_bytes = 16,
+    },
+    // ...and slot 3's potion's.
+    {
+        .name = "player_ghost_state",
+        .symbol = "$80:D31C",
+        .entry = PLAYER_GHOST_STATE_PC,
+        .run = shim_player_ghost_state,
+        .accepts = player_frame_ok,
+        COSIM_EXITS(PLAYER_GHOST_STATE_EXITS),
+        .returns_on_entry_stack = true,
         .uncalled = true,
         .cycles = 600,
         .stack_bytes = 16,
@@ -35231,6 +35969,54 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 242,
     },
+    // The box's colours, and the two jobs that brighten and dim them; and
+    // the PPU's multiplier. See `port/vblank.h`.
+    {
+        .name = "box_colours_set",
+        .symbol = "$80:EC59",
+        .entry = BOX_COLOURS_PC,
+        .run = shim_box_colours_set,
+        .accepts = accepts_box_colours,
+        COSIM_EXITS(BOX_COLOURS_EXITS),
+        .hw = true,
+        .uncalled = true,
+        .cycles = 206,
+    },
+    {
+        .name = "box_up_job",
+        .symbol = "$80:EC7A",
+        .entry = BOX_UP_JOB_PC,
+        .ret_op = BOX_UP_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_box_up_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 308,
+    },
+    {
+        .name = "box_down_job",
+        .symbol = "$80:ECA0",
+        .entry = BOX_DOWN_JOB_PC,
+        .ret_op = BOX_DOWN_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_box_down_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 308,
+    },
+    {
+        .name = "ppu_multiply",
+        .symbol = "$80:C8DC",
+        .entry = PPU_MULTIPLY_PC,
+        .ret_op = PPU_MULTIPLY_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_ppu_multiply,
+        .accepts = accepts_ppu_multiply,
+        .hw = true,
+        .cycles = 264,
+    },
     // The Snakeoid's shake, a copy for its coming up and one for its going
     // under, and the big figures' layer blanked. See `port/vblank.h`.
     {
@@ -36066,6 +36852,20 @@ static const CosimRoutine ROUTINES[] = {
     // The rest of a player's frame whose walk stopped at a door's block,
     // from the door's `RTS`: see `player_frame`, below. Before the links,
     // which have the `RTS` alone.
+    // ...and whose monster's walk stopped at a wall's pictures, from their
+    // `RTS`.
+    {
+        .name = "player_wall_woken",
+        .symbol = "$80:F1C2",
+        .entry = MONSTER_WALL_WOKEN_PC,
+        .run = shim_wall_woken,
+        .accepts = accepts_wall_woken,
+        .supported = supported_wall_woken,
+        COSIM_EXITS(WALK_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 8000,
+        .stack_bytes = 22,
+    },
     {
         .name = "player_door_woken",
         .symbol = "$80:E942",

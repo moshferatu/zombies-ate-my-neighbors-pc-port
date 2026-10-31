@@ -608,7 +608,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 42
+#define THREAD_ARGUMENT_COUNT 51
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -627,7 +627,7 @@ typedef struct {
   uint16_t a, y;
 } ThreadPair;
 
-#define THREAD_PAIR_COUNT 6
+#define THREAD_PAIR_COUNT 8
 extern const ThreadPair THREAD_PAIRS[THREAD_PAIR_COUNT];
 
 // --- the weed ----------------------------------------------------------------
@@ -1558,6 +1558,10 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define MONSTER_ENDS_PC 0x80da54u
 #define MONSTER_ENDS_SHOWN_PC 0x80da58u  // with nothing at `$72`: its pictures
 #define MONSTER_ENDS_CALL_PC 0x80da6fu   // `JSR player_hands_back`
+#define MONSTER_ENDS_PICTURED_PC 0x80da5eu  // after its two `JSR`s
+#define MONSTER_ENDS_PICTURES 0xda7bu       // its pictures, by `$0C`
+#define MONSTER_ENDS_PICTURES_CALL_PC 0x80da63u  // `JSL pictures_play`
+#define MONSTER_ENDS_AFTER_PC 0x80da67u
 // The monster's punch, standing.
 #define PUNCH_FIRST_PC 0x80ef82u
 #define PUNCH_AGAIN_PC 0x80ef8fu
@@ -1626,6 +1630,17 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 // The main loop's way out with nobody playing: `SEC`, and its `RTL`.
 #define GAME_LOST_PC 0x8085b5u
 #define GAME_LOST_RTL_PC 0x8085b6u
+// The level done: back from the fade to black, carry clear, and out.
+#define LEVEL_DONE_PC 0x8085cdu
+#define LEVEL_DONE_RTL_PC 0x8085ceu
+// `$80:8933`, the fade to black: a step down a tick until the brightness
+// is under nought, then the screen blanked and a `WAI`. `$80:891A` is the
+// fade up (`port/fade.h`).
+#define FADE_OUT_PC 0x808933u
+#define FADE_OUT_YIELD_PC 0x808936u  // `JSL thread_yield`, A already 1
+#define FADE_OUT_STEP_PC 0x80893au
+#define FADE_OUT_WAI_PC 0x808945u
+#define FADE_OUT_BLANK 0x0080u       // forced blank, into `$136C`
 // The last frame stuck in slime, back from what they held being given back:
 // the ordinary state, `STZ $70`, and the state's `RTS`. See `port/stuck.h`.
 #define STUCK_FREED_PC 0x80dc73u
@@ -1749,6 +1764,387 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define PUFF_DP_RECORD 0x08
 #define PUFF_DP_X 0x00                   // where it was asked for
 #define PUFF_DP_Y 0x02
+// Two pieces the potions share. `$80:EFFC` puts the hand weapon away
+// (`weapon_away`) and plays the pictures of drinking, `$80:F009` by the
+// player, by `pictures_play`, which sleeps. `$80:F2C7` flashes the player:
+// a word into its record's `$10`, and bit 4 of its flags set, then turned
+// over and set again, a sleep of X ticks after each, Y times.
+#define POTION_PICTURED_PC 0x80efffu
+#define POTION_PICTURES 0xf009u              // by `$0C`
+#define POTION_PICTURES_CALL_PC 0x80f004u    // `JSL pictures_play`
+#define FLASH_PC 0x80f2c7u
+#define FLASH_HIDE_YIELD_PC 0x80f2e6u        // `JSL thread_yield`
+#define FLASH_SHOWN_PC 0x80f2eau
+#define FLASH_SHOW_YIELD_PC 0x80f2f7u
+#define FLASH_HIDDEN_PC 0x80f2fbu
+#define FLASH_RTS_PC 0x80f2ffu
+#define FLASH_BIT 0x0010u
+#define FLASH_DP_TICKS 0x2c
+#define FLASH_DP_LEFT 0x2e
+#define FLASH_RECORD_10 0x10
+
+// The potion of slot 3 (`$80:EB99`, and one of the random potion's eight):
+// `$80:DACB`. The player is told of nothing and holds nothing, drinks
+// (`$80:EFFC`), sound 5, and is in state 4 for 1500 frames with `$80:DB08`
+// at `$72` to end it; `$54` cleared, the flashing with `$0C00` eight ticks a
+// half five times, the hands swapped for `$11` and `$0F`, and told of things
+// again. In state 4 the player walks through solid ground with bits 8, 10
+// or 11 of its attributes (`$80:E5FF`, `port/walk.h`) and collisions are
+// ignored (`port/collide.h`). The end: standing where the ground is solid,
+// five frames more; otherwise told of nothing, the flashing again, its bit 4
+// turned over, the state, `$72` and `$1C` cleared, the hands back, and told
+// of things.
+#define GHOST_BEGIN_PC 0x80daceu
+#define GHOST_DRINK_CALL_PC 0x80dad2u   // `JSR $EFFC`
+#define GHOST_HEARD_PC 0x80dadcu
+#define GHOST_REST_CALL_PC 0x80dae1u    // `JSR $F354`
+#define GHOST_RESTED_PC 0x80dae4u
+#define GHOST_FLASH_CALL_PC 0x80daf9u   // `JSR $F2C7`
+#define GHOST_FLASHED_PC 0x80dafcu
+#define GHOST_SWAP_CALL_PC 0x80db02u    // `JSR player_hands_swap`
+#define GHOST_ENDS_PC 0x80db08u
+#define GHOST_ENDS_ASK_CALL_PC 0x80db10u  // `JSL terrain_blocked`
+#define GHOST_ENDS_ASKED_PC 0x80db14u
+#define GHOST_ENDS_LATER_PC 0x80db1bu   // `RTS`, five frames more
+#define GHOST_ENDS_UNHANDLED_PC 0x80db1cu  // `JSR player_unhandled`
+#define GHOST_ENDS_FLASH_PC 0x80db1fu
+#define GHOST_ENDS_FLASH_CALL_PC 0x80db28u
+#define GHOST_ENDED_PC 0x80db2bu
+#define GHOST_ENDED_CALL_PC 0x80db3cu   // `JSR player_hands_back`
+#define GHOST_STATE 0x0004
+#define GHOST_ENDS_BY 0xdb08u
+#define GHOST_FRAMES 0x05dc
+#define GHOST_LATER 0x0005
+#define GHOST_FLASH_WORD 0x0c00
+#define GHOST_FLASH_TICKS 0x0008
+#define GHOST_FLASH_TIMES 0x0005
+#define GHOST_HELD_WEAPON 0x0011
+#define GHOST_HELD_ITEM 0x000f
+#define GHOST_DP_STATE 0x70
+#define GHOST_DP_ENDS_BY 0x72
+#define GHOST_DP_FRAMES_LEFT 0x56
+#define GHOST_DP_PACE 0x54
+#define GHOST_DP_1C 0x1c
+#define GHOST_DP_FIRE_A 0x1e
+#define GHOST_DP_FIRE_B 0x20
+#define GHOST_DP_X 0x30
+#define GHOST_DP_Y 0x32
+
+// A spirit from the box, `$81:EEB7`. The level's load up by four; a record of
+// its own where the player stood (`$00`, `$02`, kept at `$0C` and `$10`),
+// with no handler, its pictures by `$81:FF2A` from `$81:F10D`, six of them
+// a tick each. It begins looking at a record drawn at random, `$14` times
+// one of sixteen past `$185E` (`ppu_multiply`), with 24 looks to spend.
+//
+// A look (`$81:F03C`) goes on to the next record, round past `$1ADE` to
+// `$185E`, for one that is drawn, alive (bit 0 of its flags), of kind 3 or 4
+// and within 256 of the player both ways; found, it is at `$4E`. With ten
+// tries at `$54` the spirit then chases it a tick at a time: gone, or 256
+// away either way, it looks again; within 17 both ways it tells everything
+// in a box 34 wide about itself (`actor_notify_box`, the id at `$81:F109`
+// by the player) and looks again; otherwise, with tries left, it turns a
+// step toward it (`actor_bearing`) of eight ways and moves two steps of the
+// way's (`$81:F135`), a tick each. With no tries it looks again.
+//
+// When the looks run out it is one spirit fewer (`$1F92`), and it flies one
+// way drawn at random for forty ticks. Its end, `$81:F012`, gives back its
+// load and lets its record go: one of the ends `port/begin.h` has.
+#define SPIRIT_PC 0x81eeb7u
+#define SPIRIT_ALLOC_CALL_PC 0x81f099u     // `JSL actor_slot_alloc`, in `JSR $F099`
+#define SPIRIT_MADE_PC 0x81f09du
+#define SPIRIT_HANDLER_CALL_PC 0x81f0eau   // `JSL thread_set_handler`
+#define SPIRIT_DRAWN_PC 0x81f0f2u
+#define SPIRIT_MULTIPLY_CALL_PC 0x81f0f9u  // `JSL ppu_multiply`
+#define SPIRIT_PLACED_PC 0x81f0fdu
+#define SPIRIT_YIELD_PC 0x81f027u          // `JSL thread_yield`, A already 1
+#define SPIRIT_WOKE_PC 0x81f02bu
+#define SPIRIT_TELL_CALL_PC 0x81ef47u      // `JSL actor_notify_box`
+#define SPIRIT_TOLD_PC 0x81ef4bu
+#define SPIRIT_BEARING_CALL_PC 0x81ef59u   // `JSL actor_bearing`
+#define SPIRIT_BEARING_PC 0x81ef5du
+#define SPIRIT_FLY_CALL_PC 0x81efe2u       // `JSL rng_next`
+#define SPIRIT_FLY_PC 0x81efe6u
+#define SPIRIT_END_PC 0x81f012u            // its end, `port/begin.h`'s
+#define SPIRIT_SET_RETURN 0xeec3u          // what `JSR $F099` leaves
+#define SPIRIT_CHASE_RETURN 0xeed3u        // ...and each `JSR $F024`
+#define SPIRIT_STEP_RETURN 0xefd4u
+#define SPIRIT_FLY_RETURN 0xf00du
+#define SPIRIT_PICTURES 0xf10du
+#define SPIRIT_IDS 0xf109u                 // by `$04`
+#define SPIRIT_STEPS 0xf135u               // x and y, four bytes a way
+#define SPIRIT_META 0xa426u
+#define SPIRIT_META_BANK 0x0090
+#define SPIRIT_FIRST 0x185eu
+#define SPIRIT_LAST 0x1adeu
+#define SPIRIT_STRIDE 0x0014
+#define SPIRIT_LOOKS 0x0017
+#define SPIRIT_TRIES 0x000a
+#define SPIRIT_FAR 0x0100
+#define SPIRIT_NEAR 0x0011
+#define SPIRIT_BOX 0x0022
+#define SPIRIT_FLY_TICKS 0x0028
+#define SPIRIT_DP_X_GIVEN 0x00
+#define SPIRIT_DP_Y_GIVEN 0x02
+#define SPIRIT_DP_ROW 0x04
+#define SPIRIT_DP_OWNER 0x08
+#define SPIRIT_DP_RECORD 0x0a
+#define SPIRIT_DP_X 0x0c
+#define SPIRIT_DP_Y 0x10
+#define SPIRIT_DP_PICTURE 0x12
+#define SPIRIT_DP_LIST 0x14
+#define SPIRIT_DP_STEPS 0x3c
+#define SPIRIT_DP_BEARING 0x40
+#define SPIRIT_DP_WAY 0x42
+#define SPIRIT_DP_TURNED 0x44
+#define SPIRIT_DP_STEP_X 0x46
+#define SPIRIT_DP_STEP_Y 0x48
+#define SPIRIT_DP_TARGET 0x4e
+#define SPIRIT_DP_AT 0x50
+#define SPIRIT_DP_LOOKS 0x52
+#define SPIRIT_DP_TRIES 0x54
+#define W_SPIRIT_BOX_LEFT 0x0038u  // the box `actor_notify_box` tells
+#define W_SPIRIT_BOX_RIGHT 0x003au
+#define W_SPIRIT_BOX_TOP 0x003cu
+#define W_SPIRIT_BOX_BOTTOM 0x003eu
+#define W_SPIRIT_BOX_ID 0x0040u
+#define W_SPIRIT_0008 0x0008u
+
+// The box, slot 8 (`$80:EB63`): `$80:EBE6`, which refuses (carry set) while
+// spirits from one are still out (`$1F92`). Otherwise the player is told of
+// nothing, the screen's colours are set and brightened and dimmed by two jobs
+// of the vertical blank's (`port/vblank.h`), sound 3, and the player's record
+// shows the box (`$80:EC55`, by the player). Three spirits are begun where the
+// player stands (`$81:EEB7`, `port/spirit.h`), five ticks apart, each counted
+// at `$1F92`; the player waits a tick at a time until all three have gone,
+// is told of things again, and returns carry clear. Back at `$80:EB66`, a
+// box refused is not spent; one opened is one fewer (`$80:EB48`, the random
+// potion's `$80:EE66` again).
+#define BOX_PC 0x80ebe6u
+#define BOX_BUSY_RTS_PC 0x80ec54u       // `RTS`, carry set
+#define BOX_UNHANDLED_CALL_PC 0x80ebeeu // `JSR player_unhandled`
+#define BOX_HEARD_PC 0x80ebfbu
+#define BOX_SPAWN_CALL_PC 0x80ec15u     // `JSL thread_spawn`
+#define BOX_SPAWNED_PC 0x80ec19u
+#define BOX_SPAWNED_2_PC 0x80ec2du
+#define BOX_SPAWNED_3_PC 0x80ec41u
+#define BOX_SLEEP_PC 0x80ec1fu          // `JSL thread_yield`, five ticks
+#define BOX_SLEEP_2_PC 0x80ec33u
+#define BOX_WAIT_PC 0x80ec47u           // ...one tick
+#define BOX_WAITED_PC 0x80ec4bu
+#define BOX_HANDLED_CALL_PC 0x80ec50u   // `JSR player_handled`
+#define BOX_DONE_PC 0x80ec53u
+#define BOX_BACK_PC 0x80eb66u
+#define BOX_REFUSED_PC 0x80eba6u        // `RTS`, not spent
+#define BOX_FEWER_PC 0x80eb6au          // `JMP $EB48`
+#define BOX_FEWER_ENTRY_PC 0x80eb48u
+#define BOX_FEWER_LEFT_PC 0x80eb06u     // its `RTS`
+#define BOX_FEWER_NEXT_PC 0x80eb60u     // its `JMP item_select_next`
+#define BOX_PICTURES 0xec55u            // by `$0C`
+#define BOX_SPIRIT 0xeeb7u
+#define BOX_SPIRIT_BANK 0x0081
+#define BOX_SFX 0x0003
+#define BOX_TICKS 0x0005
+#define W_BOX_SPIRITS 0x1f92u
+#define BOX_DP_X 0x00   // what the spirits are begun with
+#define BOX_DP_Y 0x02
+#define BOX_DP_ROW 0x04
+
+// The random potion, slots 4 and 5 (`$80:EBA1  STZ $24 : JSR $EDE0`): a
+// draw (`rng_next`) of one in eight, by the table at `$80:EDEC`.
+//   0  `$80:EDFC`  on ground an enemy may stand on, one fewer and the
+//                  monster (`JSR $D9A3`); otherwise nothing, not even spent
+//   1, 3, 5  `$80:EE0D`  drunk, sound 5, health back to ten, one fewer
+//   2  `$80:EE23`  drunk, sound 8, `$50` = `$8001`, health halved and one
+//                  more, one fewer
+//   4  `$80:EE40`  one fewer, and the change of `$80:DB42`
+//   6  `$80:EE4E`  drunk, one fewer, sound 5, and the running shoes
+//   7  `$80:EE47`  one fewer, and the potion of slot 3 (`JSR $DACB`)
+// "One fewer" is `$80:EE66`, the item use's `$80:EB48` again: the count of
+// the item held, in decimal, and with the last gone the next one selected
+// (`JMP item_select_next`).
+#define RANDOM_PC 0x80ede0u
+#define RANDOM_TABLE 0x80edecu
+#define RANDOM_MONSTER_ASK_CALL_PC 0x80ee00u  // `JSL terrain_blocked_enemy`
+#define RANDOM_MONSTER_ASKED_PC 0x80ee04u
+#define RANDOM_NOTHING_PC 0x80ee81u           // `RTS`
+#define RANDOM_MONSTER_FEWER_PC 0x80ee06u     // `JSR $EE66`
+#define RANDOM_HEALED_PC 0x80ee17u
+#define RANDOM_HEALED_FEWER_PC 0x80ee1fu
+#define RANDOM_POISONED_PC 0x80ee2du
+#define RANDOM_POISONED_FEWER_PC 0x80ee3cu
+#define RANDOM_SPED_PC 0x80ee5bu
+#define RANDOM_SPED_RTS_PC 0x80ee65u
+#define ONE_FEWER_PC 0x80ee66u
+#define ONE_FEWER_NEXT_PC 0x80ee7eu           // `JMP item_select_next`
+#define RANDOM_DP_X 0x30
+#define RANDOM_DP_Y 0x32
+#define RANDOM_DP_PLAYER 0x0e
+#define RANDOM_DP_ITEMS 0x66
+#define RANDOM_DP_50 0x50
+#define RANDOM_50 0x8001u
+#define RANDOM_FULL_HEALTH 0x000a
+#define W_RANDOM_HEALTH 0x1cb8u   // a word a player
+#define W_RANDOM_HELD 0x1cc0u     // ...and the item each holds
+
+// The random potion's fourth draw, `$80:DB42`: the player wanders. Their
+// record's `$0E` cleared and their handler `$80:DB96` (`port/collide.h`),
+// drunk, sound 8, `$0E` = 3, state 8 for 1500 frames, `$76` = 4, `$80:DBDA`
+// at `$72` to end it; nothing held, the flashing with `$0600` twelve ticks
+// a half five times, and the hands swapped for `$10` and `$0E`.
+//
+// State 8, `$80:D35E`, steers them as the game does an enemy. A draw of one
+// in 32: on 1, the way opposite the pad's (`$80:D3F2`) when that is not the
+// way already held; on 2, the pad's own when not; otherwise toward the
+// nearest player within `$41` (`actor_nearest`, `actor_bearing`), at full
+// speed, or slowly (`$54` = `$C000`), standing still a frame in a random
+// one of four ways. The way goes to `$1A` and, doubled, `$24`, and `$26`
+// when there is one. Then the timer, and the 1500 frames: at nought `$54`
+// and `$72` cleared, and the end.
+//
+// The end, `$80:DBDA`: unless something asks it to (`$72`), the flashing
+// again; bit 4 turned over, the state, `$54`, `$72` and `$76` cleared, and
+// can be touched, the hands back, told of things.
+#define WANDERER_PC 0x80db42u
+#define WANDER_HANDLER_CALL_PC 0x80db50u  // `JSL thread_set_handler`
+#define WANDER_HEARD_PC 0x80db5eu
+#define WANDER_REST_CALL_PC 0x80db7au     // `JSR $F354`
+#define WANDER_RESTED_PC 0x80db7du
+#define WANDER_FLASH_CALL_PC 0x80db8au    // `JSR $F2C7`
+#define WANDER_FLASHED_PC 0x80db8du
+#define WANDER_SWAP_PC 0x80db93u          // `JMP player_hands_swap`
+#define WANDER_HANDLER 0xdb96u
+#define WANDER_HANDLER_BANK 0x0080
+#define WANDER_STATE 0x0008
+#define WANDER_76 0x0004
+#define WANDER_RECORD_0E 0x0003
+#define WANDER_ENDS_BY 0xdbdau
+#define WANDER_FRAMES 0x05dc
+#define WANDER_FLASH_WORD 0x0600
+#define WANDER_FLASH_TICKS 0x000c
+#define WANDER_FLASH_TIMES 0x0005
+#define WANDER_HELD_WEAPON 0x0010
+#define WANDER_HELD_ITEM 0x000e
+#define WANDER_DP_76 0x76
+#define WANDER_DP_LAST_X 0x60     // where it stood last frame
+#define WANDER_DP_LAST_Y 0x62
+// State 8.
+#define WANDER_DRAWN_PC 0x80d362u
+#define WANDER_NEAREST_CALL_PC 0x80d394u  // `JSL actor_nearest`
+#define WANDER_NEAREST_PC 0x80d398u
+#define WANDER_BEARING_CALL_PC 0x80d3a2u  // `JSL actor_bearing`
+#define WANDER_BEARING_PC 0x80d3a6u
+#define WANDER_REDRAW_CALL_PC 0x80d3b9u   // `JSL rng_next`
+#define WANDER_REDRAWN_PC 0x80d3bdu
+#define WANDER_STATE_RTS_PC 0x80d3f1u
+#define WANDER_OVER_PC 0x80d3eeu          // `JMP $DBDA`
+#define WANDER_AWAY 0xd3f2u               // the way opposite, by the pad's
+#define WANDER_NEAR 0x0041
+#define WANDER_SLOW 0xc000u
+#define W_WANDER_PAD_DIR 0x0072u          // a word a player
+// The end.
+#define WANDER_ENDS_PC 0x80dbdau
+#define WANDER_ENDS_FLASH_CALL_PC 0x80dbe7u
+#define WANDER_ENDED_PC 0x80dbeau
+#define WANDER_ENDED_CALL_PC 0x80dc00u    // `JSR player_touchable`
+
+// `$81:EAE6`, weapon 4's shot (the shot table at `$80:ED8C`): the level's
+// load up by four, and a record of its own, first off the screen at
+// (-32, -32), with picture bank `$90`, its collide id by the player and no
+// handler. Sound 4. Then eight steps, three ticks apart: a picture of the
+// list at `$81:EBC2` (a mask for the flags and a picture, as `$80:F300`
+// reads them, by `$81:FF2A`), and the record put where its owner is, plus
+// a word of x and one of y from `$81:EBA2` for the step. The owner is the
+// record at `$08`, which the shot is begun with. After the eighth, its end,
+// `$81:EB34`: the load down by four and the record let go, one of the ends
+// `port/begin.h` has.
+#define ARTIFACT_PC 0x81eae6u
+#define ARTIFACT_ALLOC_CALL_PC 0x81eb57u   // `JSL actor_slot_alloc`, inside `JSR $EB46`
+#define ARTIFACT_MADE_PC 0x81eb5bu
+#define ARTIFACT_HANDLER_CALL_PC 0x81eb99u // `JSL thread_set_handler`
+#define ARTIFACT_SET_PC 0x81eb9du          // the `RTS` of the setup
+#define ARTIFACT_SOUND_CALL_PC 0x81eaf6u   // `JSL apu_play_sfx`, A already 4
+#define ARTIFACT_HEARD_PC 0x81eafau
+#define ARTIFACT_YIELD_PC 0x81eb02u        // `JSL thread_yield`, A already 3
+#define ARTIFACT_WOKE_PC 0x81eb06u
+#define ARTIFACT_END_PC 0x81eb34u          // its end, `port/begin.h`'s
+#define ARTIFACT_SET_RETURN 0xeaf2u        // what `JSR $EB46` leaves
+#define ARTIFACT_LOAD 0x0004
+#define ARTIFACT_PICTURES 0xebc2u          // the list `$14` is given
+#define ARTIFACT_STEPS 0x81eba2u           // x and y, by the step doubled
+#define ARTIFACT_IDS 0x81eb9eu             // the collide id, by the player
+#define ARTIFACT_OFF 0xffe0u               // its first place, both ways
+#define ARTIFACT_META 0xa26bu
+#define ARTIFACT_META_BANK 0x0090
+#define ARTIFACT_SFX 0x0004
+#define ARTIFACT_TICKS 0x0003
+#define ARTIFACT_FIRST_STEP 0xfffeu
+#define ARTIFACT_LAST_STEP 0x0010          // ...the step past the eighth
+#define ARTIFACT_DP_OWNER_X 0x00
+#define ARTIFACT_DP_OWNER_Y 0x02
+#define ARTIFACT_DP_PLAYER 0x06
+#define ARTIFACT_DP_OWNER 0x08
+#define ARTIFACT_DP_RECORD 0x0a
+#define ARTIFACT_DP_STEP 0x12
+#define ARTIFACT_DP_PICTURES 0x14
+#define W_ARTIFACT_0008 0x0008u            // what the record's `$0C` is given
+
+// `$83:B55E`, a sparkle of gold, placed in five levels' lists (one on level
+// 48, at (99, 902)). It retires its placement, takes a record at the given
+// place with no handler, and every three ticks asks whether a player is
+// within `$55` (`player_bearing`). Until one is it blinks, its two pictures
+// eight frames each by a countdown at `$0E`; when the countdown goes under
+// nought it starts again from `$2C`, and with sample set 3 loaded (`$1F52`)
+// with sound `$27`. A player near: sound 5, pictures `$B65A`, its record's
+// countdown cleared and picture bank `$90`, sound `$21`, pictures `$B5EB`,
+// and the record let go at once. Its loop is `JSR $B57F`, whose return is
+// on the stack under every stretch that ends it.
+#define SPARKLE_ENTER_PC 0x83b55eu
+#define SPARKLE_MARK_CALL_PC 0x83b560u   // `JSL nt_victim_mark_gone`
+#define SPARKLE_MARKED_PC 0x83b564u
+#define SPARKLE_ALLOC_CALL_PC 0x83b616u  // `JSL actor_slot_alloc`
+#define SPARKLE_MADE_PC 0x83b61au
+#define SPARKLE_HANDLER_CALL_PC 0x83b655u  // `JSL thread_set_handler`
+#define SPARKLE_SET_PC 0x83b659u         // the `RTS` of the setup
+#define SPARKLE_YIELD_PC 0x83b56du       // `JSL thread_yield`, A already 3
+#define SPARKLE_WOKE_PC 0x83b571u
+#define SPARKLE_ASK_CALL_PC 0x83b586u    // `JSL player_bearing`
+#define SPARKLE_ASKED_PC 0x83b58au
+#define SPARKLE_TICK_SOUND_PC 0x83b5afu  // `JSL apu_play_sfx`
+#define SPARKLE_HEARD_PC 0x83b5b3u
+#define SPARKLE_FOUND_SOUND_PC 0x83b5bdu
+#define SPARKLE_PICTURED_PC 0x83b5c8u
+#define SPARKLE_GONE_SOUND_PC 0x83b5d9u
+#define SPARKLE_GONE_PC 0x83b5e4u
+#define SPARKLE_FREE_CALL_PC 0x83b57au   // `JSL actor_slot_free`
+#define SPARKLE_SET_RETURN 0xb569u       // what `JSR $B616` leaves
+#define SPARKLE_ASK_RETURN 0xb573u       // ...and `JSR $B57F`
+#define SPARKLE_PLACE_RETURN 0xb566u     // ...and `JSR $B607`
+#define SPARKLE_DP_PLACE_X 0x00   // given: where it is
+#define SPARKLE_DP_PLACE_Y 0x02
+#define SPARKLE_DP_PLACEMENT 0x06 // ...and which placement
+#define SPARKLE_DP_RECORD 0x08
+#define SPARKLE_DP_X 0x0a         // where it is, kept
+#define SPARKLE_DP_Y 0x0c
+#define SPARKLE_DP_BLINK 0x0e     // frames until the countdown starts again
+#define SPARKLE_DP_10 0x10        // cleared; I have not followed it
+#define SPARKLE_DP_DONE 0x12      // non-zero once a player came near
+#define SPARKLE_NEAR 0x0055
+#define SPARKLE_TICKS 0x0003
+#define SPARKLE_BLINK 0x002c
+#define SPARKLE_BLINK_BIT 0x0008
+#define SPARKLE_PICTURES 0xb5e7u  // its two pictures, in bank `$83`
+#define SPARKLE_SOUNDS 0x0003     // the sample set that has its tick
+#define SPARKLE_SFX_TICK 0x0027
+#define SPARKLE_SFX_FOUND 0x0005
+#define SPARKLE_SFX_GONE 0x0021
+#define SPARKLE_PICTURE 0xf9e8u
+#define SPARKLE_PICTURE_BANK 0x008f
+#define SPARKLE_RECORD_0E 0x0003
+#define SPARKLE_RECORD_10 0x00c0
+#define SPARKLE_FLAGS 0x8008u
+#define SPARKLE_GONE_PICTURE_BANK 0x0090
+#define W_SPARKLE_0008 0x0008u    // what the record's `$0C` is given
+
 #define PIECE_ENTER_PC 0x83b1ddu
 #define PIECE_ALLOC_CALL_PC 0x83b1e7u    // `JSL actor_slot_alloc`
 #define PIECE_MADE_PC 0x83b1ebu
@@ -1875,6 +2271,130 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_STZ_DP, 0x80d0dd, 0x80d0df, 0) \
   X(TS_PLD, 0x80abd1, 0x80abd2, 0) \
   X(TS_SEC, 0x80e78e, 0x80e78f, 0) \
+  X(TS_CLC, 0x8085cd, 0x8085ce, 0) \
+  X(TS_POTION_PICTURED, 0x80efff, 0x80f004, 0) \
+  X(TS_RANDOM_DRAW, 0x80ede0, 0x80ede4, 0)     /* JSL rng_next */ \
+  X(TS_BOX_TEST, 0x80ebe6, 0x80ebee, 0)        /* LDA : CMP : BCS */ \
+  X(TS_SP_MADE, 0x81f09d, 0x81f0ea, 0) \
+  X(TS_SP_DRAWN, 0x81f0f2, 0x81f0f9, 0) \
+  X(TS_SP_PLACED, 0x81f0fd, 0x81f109, 0)       /* the RTS too */ \
+  X(TS_SP_SEEK, 0x81eec4, 0x81eecc, 0)         /* the JSR too */ \
+  X(TS_SP_JMP, 0x81eece, 0x81eed1, 0) \
+  X(TS_SR_HEAD, 0x81f03c, 0x81f040, 0) \
+  X(TS_SR_COUNT, 0x81f040, 0x81f044, 0) \
+  X(TS_SR_NONE, 0x81f044, 0x81f046, 0)         /* CLC : RTS */ \
+  X(TS_SR_NEXT, 0x81f046, 0x81f053, 0) \
+  X(TS_SR_WRAP, 0x81f055, 0x81f05c, 0)         /* the BRA, not taken */ \
+  X(TS_SR_FLAGS, 0x81f05c, 0x81f061, 0) \
+  X(TS_SR_LSR, 0x81f061, 0x81f064, 0) \
+  X(TS_SR_KIND, 0x81f064, 0x81f06c, 0) \
+  X(TS_SR_KIND4, 0x81f06c, 0x81f071, 0) \
+  X(TS_SR_SUB, 0x81f071, 0x81f07a, 0)          /* LDA : SEC : SBC : BPL */ \
+  X(TS_SR_NEG, 0x81f07a, 0x81f07e, 0)          /* EOR : INC */ \
+  X(TS_SR_FOUND, 0x81f095, 0x81f099, 0)        /* SEC : STX : RTS */ \
+  X(TS_SP_FLYOFF, 0x81efda, 0x81efe2, 0) \
+  X(TS_SP_WOKE, 0x81f02b, 0x81f033, 0) \
+  X(TS_SP_PICTURE, 0x81f036, 0x81f03c, 0)      /* STA : ASL : JMP */ \
+  X(TS_SP_CK_TARGET, 0x81eed4, 0x81eedb, 0) \
+  X(TS_SP_CK_SUB, 0x81eeeb, 0x81eef6, 0)       /* LDY : LDA : SEC : SBC : BPL */ \
+  X(TS_SP_CK_SUB_Y, 0x81ef04, 0x81ef0d, 0)     /* LDA : SEC : SBC : BPL */ \
+  X(TS_SP_BOX, 0x81ef1b, 0x81ef47, 0) \
+  X(TS_SP_TRIES, 0x81ef4e, 0x81ef52, 0) \
+  X(TS_SP_ASK, 0x81ef55, 0x81ef59, 0) \
+  X(TS_SP_TURN_TEST, 0x81ef5d, 0x81ef65, 0) \
+  X(TS_SP_TURN_CW, 0x81ef65, 0x81ef6c, 0)      /* SEC : LDA : SBC : BPL */ \
+  X(TS_SP_TURN_ADD, 0x81ef6c, 0x81ef70, 0)     /* CLC : ADC #8 */ \
+  X(TS_SP_TURN_CCW, 0x81ef70, 0x81ef79, 0) \
+  X(TS_SP_TURN_CMP, 0x81ef7d, 0x81ef81, 0)     /* CMP : BEQ */ \
+  X(TS_SP_TURN_TIE, 0x81ef85, 0x81ef89, 0)     /* LDA $44 : BEQ */ \
+  X(TS_SP_TURN_UP, 0x81ef89, 0x81ef8f, 0)      /* INC : INC : BRA, not taken */ \
+  X(TS_SP_TURN_DOWN, 0x81ef8f, 0x81ef93, 0) \
+  X(TS_SP_TURN_WRAP, 0x81ef93, 0x81ef97, 0)    /* LDA : BNE */ \
+  X(TS_SP_TURN_EIGHT, 0x81ef97, 0x81ef9c, 0)   /* LDA #8 : BRA, not taken */ \
+  X(TS_SP_WAY, 0x81efa4, 0x81efb8, 0) \
+  X(TS_SP_MOVE, 0x81efb8, 0x81efd2, 0)         /* to the BEQ */ \
+  X(TS_SP_FLY_WAY, 0x81efe6, 0x81eff7, 0) \
+  X(TS_SP_FLY_MOVE, 0x81eff7, 0x81f00b, 0) \
+  X(TS_SP_FLY_COUNT, 0x81f00e, 0x81f012, 0)    /* DEC : BNE */ \
+  X(TS_BOX_HEARD, 0x80ebfb, 0x80ec15, 0) \
+  X(TS_BOX_SPAWNED, 0x80ec19, 0x80ec1f, 0)     /* INC : LDA # */ \
+  X(TS_BOX_WAITED, 0x80ec4b, 0x80ec50, 0)      /* LDA : BNE */ \
+  X(TS_BOX_BACK, 0x80eb66, 0x80eb68, 0)        /* BCS */ \
+  X(TS_STZ_24, 0x80eb68, 0x80eb6a, 0) \
+  X(TS_RANDOM_DRAWN, 0x80ede4, 0x80ede9, 0)    /* AND : ASL : TAX */ \
+  X(TS_WANDER_BEGIN, 0x80db42, 0x80db50, 0) \
+  X(TS_WANDER_HEARD, 0x80db5e, 0x80db7a, 0) \
+  X(TS_WANDER_RESTED, 0x80db7d, 0x80db8a, 0) \
+  X(TS_WANDER_FLASHED, 0x80db8d, 0x80db93, 0) \
+  X(TS_WANDER_AND, 0x80d362, 0x80d365, 0) \
+  X(TS_WANDER_IS, 0x80d365, 0x80d36a, 0)       /* CMP # : BEQ, twice */ \
+  X(TS_WANDER_AWAY_PAD, 0x80d371, 0x80d378, 0) /* LDX : LDA : BEQ */ \
+  X(TS_WANDER_AWAY, 0x80d378, 0x80d380, 0)     /* TAX : LDA : CMP : BNE */ \
+  X(TS_WANDER_PAD, 0x80d382, 0x80d388, 0)      /* LDX : LDA : LSR */ \
+  X(TS_WANDER_PAD_SAME, 0x80d38a, 0x80d38e, 0) /* CMP : BEQ */ \
+  X(TS_WANDER_ASK, 0x80d390, 0x80d394, 0) \
+  X(TS_WANDER_NEAR_TEST, 0x80d398, 0x80d39d, 0) \
+  X(TS_WANDER_NEAR, 0x80d39d, 0x80d3a2, 0) \
+  X(TS_WANDER_FAR, 0x80d3a8, 0x80d3b3, 0)      /* to the BNE */ \
+  X(TS_WANDER_FAR_Y, 0x80d3b3, 0x80d3b9, 0) \
+  X(TS_WANDER_REDRAWN, 0x80d3bd, 0x80d3c7, 0)  /* the BRA, not taken */ \
+  X(TS_WANDER_MOVED, 0x80d3c7, 0x80d3d1, 0)    /* the BRA, not taken */ \
+  X(TS_WANDER_WAY, 0x80d3d1, 0x80d3d8, 0)      /* STA : ASL : STA : BEQ */ \
+  X(TS_WANDER_FACE, 0x80d3d8, 0x80d3dc, 0)     /* STA : BRA, not taken */ \
+  X(TS_WANDER_TIMER, 0x80d3dc, 0x80d3e0, 0) \
+  X(TS_WANDER_TIMER_DEC, 0x80d3e0, 0x80d3e2, 0) \
+  X(TS_WANDER_LEFT, 0x80d3e2, 0x80d3e6, 0) \
+  X(TS_WANDER_LEFT_DEC, 0x80d3e6, 0x80d3ea, 0) \
+  X(TS_WANDER_OVER, 0x80d3ea, 0x80d3ee, 0) \
+  X(TS_WANDER_ENDS_TEST, 0x80dbda, 0x80dbde, 0) \
+  X(TS_WANDER_ENDS_FLASH, 0x80dbde, 0x80dbe7, 0) \
+  X(TS_WANDER_ENDED, 0x80dbea, 0x80dc00, 0) \
+  X(TS_RANDOM_JMP, 0x80ede9, 0x80edec, 0)      /* JMP ($EDEC,X) */ \
+  X(TS_RANDOM_MONSTER, 0x80edfc, 0x80ee00, 0) \
+  X(TS_RANDOM_HEALED, 0x80ee17, 0x80ee1f, 0) \
+  X(TS_RANDOM_POISONED, 0x80ee2d, 0x80ee3c, 0) \
+  X(TS_RANDOM_SPED, 0x80ee5b, 0x80ee65, 0) \
+  X(TS_ONE_FEWER, 0x80ee66, 0x80ee7e, 0)       /* to the BNE */ \
+  X(TS_FLASH_BEGIN, 0x80f2c7, 0x80f2d9, 0) \
+  X(TS_FLASH_HIDE, 0x80f2d9, 0x80f2e6, 0) \
+  X(TS_FLASH_SHOW, 0x80f2ea, 0x80f2f7, 0) \
+  X(TS_FLASH_COUNT, 0x80f2fb, 0x80f2ff, 0)     /* DEC : BNE */ \
+  X(TS_GHOST_BEGIN, 0x80dace, 0x80dad2, 0) \
+  X(TS_GHOST_HEARD, 0x80dadc, 0x80dae1, 0) \
+  X(TS_GHOST_RESTED, 0x80dae4, 0x80daf9, 0) \
+  X(TS_GHOST_FLASHED, 0x80dafc, 0x80db02, 0) \
+  X(TS_GHOST_ENDS_TEST, 0x80db08, 0x80db0c, 0) /* LDA $72 : BNE */ \
+  X(TS_GHOST_ENDS_ASK, 0x80db0c, 0x80db10, 0) \
+  X(TS_GHOST_ENDS_ASKED, 0x80db14, 0x80db16, 0) /* BCC */ \
+  X(TS_GHOST_ENDS_LATER, 0x80db16, 0x80db1b, 0) \
+  X(TS_GHOST_ENDS_FLASH, 0x80db1f, 0x80db28, 0) \
+  X(TS_GHOST_ENDED, 0x80db2b, 0x80db3c, 0) \
+  X(TS_ARTIFACT_ENTER, 0x81eae6, 0x81eaf3, 0)  /* the JSR too */ \
+  X(TS_ARTIFACT_ASK, 0x81eb46, 0x81eb57, 0) \
+  X(TS_ARTIFACT_MADE, 0x81eb5b, 0x81eb99, 0) \
+  X(TS_ARTIFACT_SET, 0x81eb9d, 0x81eb9e, 0)    /* RTS */ \
+  X(TS_ARTIFACT_HEARD, 0x81eafa, 0x81eaff, 0) \
+  X(TS_ARTIFACT_STEP, 0x81eb06, 0x81eb11, 0)   /* INC : INC : LDA : CMP : BEQ */ \
+  X(TS_ARTIFACT_SHOW, 0x81eb11, 0x81eb16, 0)   /* LDA : JSR */ \
+  X(TS_ARTIFACT_PICTURE, 0x81ff2a, 0x81ff32, 0) /* to the BMI */ \
+  X(TS_ARTIFACT_ORA, 0x81ff32, 0x81ff3a, 0)    /* the BRA, not taken */ \
+  X(TS_ARTIFACT_AND, 0x81ff3a, 0x81ff40, 0) \
+  X(TS_ARTIFACT_SHOWN, 0x81ff40, 0x81ff48, 0)  /* the RTS too */ \
+  X(TS_ARTIFACT_PLACE, 0x81eb16, 0x81eb34, 0)  /* the BRA, not taken */ \
+  X(TS_SPARKLE_PLACE, 0x83b607, 0x83b616, 0)   /* the RTS too */ \
+  X(TS_SPARKLE_MADE, 0x83b61a, 0x83b655, 0) \
+  X(TS_SPARKLE_SET, 0x83b659, 0x83b65a, 0)     /* RTS */ \
+  X(TS_SPARKLE_ASK, 0x83b57f, 0x83b586, 0) \
+  X(TS_SPARKLE_FOUND_TEST, 0x83b58a, 0x83b58d, 0) /* TAX : BNE */ \
+  X(TS_SPARKLE_COUNT, 0x83b58d, 0x83b592, 0)   /* LDA : DEC : BMI */ \
+  X(TS_SPARKLE_BLINK, 0x83b592, 0x83b5a3, 0)   /* the RTS too */ \
+  X(TS_SPARKLE_SOUNDS, 0x83b5a3, 0x83b5ac, 0)  /* PHA ... BNE */ \
+  X(TS_SPARKLE_AGAIN, 0x83b5b3, 0x83b5ba, 0)   /* the RTS too */ \
+  X(TS_SPARKLE_BACK, 0x83b574, 0x83b578, 0)    /* LDA $12 : BEQ */ \
+  X(TS_SPARKLE_PICTURED, 0x83b5c8, 0x83b5d9, 0) \
+  X(TS_SPARKLE_GONE, 0x83b5e4, 0x83b5e7, 0)    /* DEC : RTS */ \
+  X(TS_FADE_OUT_STEP, 0x80893a, 0x80893f, 0)  /* DEC : BPL */ \
+  X(TS_FADE_OUT_BLANK, 0x80893f, 0x808945, 0) \
   X(TS_SQUARE_BAND, 0x82f6ba, 0x82f6ea, 0)   /* the RTS too */ \
   X(TS_SQUARE_HANDLER, 0x82f6ab, 0x82f6b0, 0)  /* the RTS too */ \
   X(TS_SQUARE_CALL, 0x82f6f8, 0x82f6ff, 0)   /* PEA : LDA : DEC : PHA : RTS */ \
@@ -2081,6 +2601,7 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_GONE_CLEARED, 0x80fb41, 0x80fb49, 0) \
   X(TS_MONSTER_ENDS_ASK, 0x80da54, 0x80da58, 0) \
   X(TS_MONSTER_ENDED, 0x80da67, 0x80da6f, 0) \
+  X(TS_MONSTER_ENDS_PICTURES, 0x80da5e, 0x80da63, 0) \
   X(TS_PUNCH_TOLD_HEAD, 0x80f051, 0x80f055, 0) \
   X(TS_PUNCH_BOX, 0x80f055, 0x80f086, 0) \
   X(TS_PUNCH_AGAIN, 0x80ef8f, 0x80ef95, 0) \
@@ -2194,6 +2715,17 @@ typedef enum {
   TS_NEEDS_CUT_FREED,   // the second list's `JSR` to return to
   TS_NEEDS_DEATH_ENDS,  // an end due that is one of the six, or none
   TS_NEEDS_DEATH,       // which player, which of the two, and the record
+  TS_NEEDS_PLAYER_TABLE,   // the player's data bank, and a row of one
+  TS_NEEDS_WANDER,         // the player's data bank, and a player of one or two
+  TS_NEEDS_ONE_FEWER,      // ...and the count held in low WRAM
+  TS_NEEDS_SPIRIT_SET,     // the setup's `JSR $F099` to return to, and its owner
+  TS_NEEDS_SPIRIT,         // its owner and record in low WRAM, and a way of one to eight
+  TS_NEEDS_SPIRIT_WOKE,    // ...and one of its three `JSR $F024`s to return to
+  TS_NEEDS_ARTIFACT_SET,   // the setup's `JSR $EB46` to return to
+  TS_NEEDS_ARTIFACT,       // its owner and its record in low WRAM, and a list
+  TS_NEEDS_SPARKLE_SET,    // the setup's `JSR $B616` to return to
+  TS_NEEDS_SPARKLE,        // its loop's `JSR $B57F` to return to, and its record
+  TS_NEEDS_SPARKLE_HEARD,  // ...under the word it pushed
   TS_NEEDS_SLIME_BEGUN,  // `slime_begin`'s `JSR` to return to
   TS_NEEDS_SLIME_WAY,    // the start's `JSR $C9E4` to return to
   TS_NEEDS_VAMPIRE,       // the vampire's loop to return to, and its record
@@ -2482,6 +3014,75 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(puff_enter, "$82:F1E6", PUFF_ENTER_PC, puff_enter, TRACKER, TS_NEEDS_NOTHING) \
   X(puff_made, "$82:F1F4", PUFF_MADE_PC, puff_made, TRACKER, TS_NEEDS_A) \
   X(piece_enter, "$83:B1DD", PIECE_ENTER_PC, piece_enter, TRACKER, TS_NEEDS_NOTHING) \
+  X(potion_pictured, "$80:EFFF", POTION_PICTURED_PC, potion_pictured, POTION, TS_NEEDS_PLAYER_TABLE) \
+  X(random_drawn, "$80:EDE0", RANDOM_PC, random_drawn, POTION, TS_NEEDS_NOTHING) \
+  X(box_open, "$80:EBE6", BOX_PC, box_open, POTION, TS_NEEDS_NOTHING) \
+  X(spirit_enter, "$81:EEB7", SPIRIT_PC, spirit_enter, SPIRIT, TS_NEEDS_NOTHING) \
+  X(spirit_made, "$81:F09D", SPIRIT_MADE_PC, spirit_made, SPIRIT, TS_NEEDS_A) \
+  X(spirit_drawn, "$81:F0F2", SPIRIT_DRAWN_PC, spirit_drawn, SPIRIT, TS_NEEDS_NOTHING) \
+  X(spirit_placed, "$81:F0FD", SPIRIT_PLACED_PC, spirit_placed, SPIRIT, TS_NEEDS_SPIRIT_SET) \
+  X(spirit_woke, "$81:F02B", SPIRIT_WOKE_PC, spirit_woke, SPIRIT, TS_NEEDS_SPIRIT_WOKE) \
+  X(spirit_told, "$81:EF4B", SPIRIT_TOLD_PC, spirit_told, SPIRIT, TS_NEEDS_SPIRIT) \
+  X(spirit_bearing, "$81:EF5D", SPIRIT_BEARING_PC, spirit_bearing, SPIRIT, TS_NEEDS_SPIRIT) \
+  X(spirit_fly, "$81:EFE6", SPIRIT_FLY_PC, spirit_fly, SPIRIT, TS_NEEDS_SPIRIT) \
+  X(argument_box_set, "$80:EBF4", 0x80ebf4u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(box_heard, "$80:EBFB", BOX_HEARD_PC, box_heard, POTION, TS_NEEDS_PLAYER_TABLE) \
+  X(box_spawned, "$80:EC19", BOX_SPAWNED_PC, box_spawned, POTION, TS_NEEDS_NOTHING) \
+  X(pair_box_second, "$80:EC23", 0x80ec23u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
+  X(box_spawned_2, "$80:EC2D", BOX_SPAWNED_2_PC, box_spawned, POTION, TS_NEEDS_NOTHING) \
+  X(pair_box_third, "$80:EC37", 0x80ec37u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
+  X(box_spawned_3, "$80:EC41", BOX_SPAWNED_3_PC, box_spawned, POTION, TS_NEEDS_NOTHING) \
+  X(box_waited, "$80:EC4B", BOX_WAITED_PC, box_waited, POTION, TS_NEEDS_NOTHING) \
+  X(box_done, "$80:EC53", BOX_DONE_PC, box_done, SMALL, TS_NEEDS_NOTHING) \
+  X(box_back, "$80:EB66", BOX_BACK_PC, box_back, POTION, TS_NEEDS_NOTHING) \
+  X(one_fewer_box, "$80:EB48", BOX_FEWER_ENTRY_PC, one_fewer, POTION, TS_NEEDS_ONE_FEWER) \
+  X(wander_begin, "$80:DB42", WANDERER_PC, wander_begin, POTION, TS_NEEDS_RECORD) \
+  X(argument_wander_drunk, "$80:DB57", 0x80db57u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(wander_heard, "$80:DB5E", WANDER_HEARD_PC, wander_heard, POTION, TS_NEEDS_RECORD) \
+  X(wander_rested, "$80:DB7D", WANDER_RESTED_PC, wander_rested, POTION, TS_NEEDS_NOTHING) \
+  X(wander_flashed, "$80:DB8D", WANDER_FLASHED_PC, wander_flashed, POTION, TS_NEEDS_NOTHING) \
+  X(wander_drawn, "$80:D362", WANDER_DRAWN_PC, wander_drawn, POTION, TS_NEEDS_WANDER) \
+  X(wander_nearest, "$80:D398", WANDER_NEAREST_PC, wander_nearest, POTION, TS_NEEDS_WANDER) \
+  X(wander_bearing, "$80:D3A6", WANDER_BEARING_PC, wander_bearing, POTION, TS_NEEDS_WANDER) \
+  X(wander_redrawn, "$80:D3BD", WANDER_REDRAWN_PC, wander_redrawn, POTION, TS_NEEDS_WANDER) \
+  X(wander_ends, "$80:DBDA", WANDER_ENDS_PC, wander_ends, POTION, TS_NEEDS_RECORD) \
+  X(wander_ended, "$80:DBEA", WANDER_ENDED_PC, wander_ended, POTION, TS_NEEDS_RECORD) \
+  X(random_monster_asked, "$80:EE04", RANDOM_MONSTER_ASKED_PC, random_monster_asked, POTION, TS_NEEDS_NOTHING) \
+  X(argument_random_healed, "$80:EE10", 0x80ee10u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(random_healed, "$80:EE17", RANDOM_HEALED_PC, random_healed, POTION, TS_NEEDS_PLAYER) \
+  X(argument_random_poisoned, "$80:EE26", 0x80ee26u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(random_poisoned, "$80:EE2D", RANDOM_POISONED_PC, random_poisoned, POTION, TS_NEEDS_PLAYER) \
+  X(argument_random_sped, "$80:EE54", 0x80ee54u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(random_sped, "$80:EE5B", RANDOM_SPED_PC, random_sped, POTION, TS_NEEDS_NOTHING) \
+  X(one_fewer, "$80:EE66", ONE_FEWER_PC, one_fewer, POTION, TS_NEEDS_ONE_FEWER) \
+  X(flash_begin, "$80:F2C7", FLASH_PC, flash_begin, POTION, TS_NEEDS_RECORD) \
+  X(flash_shown, "$80:F2EA", FLASH_SHOWN_PC, flash_shown, POTION, TS_NEEDS_RECORD) \
+  X(flash_hidden, "$80:F2FB", FLASH_HIDDEN_PC, flash_hidden, POTION, TS_NEEDS_RECORD) \
+  X(ghost_begin, "$80:DACE", GHOST_BEGIN_PC, ghost_begin, POTION, TS_NEEDS_NOTHING) \
+  X(argument_ghost_drunk, "$80:DAD5", 0x80dad5u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(ghost_heard, "$80:DADC", GHOST_HEARD_PC, ghost_heard, POTION, TS_NEEDS_NOTHING) \
+  X(ghost_rested, "$80:DAE4", GHOST_RESTED_PC, ghost_rested, POTION, TS_NEEDS_NOTHING) \
+  X(ghost_flashed, "$80:DAFC", GHOST_FLASHED_PC, ghost_flashed, POTION, TS_NEEDS_NOTHING) \
+  X(ghost_ends, "$80:DB08", GHOST_ENDS_PC, ghost_ends, POTION, TS_NEEDS_RECORD) \
+  X(ghost_ends_asked, "$80:DB14", GHOST_ENDS_ASKED_PC, ghost_ends_asked, POTION, TS_NEEDS_NOTHING) \
+  X(ghost_ends_flash, "$80:DB1F", GHOST_ENDS_FLASH_PC, ghost_ends_flash, POTION, TS_NEEDS_NOTHING) \
+  X(ghost_ended, "$80:DB2B", GHOST_ENDED_PC, ghost_ended, POTION, TS_NEEDS_RECORD) \
+  X(artifact_enter, "$81:EAE6", ARTIFACT_PC, artifact_enter, ARTIFACT, TS_NEEDS_RECORD) \
+  X(artifact_made, "$81:EB5B", ARTIFACT_MADE_PC, artifact_made, ARTIFACT, TS_NEEDS_A) \
+  X(artifact_set, "$81:EB9D", ARTIFACT_SET_PC, artifact_set, ARTIFACT, TS_NEEDS_ARTIFACT_SET) \
+  X(artifact_heard, "$81:EAFA", ARTIFACT_HEARD_PC, artifact_heard, ARTIFACT, TS_NEEDS_NOTHING) \
+  X(artifact_woke, "$81:EB06", ARTIFACT_WOKE_PC, artifact_woke, ARTIFACT, TS_NEEDS_ARTIFACT) \
+  X(sparkle_enter, "$83:B55E", SPARKLE_ENTER_PC, sparkle_enter, SPARKLE, TS_NEEDS_NOTHING) \
+  X(sparkle_marked, "$83:B564", SPARKLE_MARKED_PC, sparkle_marked, SPARKLE, TS_NEEDS_NOTHING) \
+  X(sparkle_made, "$83:B61A", SPARKLE_MADE_PC, sparkle_made, SPARKLE, TS_NEEDS_A) \
+  X(sparkle_set, "$83:B659", SPARKLE_SET_PC, sparkle_set, SPARKLE, TS_NEEDS_SPARKLE_SET) \
+  X(sparkle_woke, "$83:B571", SPARKLE_WOKE_PC, sparkle_woke, SPARKLE, TS_NEEDS_NOTHING) \
+  X(sparkle_asked, "$83:B58A", SPARKLE_ASKED_PC, sparkle_asked, SPARKLE, TS_NEEDS_SPARKLE) \
+  X(sparkle_heard, "$83:B5B3", SPARKLE_HEARD_PC, sparkle_heard, SPARKLE, TS_NEEDS_SPARKLE_HEARD) \
+  X(argument_sparkle_found, "$83:B5C1", 0x83b5c1u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(sparkle_pictured, "$83:B5C8", SPARKLE_PICTURED_PC, sparkle_pictured, SPARKLE, TS_NEEDS_RECORD) \
+  X(argument_sparkle_gone, "$83:B5DD", 0x83b5ddu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(sparkle_gone, "$83:B5E4", SPARKLE_GONE_PC, sparkle_gone, SPARKLE, TS_NEEDS_SPARKLE) \
   X(piece_made, "$83:B1EB", PIECE_MADE_PC, piece_made, TRACKER, TS_NEEDS_A) \
   X(piece_heard, "$83:B226", PIECE_HEARD_PC, piece_heard, TRACKER, TS_NEEDS_NOTHING) \
   X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING) \
@@ -2489,6 +3090,9 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_82a871, "$82:A871", 0x82a871u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_8085bb, "$80:85BB", 0x8085bbu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_8085c2, "$80:85C2", 0x8085c2u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_fade_out, "$80:8933", FADE_OUT_PC, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(fade_out_step, "$80:893A", FADE_OUT_STEP_PC, fade_out_step, FADE_OUT, TS_NEEDS_NOTHING) \
+  X(level_done, "$80:85CD", LEVEL_DONE_PC, level_done, SMALL, TS_NEEDS_NOTHING) \
   X(argument_80ea16, "$80:EA16", 0x80ea16u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_80ef7b, "$80:EF7B", 0x80ef7bu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_80ef88, "$80:EF88", 0x80ef88u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
@@ -2535,6 +3139,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(player_left_shown, "$80:FB1E", PLAYER_LEFT_SHOWN_PC, player_left_shown, LEAVES, TS_NEEDS_RECORD) \
   X(player_gone, "$80:FB35", PLAYER_GONE_PC, player_gone, LEAVES, TS_NEEDS_NOTHING) \
   X(monster_ends, "$80:DA54", MONSTER_ENDS_PC, monster_ends, MONSTER, TS_NEEDS_NOTHING) \
+  X(monster_ends_shown, "$80:DA5E", MONSTER_ENDS_PICTURED_PC, monster_ends_shown, MONSTER, TS_NEEDS_NOTHING) \
+  X(monster_ends_after, "$80:DA67", MONSTER_ENDS_AFTER_PC, monster_ends_after, MONSTER, TS_NEEDS_NOTHING) \
   X(bystander_meets, "$82:DDA7", BYSTANDER_MEETS_PC, bystander_meets, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
   X(bystander_hushed, "$82:DDCF", BYSTANDER_HUSH_PC, bystander_hushed, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
   X(bystander_hushed_2, "$82:DDD6", BYSTANDER_HUSH_2_PC, bystander_hushed_2, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \

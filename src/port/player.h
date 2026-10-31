@@ -391,6 +391,9 @@ void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
 #define PSN_USE_RETURN 0xd28bu
 #define PSN_USED_PC 0x80d28cu
 #define PSN_RTS_PC 0x80d2e5u
+#define ITEM_GHOST_PC 0x80dacbu   // slot 3's potion, after its `JMP`
+#define ITEM_RANDOM_PC 0x80eba3u  // the random potion's `JSR $EDE0`
+#define ITEM_BOX_PC 0x80eb63u     // the box's `JSR $EBE6`
 #define ITEM_FIRST_AID 7
 #define ITEM_DECOY 10
 #define ITEM_SPEED_BITS 0x8000u         // into `$54`...
@@ -417,7 +420,10 @@ typedef enum {
   ITEM_USE_DECOY,
   ITEM_USE_MONSTER_BLOCKED,  // the ground is not clear for the monster
   ITEM_USE_MONSTER,          // ...or is, and the frame stops at its `JMP`
-  ITEM_USE_UNPORTED,       // a potion or the box
+  ITEM_USE_GHOST,          // slot 3's potion: the frame stops at its `JMP`
+  ITEM_USE_RANDOM,         // the random potion: ...at its `JSR $EDE0`
+  ITEM_USE_BOX,            // the box: ...at its `JSR $EBE6`
+  ITEM_USE_UNPORTED,       // nothing now
 } ItemUseEnd;
 
 // The registers it leaves, and, for the harness, the way it went.

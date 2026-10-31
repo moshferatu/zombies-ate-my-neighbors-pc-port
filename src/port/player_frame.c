@@ -93,7 +93,47 @@ static bool monster_state(Frame* f) {
   if (left != 0) {
     f->log->potion_ran = true;
     set_field(f, MONSTER_DP_FRAMES_LEFT, (uint16_t)(left - 1));
-    if (left == 1) return false;
+    if (left == 1) {
+      // The potion spent: with nothing at `$72`, the end shows its
+      // pictures (`port/thread_stretches.h`).
+      PORT_COVER(player_frame_monster_over);
+      f->log->monster_over = true;
+      set_field(f, FLASHING_DP_ENDS_BY, 0);
+    }
+  }
+  return true;
+}
+
+// `$80:D31C`: slot 3's potion. The pad as the monster reads it, but for
+// the punch, and the potion's frames counted down to its end.
+static bool ghost_state(Frame* f) {
+  floor_effect(f->w, f->rom, f->page, &f->log->floor);
+  f->log->c = f->log->floor.c;
+  f->log->c_set = true;
+
+  const uint16_t player = field(f, PLAYER_DP_INDEX);
+  set_field(f, PLAYER_DP_BUTTONS,
+            wram_r16(f->w, (uint16_t)(W_JOY_RAW + player)));
+  const uint16_t held = wram_r16(f->w, (uint16_t)(W_JOY_DIR + player));
+  set_field(f, PSN_DP_DIR, held);
+  if (held != 0) {
+    f->log->turned = true;
+    set_field(f, PSN_DP_DIR_HELD, held);
+  }
+  const uint16_t timer = field(f, POSE_DP_TIMER);
+  if (timer != 0) {
+    f->log->timer_ran = true;
+    set_field(f, POSE_DP_TIMER, (uint16_t)(timer - 1));
+  }
+  const uint16_t left = field(f, MONSTER_DP_FRAMES_LEFT);
+  if (left != 0) {
+    f->log->potion_ran = true;
+    set_field(f, MONSTER_DP_FRAMES_LEFT, (uint16_t)(left - 1));
+    if (left == 1) {
+      PORT_COVER(player_frame_ghost_over);
+      f->log->ghost_over = true;
+      set_field(f, FLASHING_DP_ENDS_BY, 0);
+    }
   }
   return true;
 }
@@ -176,6 +216,9 @@ static bool run_state(Frame* f) {
     case PLAYER_STATE_MONSTER:
       PORT_COVER(player_frame_monster);
       return monster_state(f);
+    case PLAYER_STATE_GHOST:
+      PORT_COVER(player_frame_ghost);
+      return ghost_state(f);
     case PLAYER_STATE_FLASHING:
       return flashing_state(f);
     default:
@@ -263,6 +306,15 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_BOUNCE_LANDED:
       pose_bounce_landed(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_BOUNCE_UP:
+      pose_bounce_up(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_BOUNCE_TOP:
+      pose_bounce_top(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_BOUNCE_FALL:
+      pose_bounce_fall(f->w, f->rom, f->page, did);
+      break;
     case POSE_HANDLER_SWIM:
       pose_swim(f->w, f->rom, f->page, did);
       break;
@@ -293,6 +345,9 @@ static bool move(Frame* f) {
     f->log->walk_kind = WALK_OF_MONSTER;
     if (!monster_walk_checked(f->w, f->rom, f->page, &f->log->walk))
       return false;
+  } else if (movement == PLAYER_MOVEMENT_GHOST_WALK) {
+    f->log->walk_kind = WALK_GHOST;
+    ghost_walk(f->w, f->rom, f->page, &f->log->walk);
   } else if (movement == PLAYER_MOVEMENT_STUCK_WALK) {
     f->log->walk_kind = WALK_STUCK;
     stuck_walk(f->w, f->rom, f->page, &f->log->walk);
@@ -344,6 +399,10 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
 
   log->unported = true;
   if (!run_state(&f)) return;
+  if (log->monster_over || log->ghost_over) {
+    log->unported = false;  // it stops at the end's `JMP`
+    return;
+  }
   run_hurt_timer(&f);
   if (log->hit_shows) {
     log->unported = false;
@@ -367,7 +426,7 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
 }
 
 void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
-                       bool v, PlayerFrameLog* log) {
+                       bool v, bool first_of_two, PlayerFrameLog* log) {
   PlayerFrameLog scratch;
   if (log == NULL) log = &scratch;
   *log = (PlayerFrameLog){0};
@@ -375,7 +434,28 @@ void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
 
   log->unported = true;
   log->walk_kind = WALK_ORDINARY;
-  if (!player_walk_resume(w, rom, page, axis, v, &log->walk)) return;
+  if (!player_walk_resume(w, rom, page, axis, v, first_of_two, &log->walk))
+    return;
+  log->walked = true;
+  log->c_set = true;
+  log->c = log->walk.last_yes;
+  log->v = log->walk.overflow;
+  publish_position(&f);
+  set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));
+  if (!level_goes_on(&f) || !alive(&f)) return;
+  log->unported = false;
+}
+
+void player_wall_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
+                       bool c, bool v, PlayerFrameLog* log) {
+  PlayerFrameLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
+
+  log->unported = true;
+  log->walk_kind = WALK_OF_MONSTER;
+  if (!monster_walk_resume(w, rom, page, axis, c, v, &log->walk)) return;
   log->walked = true;
   log->c_set = true;
   log->c = log->walk.last_yes;
@@ -453,6 +533,14 @@ bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
   Frame f = {w, rom, page, log};
   PORT_COVER(player_monster_state_alone);
   return monster_state(&f);
+}
+
+void player_ghost_state(Wram* w, const Rom* rom, uint16_t page,
+                        PlayerFrameLog* log) {
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
+  PORT_COVER(player_ghost_state_alone);
+  ghost_state(&f);
 }
 
 void player_turning_state(Wram* w, uint16_t page, PlayerFrameLog* log) {

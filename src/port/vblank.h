@@ -53,6 +53,30 @@ enum {
   SU_OAM_LAST,  // REP #$20 : LDA #$8000 : STA $2102
   SU_TAIL,      // SEC : RTL
 
+  // $80:EC59 box_colours_set, and its two jobs
+  BX_SET_A,     // SEP #$20 : LDA #$00, before its store
+  BX_IMM8,      // LDA #imm, 8 bits, before its store
+  BX_SET_C,     // LDA #$E0 : STA $1370, before the next store
+  BX_SET_TAIL,  // REP #$20 : LDA # : LDY #, to the `JSL`
+  BX_STEP,      // INC or DEC $1370 twice : LDA : AND : CMP : BCS or BEQ
+  BX_SEP,       // SEP #$20, before its store
+  BX_KEEP,      // REP #$20 : SEC : RTL
+  BX_QUEUE,     // LDA #$ECA0 : LDY #$0080 : JSL
+  BX_QA_HEAD,   // $80:83AE-$83B6, the queue add
+  BX_QA_FIRST,  // LDX #$0038
+  BX_QA_TEST,   // LDY $12A0,X : BEQ
+  BX_QA_NEXT,   // DEX x4 : BNE
+  BX_QA_STORE,  // $80:83C5-$83D2
+  BX_QA_FULL,   // PLY : RTL
+  BX_DROP,      // CLC : RTL
+  BX_RESET_A,   // SEP #$20 : LDA #$A0, before its store
+  BX_DONE,      // REP #$20 : CLC : RTL
+  // $80:C8DC ppu_multiply
+  PM_FIRST,     // SEP #$30, before the first store
+  PM_XBA,       // XBA, before the second
+  PM_READ,      // REP #$20 : LDA $2134
+  PM_LDX,       // LDX $2136
+  PM_TAIL,      // REP #$10 : RTL
   // $80:9E3E bg2_scroll_job
   B2_H,         // LDY $1B66 : TYA : XBA : SEP #$30 : STY $210F
   B2_V,         // REP #$30 : LDY $1B68 : TYA : XBA : SEP #$30 : STY $2110
@@ -276,5 +300,35 @@ void boss_bg_clear_job(Wram* w, PortCpu* c, HwTrace* t);
 // Each is true while its job stays queued.
 bool brightness_up_job(Wram* w, PortCpu* c);
 bool brightness_down_job(Wram* w, PortCpu* c);
+
+// --- $80:EC59 box_colours_set ---------------------------------------------
+//
+// The box opened (`port/thread_stretches.h`): colour maths on every layer,
+// added, `$2130` nought and `$2131` `$3F`, from a fixed colour of `$E0`
+// (`$2132`, kept at `$1370`), and `$80:EC7A` queued to brighten it two a
+// frame. At `$EF` that job queues `$80:ECA0`, which takes it down two a frame
+// to `$E0` and then puts back the level's colour maths: `$2125` `$A0`,
+// `$2130` `$10`, `$2131` `$A2`, `$2132` `$E5`. Each job stays queued (carry
+// set) until it hands on.
+#define BOX_COLOURS_PC 0x80ec59u
+#define BOX_COLOURS_QUEUE_PC 0x80ec75u  // `JSL vbl_queue_a_add`
+#define BOX_UP_JOB_PC 0x80ec7au
+#define BOX_UP_JOB_RTL_PC 0x80ec93u
+#define BOX_DOWN_JOB_PC 0x80eca0u
+#define BOX_DOWN_JOB_RTL_PC 0x80ecb9u
+#define W_BOX_COLOUR 0x1370u
+void box_colours_set(Wram* w, PortCpu* c, HwTrace* t);
+void box_up_job(Wram* w, PortCpu* c, HwTrace* t);
+void box_down_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $80:C8DC ppu_multiply ---------------------------------------------------
+//
+// A by X through the PPU's multiplier: A's two bytes to `$211B`, A's high byte
+// and then X's low one to `$211C`, so the product is A (signed) by X's low
+// byte (signed), read back at `$2134`: A has its low sixteen bits and X its
+// top eight. The box's spirits use it to pick a record to begin looking at.
+#define PPU_MULTIPLY_PC 0x80c8dcu
+#define PPU_MULTIPLY_RTL_PC 0x80c8f5u
+void ppu_multiply(Wram* w, PortCpu* c, HwTrace* t);
 
 #endif

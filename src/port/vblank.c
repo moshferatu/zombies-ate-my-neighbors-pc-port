@@ -3,6 +3,7 @@
 #include "port/bossbg.h"  // the clear's four words
 #include "port/coverage.h"
 #include "port/frontend.h"  // W_FRAME_COUNT
+#include "port/thread.h"    // the box's job queues the next
 
 // `XBA`: the accumulator's bytes swapped, N and Z from the new low byte.
 static void xba(PortCpu* c) {
@@ -404,6 +405,150 @@ void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t) {
   hw_w8(t, 0x2106, 0);
   hw_run(t, SS_TAIL);
   set_c(c, false);
+}
+
+// --- the box's colours -------------------------------------------------------
+
+void box_colours_set(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(box_colours_set);
+  hw_run(t, BX_SET_A);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2130, 0x00);
+  hw_run(t, BX_IMM8);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2131, 0x3f);
+  hw_run(t, BX_SET_C);
+  wram_w8(w, W_BOX_COLOUR, 0xe0);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2132, 0xe0);
+  hw_run(t, BX_SET_TAIL);
+  // `SEP #$20 : LDA #$E0 : ... : REP #$20 : LDA #$EC7A : LDY #$0080`.
+  c->a = (uint16_t)(BOX_UP_JOB_PC & 0xffffu);
+  set_nz16(c, c->a);
+  c->y = 0x0080;
+  set_nz16(c, c->y);
+  c->pc = BOX_COLOURS_QUEUE_PC;
+}
+
+// The level's colour back, two a frame: what is left of A, and the compare's
+// flags but for carry, which the job's `SEC` sets to stay queued.
+static void box_step_shown(Wram* w, PortCpu* c, HwTrace* t, uint16_t v,
+                           uint16_t than) {
+  (void)w;
+  c->a = v;
+  cmp16(c, v, than);
+  hw_run(t, BX_SEP);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2132, (uint8_t)v);
+  hw_run(t, BX_KEEP);
+  set_c(c, true);
+}
+
+void box_up_job(Wram* w, PortCpu* c, HwTrace* t) {
+  const uint16_t now = (uint16_t)(wram_r16(w, W_BOX_COLOUR) + 2);
+  wram_w16(w, W_BOX_COLOUR, now);
+  const uint16_t v = (uint16_t)(now & 0x00ffu);
+  hw_run(t, BX_STEP);
+  if (v < 0x00efu) {
+    PORT_COVER(box_brighter);
+    box_step_shown(w, c, t, v, 0x00ef);
+    return;
+  }
+  // `LDA #$ECA0 : LDY #$0080 : JSL vbl_queue_a_add : CLC : RTL`.
+  PORT_COVER(box_brightest);
+  hw_run(t, VBL_TAKEN);
+  hw_run(t, BX_QUEUE);
+  hw_run(t, BX_QA_HEAD);
+  const uint16_t job = (uint16_t)(BOX_DOWN_JOB_PC & 0xffffu);
+  const int slot = vbl_queue_a_add(w, job, 0x0080);
+  VblQueueFlags f;
+  vbl_queue_flags(w, W_VBL_QUEUE_A_COUNT, 0x0080, slot >= 0, &f);
+  if (slot < 0) {
+    hw_run(t, VBL_TAKEN);
+    hw_run(t, BX_QA_FULL);
+    c->a = job;
+    c->y = 0x0080;
+  } else {
+    const int busy = (0x38 - slot) / 4;
+    hw_run(t, BX_QA_FIRST);
+    hw_run_n(t, BX_QA_TEST, (uint16_t)busy);
+    hw_run_n(t, BX_QA_NEXT, (uint16_t)busy);
+    if (slot != 0) {
+      hw_run_n(t, VBL_TAKEN, (uint16_t)busy);
+      hw_run(t, BX_QA_TEST);
+      hw_run(t, VBL_TAKEN);
+    } else if (busy > 1) {
+      hw_run_n(t, VBL_TAKEN, (uint16_t)(busy - 1));
+    }
+    hw_run(t, BX_QA_STORE);
+    c->a = (uint16_t)(job - 1);
+    c->y = c->a;
+    c->x = (uint16_t)slot;
+  }
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+  if (f.n) c->p |= PORT_P_N;
+  if (f.z) c->p |= PORT_P_Z;
+  hw_run(t, BX_DROP);
+  set_c(c, false);
+}
+
+void box_down_job(Wram* w, PortCpu* c, HwTrace* t) {
+  const uint16_t now = (uint16_t)(wram_r16(w, W_BOX_COLOUR) - 2);
+  wram_w16(w, W_BOX_COLOUR, now);
+  const uint16_t v = (uint16_t)(now & 0x00ffu);
+  hw_run(t, BX_STEP);
+  if (v != 0x00e0u) {
+    PORT_COVER(box_dimmer);
+    box_step_shown(w, c, t, v, 0x00e0);
+    return;
+  }
+  PORT_COVER(box_dimmed);
+  hw_run(t, VBL_TAKEN);
+  hw_run(t, BX_RESET_A);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2125, 0xa0);
+  hw_run(t, BX_IMM8);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2130, 0x10);
+  hw_run(t, BX_IMM8);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2131, 0xa2);
+  hw_run(t, BX_IMM8);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x2132, 0xe5);
+  hw_run(t, BX_DONE);
+  // `LDA #$E5` with A eight bits wide: the high byte stays the compare's.
+  c->a = (uint16_t)((v & 0xff00u) | 0x00e5u);
+  c->p = (uint8_t)((c->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C)) | PORT_P_N);
+}
+
+// --- the PPU's multiplier -----------------------------------------------------
+
+void ppu_multiply(Wram* w, PortCpu* c, HwTrace* t) {
+  (void)w;
+  PORT_COVER(ppu_multiply);
+  const uint16_t a = c->a;
+  const uint8_t x = (uint8_t)c->x;
+  hw_run(t, PM_FIRST);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x211b, (uint8_t)a);
+  hw_run(t, PM_XBA);
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x211b, (uint8_t)(a >> 8));
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x211c, (uint8_t)(a >> 8));
+  hw_run(t, VBL_STORE);
+  hw_w8(t, 0x211c, x);
+  // The product's reads are not events the harness keeps: their cycles are in
+  // the runs.
+  hw_run(t, PM_READ);
+  hw_run(t, PM_LDX);
+  hw_run(t, PM_TAIL);
+  const int32_t product = (int32_t)(int16_t)a * (int32_t)(int8_t)x;
+  c->a = (uint16_t)product;
+  c->x = (uint16_t)(((uint32_t)product >> 16) & 0xffu);
+  // `LDX $2136` with X eight bits wide sets the flags; `REP #$10` keeps them.
+  set_nz8(c, (uint8_t)c->x);
 }
 
 void boss_shake_job(Wram* w, PortCpu* c, HwTrace* t) {

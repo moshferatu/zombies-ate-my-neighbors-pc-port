@@ -15,9 +15,14 @@
 // A step is taken if the ground is clear, the leash to the other player
 // allows it, it is on the level, and no thing is in the way. Anything else
 // ends the pose at `$80:DF45`, and so does the count at `$68` running out.
-// Ground of one kind is not an end: where what the test hands back, doubled
-// and masked with `$8B38`, is `$0100`, the ROM looks further on and may
-// send them to `$80:DD0D`. That frame is the ROM's.
+//
+// **Water is not an end.** Where what the test hands back, doubled and
+// masked with `$8B38`, is `$0100`, the kick looks further on: the way the
+// player faces, a row of `$80:DF48` from the step's point, read through the
+// data bank. That point goes to `$60` and `$62`, and if its tile has bit 8
+// (`terrain_point_bit8`) the player leaps into the water there: the pose
+// ends at `$80:DF05`, the `JMP` to the leap (`pose_leap`). Without bit 8 it
+// ends as the others do.
 //
 // It sits among the trampoline's poses in the ROM, and no corpus movie's own
 // player does it: the demos have it. I have not seen it on a screen.
@@ -39,6 +44,12 @@
 #define LUNGE_PC 0x80dec5u
 #define LUNGE_SLEEP_PC 0x80dec1u  // `JSL`, A already 1
 #define LUNGE_ENDED_PC 0x80df45u
+#define LUNGE_LEAP_PC 0x80df05u   // `JMP $DD0D`, into the water
+
+// Where a kick into water looks, by the way the player faces: a word of x
+// and one of y, from the step's point.
+#define LUNGE_AHEAD 0xdf48u
+#define LUNGE_DP_FACING 0x26
 
 #define LUNGE_DP_RECORD 0x08
 #define LUNGE_DP_X 0x30
@@ -58,6 +69,7 @@ enum {
   LU_TEST,   // LDX $34 : LDY $36 : JSL : BCS, three times
   LU_THING,  // $DF26-$DF31
   LU_PUT,    // $DF32-$DF44
+  LU_WATER,  // $DEE9-$DF04: the look further on, to its `BCC`
   LU_AGAIN,  // LDA #$0001
   LU_TAKEN,
   LU_BLOCK_COUNT
@@ -65,7 +77,10 @@ enum {
 
 typedef struct {
   uint16_t blocks[LU_BLOCK_COUNT];
-  bool declined;  // ground that sends them on
+  bool water;     // ground that sends them on...
+  TerrainRegs ahead;  // ...the tile further on, asked about bit 8...
+  bool leaps;     // ......which it has: into the water
+  int slow_reads; // ...the two words of the look, if not through FastROM
   bool tried;
   TerrainRegs ground;
   bool asked_leash;
@@ -78,6 +93,6 @@ typedef struct {
   bool nz_unknown;
 } LungeWork;
 
-void lunge_frame(Wram* w, PortCpu* c, LungeWork* k);
+void lunge_frame(Wram* w, const Rom* rom, PortCpu* c, LungeWork* k);
 
 #endif

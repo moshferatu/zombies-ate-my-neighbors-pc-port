@@ -38,6 +38,32 @@
   X(808666, "$80:8666", 0x808666u) /* JSL $80:8803 */ \
   X(80866a, "$80:866A", 0x80866au) /* JSL $80:C2DA */ \
   X(80866e, "$80:866E", 0x80866eu) /* RTL */ \
+  X(8085c9, "$80:85C9", 0x8085c9u) /* JSL $80:8933, the level done */ \
+  X(80da5b, "$80:DA5B", 0x80da5bu) /* JSR player_untouchable, the monster's end */ \
+  X(80dacb, "$80:DACB", 0x80dacbu) /* JSR player_unhandled, the potion of slot 3 */ \
+  X(80d35e, "$80:D35E", 0x80d35eu) /* JSL rng_next, the wanderer's state */ \
+  X(80ebf1, "$80:EBF1", 0x80ebf1u) /* JSR $EC59, the box's colours */ \
+  X(81f0ee, "$81:F0EE", 0x81f0eeu) /* JSL rng_next, a spirit's first look */ \
+  X(80ec79, "$80:EC79", 0x80ec79u) /* RTS */ \
+  X(80db54, "$80:DB54", 0x80db54u) /* JSR $EFFC, the wanderer drinks */ \
+  X(80dc03, "$80:DC03", 0x80dc03u) /* JSR player_hands_back, its end */ \
+  X(80dc06, "$80:DC06", 0x80dc06u) /* JMP player_handled */ \
+  X(80eba6, "$80:EBA6", 0x80eba6u) /* RTS, the random potion back */ \
+  X(80ee09, "$80:EE09", 0x80ee09u) /* JSR $D9A3, the random potion's monster */ \
+  X(80ee0c, "$80:EE0C", 0x80ee0cu) /* RTS */ \
+  X(80ee22, "$80:EE22", 0x80ee22u) /* RTS */ \
+  X(80ee3f, "$80:EE3F", 0x80ee3fu) /* RTS */ \
+  X(80ee43, "$80:EE43", 0x80ee43u) /* JSR $DB42 */ \
+  X(80ee46, "$80:EE46", 0x80ee46u) /* RTS */ \
+  X(80ee4a, "$80:EE4A", 0x80ee4au) /* JSR $DACB */ \
+  X(80ee4d, "$80:EE4D", 0x80ee4du) /* RTS */ \
+  X(80ee51, "$80:EE51", 0x80ee51u) /* JSR $EE66 */ \
+  X(80db05, "$80:DB05", 0x80db05u) /* JMP player_handled */ \
+  X(80db3f, "$80:DB3F", 0x80db3fu) /* JMP player_handled, its end */ \
+  X(80effc, "$80:EFFC", 0x80effcu) /* JSR weapon_away, a potion drunk */ \
+  X(80f008, "$80:F008", 0x80f008u) /* RTS, after the pictures */ \
+  X(83b57e, "$83:B57E", 0x83b57eu) /* RTL, a sparkle's end */ \
+  X(808946, "$80:8946", 0x808946u) /* RTL, after the fade's `WAI` */ \
   X(8086cc, "$80:86CC", 0x8086ccu) /* JSL $80:AD2B */ \
   X(80875b, "$80:875B", 0x80875bu) /* JSL $80:A079 */ \
   X(8087ff, "$80:87FF", 0x8087ffu) /* BRA $87D2 */ \

@@ -31,6 +31,8 @@ typedef struct {
   int stop_axis;
   PortCpu stop;
   uint16_t stop_return;
+  bool second;         // the double step's second walk
+  int axis;            // which axis is being tried: across, down
 } Walk;
 
 static uint16_t field(const Walk* k, uint16_t at) {
@@ -85,7 +87,7 @@ static bool lookup_overflows(const Walk* k, uint16_t x, uint16_t y) {
 static WalkReaction* reaction_met(Walk* k, int kind) {
   static WalkReaction unlogged;
   WalkReaction* did = &unlogged;
-  if (k->log && k->log->reactions < WALK_AXES)
+  if (k->log && k->log->reactions < WALK_STEPS)
     did = &k->log->reaction[k->log->reactions++];
   *did = (WalkReaction){.kind = (uint8_t)kind, .slot = -1};
   return did;
@@ -143,7 +145,7 @@ static bool edge_keeps_player_out(Walk* k) {
 // `JMP $DD0D`: the player leaps in, and the walk goes on as though the
 // ground were clear. A leap after a bounce is not ours: false.
 static bool leap_in(Walk* k) {
-  if (k->bounces != 0 || k->leaps == WALK_AXES) return false;
+  if (k->bounces != 0 || k->leaps == WALK_STEPS) return false;
   PORT_COVER_IF(k->leaps == 0, walk_edge_jumped, walk_edge_jumped_again);
   PoseLog pose_scratch;
   PlayerSpan span_scratch;
@@ -183,7 +185,7 @@ static Trampoline trampoline(Walk* k) {
     overflow_left(k, (c.p & PORT_P_V) != 0);
     return TRAMPOLINE_SOLID;
   }
-  if (k->leaps != 0 || k->bounces == WALK_AXES) return TRAMPOLINE_NOT_OURS;
+  if (k->leaps != 0 || k->bounces == WALK_STEPS) return TRAMPOLINE_NOT_OURS;
   PORT_COVER_IF(k->bounces == 0, walk_trampoline_bounced,
                 walk_trampoline_bounced_again);
   PoseLog scratch;
@@ -352,18 +354,55 @@ static bool square_entered(Walk* k) {
   return true;
 }
 
-// The monster's ground. Two kinds of wall break under it, which is not ours.
+// `$80:F1A5`: a wall the monster pushes against. With no direction held it
+// is only solid; with one, a sound and its pictures, which sleep, so the walk
+// stops at their `JSL`.
+static void monster_pushes(Walk* k, uint16_t wall) {
+  WalkLog* log = k->log;
+  if (log) {
+    log->walls++;
+    if (wall == MONSTER_WALL_BREAKS_B) log->walls_b++;
+    // The compare that found the kind was equal.
+    log->last_yes = true;
+  }
+  const uint16_t way = field(k, MONSTER_DP_DIR);
+  if (way == 0) {
+    PORT_COVER(monster_walk_wall_still);
+    if (log) log->walls_still++;
+    return;
+  }
+  PORT_COVER(monster_walk_broke_wall);
+  ApuSfxRegs heard;
+  apu_play_sfx(k->w, MONSTER_WALL_SFX, k->page, &heard);
+  // `LDA $0C : ASL : ASL : ASL : CLC : ADC $24 : DEC : DEC : TAX`, with Y as
+  // the sound left it.
+  const uint16_t eight = (uint16_t)(field(k, MONSTER_DP_ROW) << 3);
+  const uint16_t sum = (uint16_t)(eight + way);
+  const uint16_t at = (uint16_t)(sum - 2);
+  const uint16_t list = rom_word(k->rom, MONSTER_WALL_PICTURES + at);
+  k->stopped = true;
+  k->stop_axis = k->axis;
+  k->stop = (PortCpu){.a = list, .x = at, .y = heard.y, .d = k->page,
+                      .db = 0x80, .pc = MONSTER_WALL_PICTURES_PC};
+  set_nz16(&k->stop, list);
+  set_c(&k->stop, (uint32_t)eight + way > 0xffffu);
+  set_v(&k->stop, add16_overflows(eight, way));
+  k->stop_return =
+      k->axis == 0 ? MONSTER_ACROSS_RETURN : MONSTER_UP_DOWN_RETURN;
+  if (log) log->wall_stopped = true;
+}
+
+// The monster's ground. Two kinds of wall it pushes against.
 static bool ground_stops_monster(Walk* k, Point p) {
   TerrainRegs r;
   terrain_blocked_enemy(k->w, p.x, p.y, &r);
   overflow_left(k, r.v);
-  if (k->log && k->log->enemy_grounds < WALK_AXES)
+  if (k->log && k->log->enemy_grounds < WALK_STEPS)
     k->log->enemy_ground[k->log->enemy_grounds++] = r;
   if (!answer(k, WALK_ASK_GROUND, r.blocked)) return false;
   const uint16_t wall = r.a & MONSTER_WALL_BITS;
   if (wall == MONSTER_WALL_BREAKS_A || wall == MONSTER_WALL_BREAKS_B) {
-    PORT_COVER(monster_walk_broke_wall);
-    k->met_reaction = true;
+    monster_pushes(k, wall);
     return true;
   }
   answer(k, WALK_ASK_REACTION, true);
@@ -382,9 +421,12 @@ static bool ground_is_solid(Walk* k, Point p) {
     if (r.blocked && r.probes < TERRAIN_PROBE_COUNT) k->log->ground_cut_short++;
   }
   if (!answer(k, WALK_ASK_GROUND, r.blocked)) return false;
-  if (k->kind == WALK_STUCK) {
+  if (k->kind == WALK_WANDER) return true;  // no reaction asked
+  if (k->kind == WALK_STUCK || k->kind == WALK_GHOST) {
     // The word comes back shifted right one, and the ROM shifts it back.
-    const bool crosses = ((r.a << 1) & STUCK_WALK_CROSSES) != 0;
+    const bool crosses =
+        ((r.a << 1) & (k->kind == WALK_GHOST ? GHOST_WALK_CROSSES
+                                              : STUCK_WALK_CROSSES)) != 0;
     PORT_COVER_IF(crosses, stuck_walk_crossed, stuck_walk_solid);
     answer(k, WALK_ASK_REACTION, !crosses);
     // Stopped here, the carry left is the bit that shift pushed out.
@@ -477,7 +519,7 @@ static bool can_step(Walk* k, Point from, Point to) {
     PORT_COVER(walk_tethered);
     return false;
   }
-  if (someone_at(k, to, WALK_ASK_THERE)) {
+  if (k->kind != WALK_GHOST && someone_at(k, to, WALK_ASK_THERE)) {
     if (k->kind != WALK_ORDINARY) {
       PORT_COVER_IF(k->kind == WALK_STUCK, stuck_walk_obstructed,
                     monster_walk_obstructed);
@@ -500,6 +542,7 @@ static bool can_step(Walk* k, Point from, Point to) {
 
 // Across, at the height the player stands at now.
 static void step_across(Walk* k) {
+  k->axis = 0;
   const Point here = position(k);
   Point across = {field(k, WALK_DP_WANT_X), here.y};
   if (can_step(k, here, across)) {
@@ -516,6 +559,7 @@ static void step_across(Walk* k) {
 
 // Then up or down, from wherever that left the player.
 static void step_up_down(Walk* k) {
+  k->axis = 1;
   const Point here = position(k);
   Point up_down = {here.x, field(k, WALK_DP_WANT_Y)};
   if (can_step(k, here, up_down)) {
@@ -535,7 +579,10 @@ static void walk(Walk* k) {
   StepProposeRegs proposed;
   step_propose(k->w, k->rom, k->page, &proposed);
   overflow_left(k, proposed.v);
-  if (k->log) k->log->doubled = proposed.x != 0;
+  if (k->log) {
+    if (k->second) k->log->doubled_second = proposed.x != 0;
+    else k->log->doubled = proposed.x != 0;
+  }
 
   step_across(k);
   if (k->stopped) {
@@ -661,8 +708,34 @@ void swim_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
   swim(&k);
 }
 
+static bool walk_once(Walk* k);
+
 void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
   Walk k = {w, rom, page, false, log, WALK_ORDINARY};
+  walk_once(&k);
+}
+
+void wander_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_WANDER};
+  PORT_COVER(wander_walked);
+  const bool slow = (field(&k, WALK_DP_MODE) & WANDER_WALK_SLOW) != 0;
+  const bool odd = (wram_r16(w, W_WANDER_FRAME) & 1u) != 0;
+  if (log) {
+    log->wander_slow = slow;
+    log->wander_odd = odd;
+  }
+  if (!slow && odd) {
+    PORT_COVER(wander_walked_twice);
+    if (log) log->twice = true;
+    walk(&k);
+    k.second = true;
+  }
+  walk(&k);
+}
+
+void ghost_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_GHOST};
+  PORT_COVER(ghost_walked);
   walk(&k);
 }
 
@@ -677,14 +750,43 @@ bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page,
   Walk k = {w, rom, page, false, log, WALK_OF_MONSTER};
   PORT_COVER(monster_walked);
   walk(&k);
+  if (log && k.stopped) {
+    log->stopped = true;
+    log->stop_axis = k.stop_axis;
+    log->stop = k.stop;
+    log->stop_return = k.stop_return;
+  }
   return !k.met_reaction;
 }
 
-// The ordinary walk, but twice in one frame, which is the ROM's.
+bool monster_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
+                         bool c, bool v, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_OF_MONSTER};
+  PORT_COVER_IF(axis == 0, monster_wall_resumed_across,
+                monster_wall_resumed_up_down);
+  if (log) {
+    log->wall_resumed = true;
+    log->last_yes = c;
+    log->overflow = v;
+  }
+  if (axis == 0) step_up_down(&k);
+  return !k.met_reaction && !k.stopped;
+}
+
+// The ordinary walk, twice with the double step. A door that stops the
+// first stops it there.
 static bool walk_once(Walk* k) {
   if (field(k, WALK_DP_MODE) & WALK_TWICE) {
     PORT_COVER(walk_twice);
-    return false;
+    if (k->log) k->log->twice = true;
+    walk(k);
+    if (k->met_reaction) return false;
+    if (k->stopped) {
+      PORT_COVER(walk_twice_stopped);
+      if (k->log) k->log->stopped_first = true;
+      return true;
+    }
+    k->second = true;
   }
   walk(k);
   return !k->met_reaction;
@@ -707,7 +809,7 @@ bool player_walk_stoppable(Wram* w, const Rom* rom, uint16_t page,
 }
 
 bool player_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
-                        bool v, WalkLog* log) {
+                        bool v, bool first_of_two, WalkLog* log) {
   Walk k = {w, rom, page, false, log, WALK_ORDINARY};
   PORT_COVER_IF(axis == 0, walk_resumed_across, walk_resumed_up_down);
   // `SEC : RTS`, and the axis's `BCS` past the step.
@@ -717,6 +819,13 @@ bool player_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
     log->overflow = v;
   }
   if (axis == 0) step_up_down(&k);
+  if (first_of_two && !k.met_reaction && !k.stopped) {
+    // The first walk's `RTS`, to `$80:E4C1` and the second.
+    PORT_COVER(walk_twice_resumed);
+    if (log) log->twice = true;
+    k.second = true;
+    walk(&k);
+  }
   return !k.met_reaction && !k.stopped;
 }
 

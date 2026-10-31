@@ -694,6 +694,8 @@
   /* A player knocked back, and the decoy -- see port/lunge.h, decoy.h. */      \
   X(lunge_on,         "lunge_frame",        "a step back, against the way they face") \
   X(lunge_ran_out,    "lunge_frame",        "the fifteenth frame") \
+  X(lunge_into_water, "lunge_frame", "water, and more of it further on: a leap into it") \
+  X(lunge_water_shallow, "lunge_frame", "...or not, and the kick is over") \
   X(lunge_met_ground, "lunge_frame",        "ground in the way") \
   X(lunge_past_the_leash,"lunge_frame",     "the other player too far behind") \
   X(lunge_off_the_level,"lunge_frame",      "the level's edge") \
@@ -944,6 +946,8 @@
   X(player_level_won, "player_won",        "no neighbours left, and the ROM ends the level") \
   X(player_died,      "player_dead",       "no health left, and the ROM has the player die") \
   X(player_out_show,  "player_out_show",   "a player with none left: the list of pictures, once more") \
+  X(walk_twice_stopped, "player_walk", "...and a door stopped the first walk") \
+  X(walk_twice_resumed, "walk_door_woken", "back from a door that stopped the first of two walks: the second") \
   X(walk_twice,       "player_walk",       "$54 bit 15: the ROM walks twice") \
   X(walk_solid,       "player_walk",       "solid ground where the step lands") \
   X(walk_reaction,    "player_walk",       "...with a reaction of its own, so the ROM walks") \
@@ -983,7 +987,10 @@
   X(walk_off_map,     "player_walk",       "a step off the map") \
   X(monster_walked,   "monster_walk",      "the potion's monster walked") \
   X(monster_walk_obstructed, "monster_walk", "someone standing where its step lands") \
-  X(monster_walk_broke_wall, "monster_walk", "a wall that breaks under it, so the ROM walks") \
+  X(monster_walk_wall_still, "monster_walk", "a wall it pushes against, with no direction held: only solid") \
+  X(monster_wall_resumed_across, "player_wall_woken", "back from a wall's pictures across: the other axis") \
+  X(monster_wall_resumed_up_down, "player_wall_woken", "...or up or down: the walk is over") \
+  X(monster_walk_broke_wall, "monster_walk", "...or with one: its sound and pictures, and the walk stops at them") \
   X(stuck_walked,     "stuck_walk",        "a player stuck in slime walked") \
   X(stuck_walk_solid, "stuck_walk",        "solid ground it cannot cross") \
   X(stuck_walk_crossed, "stuck_walk",      "solid ground it can") \
@@ -1775,6 +1782,18 @@
   X(player_leaves_ended, "ts_player_leaves", "...or with a routine that ends it, which is asked first") \
   X(player_gone_alone, "ts_player_gone", "out, with one record between the players: it is kept") \
   X(player_gone_let_go, "ts_player_gone", "...or with two: the player's is let go") \
+  X(monster_ends_pictured, "ts_monster_ends_shown", "the potion spent: the end's pictures, by the player") \
+  X(monster_ends_shown, "ts_monster_ends_after", "...and after them, its words cleared") \
+  X(player_frame_ghost, "player_frame", "...or slot 3's potion's") \
+  X(player_frame_ghost_over, "player_frame", "slot 3's potion's last frame: on to its end") \
+  X(player_ghost_state_alone, "player_ghost_state", "slot 3's potion's state, in a frame that is the ROM's") \
+  X(wander_walked, "wander_walk", "the wanderer's walk") \
+  X(wander_walked_twice, "wander_walk", "...twice, on an odd frame") \
+  X(wanderer_ignored, "thread_call_handler", "the wanderer told of something not a player's: nothing") \
+  X(wanderer_hit, "thread_call_handler", "...or of a player's hit, which takes one") \
+  X(wanderer_downed, "thread_call_handler", "......its last: health nought and the ordinary state") \
+  X(ghost_walked, "ghost_walk", "slot 3's potion's walk") \
+  X(player_frame_monster_over, "player_frame", "the monster's last frame: on to its end") \
   X(monster_ends_unshown, "ts_monster_ends", "the monster ended by the exit: no pictures, its words cleared") \
   X(punch_told, "ts_punch", "...or a later one: those in it are") \
   X(pose_reached, "pose_walk_6c", "...and the tile the fist is at looked at") \
@@ -1904,6 +1923,72 @@
   X(level_end_rest_cut, "level_end_rest_waited", "...cut short by a pad") \
   X(vampire_entered, "ts_vampire_enter", "a vampire's start: its place in the level's list marked gone") \
   X(game_lost, "ts_game_lost", "nobody left playing: carry set, and out of the main loop") \
+  X(item_use_ghost, "player_potion", "slot 3's potion: one fewer, and to its change") \
+  X(item_use_random, "player_potion", "the random potion: to its draw") \
+  X(wander_begun, "ts_wander_begin", "the random potion's wanderer begun") \
+  X(wander_turned_away, "ts_wander_drawn", "a draw of 1: the way opposite the pad's") \
+  X(wander_followed_pad, "ts_wander_drawn", "a draw of 2: the pad's") \
+  X(wander_near, "ts_wander_nearest", "a player within $41: toward them") \
+  X(wander_far, "ts_wander_nearest", "...or not, and it moved: slowly on") \
+  X(wander_stood, "ts_wander_nearest", "...or it stood still: a way at random") \
+  X(wander_over, "ts_wander_drawn", "its frames spent: the end") \
+  X(wander_ends_spent, "ts_wander_ends", "the end: the flashing") \
+  X(wander_ends_asked, "ts_wander_ends", "...or something asks it to end") \
+  X(wander_ended, "ts_wander_ended", "its words cleared, and can be touched") \
+  X(box_colours_set, "box_colours_set", "the box: the screen's colours set, and brightened") \
+  X(box_brighter, "box_up_job", "two brighter") \
+  X(box_brightest, "box_up_job", "...or at the top: to the dimming") \
+  X(box_dimmer, "box_down_job", "two dimmer") \
+  X(box_dimmed, "box_down_job", "...or at the bottom: the level's colours back") \
+  X(ppu_multiply, "ppu_multiply", "A by X, by the PPU's multiplier") \
+  X(spirit_made, "ts_spirit_made", "a spirit from the box: its record") \
+  X(spirit_found, "ts_spirit_placed", "a look: something to chase") \
+  X(spirit_gave_up, "ts_spirit_placed", "...or the looks spent: it flies off") \
+  X(spirit_lost, "ts_spirit_woke", "the one it chased gone: another look") \
+  X(spirit_told, "ts_spirit_woke", "...or near enough: everything about it told") \
+  X(spirit_tired, "ts_spirit_woke", "...or between, with no tries left: another look") \
+  X(spirit_chased, "ts_spirit_woke", "...or with tries: toward it") \
+  X(spirit_on_course, "ts_spirit_bearing", "the way it goes already toward it") \
+  X(spirit_turned_up, "ts_spirit_bearing", "...or a step round one way") \
+  X(spirit_turned_down, "ts_spirit_bearing", "...or the other") \
+  X(spirit_gone, "ts_spirit_woke", "flown off: to its end") \
+  X(item_use_box, "player_potion", "the box: to its opening") \
+  X(box_busy, "ts_box_open", "the box, with spirits out: refused") \
+  X(box_opened, "ts_box_open", "...or opened") \
+  X(box_all_gone, "ts_box_waited", "all three spirits gone") \
+  X(random_drew_monster, "ts_random_drawn", "the random potion: the monster drawn") \
+  X(random_drew_other, "ts_random_drawn", "...or another") \
+  X(random_monster_blocked, "ts_random_monster_asked", "the monster, on solid ground: nothing") \
+  X(random_monster, "ts_random_monster_asked", "...or not: one fewer, and the change") \
+  X(random_healed, "ts_random_healed", "health back to ten") \
+  X(random_poisoned, "ts_random_poisoned", "health halved") \
+  X(random_sped, "ts_random_sped", "the running shoes") \
+  X(one_fewer_left, "ts_one_fewer", "one fewer, and some left") \
+  X(one_fewer_none, "ts_one_fewer", "...or none: the next item") \
+  X(potion_pictured, "ts_potion_pictured", "a potion drunk: its pictures, by the player") \
+  X(flash_begun, "ts_flash_begin", "the flashing begun") \
+  X(flash_again, "ts_flash_hidden", "...another flash") \
+  X(flash_over, "ts_flash_hidden", "...or the last") \
+  X(ghost_begun, "ts_ghost_begin", "the potion of slot 3 drunk") \
+  X(ghost_ends_spent, "ts_ghost_ends", "its frames spent: the ground asked about") \
+  X(ghost_ends_asked, "ts_ghost_ends", "...or something asks it to end") \
+  X(ghost_ends_clear, "ts_ghost_ends_asked", "clear ground: it ends, with the flashing") \
+  X(ghost_ends_later, "ts_ghost_ends_asked", "...or solid: five frames more") \
+  X(ghost_ended, "ts_ghost_ended", "its words cleared, to the hands back") \
+  X(artifact_made, "ts_artifact_made", "weapon 4's shot: its record, off the screen") \
+  X(artifact_stepped, "ts_artifact_woke", "a step: its picture, and where its owner is") \
+  X(artifact_masked, "ts_artifact_woke", "...a picture whose mask clears flags") \
+  X(artifact_ended, "ts_artifact_woke", "...or the eighth past: to its end") \
+  X(sparkle_made, "ts_sparkle_made", "a sparkle's record, with no handler") \
+  X(sparkle_waits, "ts_sparkle_asked", "nobody near: three ticks more") \
+  X(sparkle_let_go, "ts_sparkle_gone", "...or somebody came: the record let go") \
+  X(sparkle_found, "ts_sparkle_asked", "a player within $55") \
+  X(sparkle_blinked, "ts_sparkle_asked", "...or not: a frame of the blink") \
+  X(sparkle_ticked, "ts_sparkle_asked", "...or its countdown started again, with its tick") \
+  X(sparkle_quiet, "ts_sparkle_asked", "...or without, another sample set loaded") \
+  X(level_done, "ts_level_done", "the level done and the screen black: carry clear, and out") \
+  X(fade_out_darker, "ts_fade_out_step", "the fade to black: a step darker, and another tick") \
+  X(fade_out_black, "ts_fade_out_step", "...or under nought: blanked, and a `WAI`") \
   X(main_back_over, "ts_main_back", "the main thread back from the level: the game over") \
   X(main_back_next, "ts_main_back", "...or the next level") \
   X(level_ending_none_rescued, "ts_level_ending", "no neighbours left, and none saved: the game is lost") \
@@ -1949,6 +2034,16 @@
   X(pose_bounce_again, "pose_bounce", "......which has bit 3, so a wait on it") \
   X(pose_bounce_waited, "pose_bounce_wait", "on it, between two bounces") \
   X(pose_bounce_jumped, "pose_bounce_wait", "...or the wait over, and a jump off it") \
+  X(pose_bounce_partner_far, "pose_bounce_wait", "...or not, the other player too far: the other bounce") \
+  X(pose_bounce_jump_again, "pose_bounce_wait", "...or a jump off onto bit 0 and not bit 8: the other bounce") \
+  X(pose_bounced_again, "pose_bounce_wait", "the other bounce begun, where they are") \
+  X(pose_bounce_up_fast, "pose_bounce_up", "the other bounce: up, fast") \
+  X(pose_bounce_up_slowed, "pose_bounce_up", "...or under four, and the next handler") \
+  X(pose_bounce_top_shown, "pose_bounce_top", "about the top: the second or third picture") \
+  X(pose_bounce_top_down, "pose_bounce_top", "...or the fourth") \
+  X(pose_bounce_top_passed, "pose_bounce_top", "...or past it, and the last handler") \
+  X(pose_bounce_fall_on, "pose_bounce_fall", "falling") \
+  X(pose_bounce_fall_down, "pose_bounce_fall", "...or down") \
   X(pose_bounced_off, "pose_bounce_off", "off it, across the ground") \
   X(pose_bounce_off_again, "pose_bounce_off", "...and down on a trampoline again") \
   X(pose_bounce_off_down, "pose_bounce_off", "...or down on the ground") \

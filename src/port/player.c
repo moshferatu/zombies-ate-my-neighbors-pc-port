@@ -425,7 +425,9 @@ static ItemUseEnd item_kind(uint16_t held) {
     case ITEM_FIRST_AID: return ITEM_USE_HEALED;
     case ITEM_DECOY: return ITEM_USE_DECOY;
     case ITEM_MONSTER: return ITEM_USE_MONSTER;
-    case 3: case 4: case 5: case 8: return ITEM_USE_UNPORTED;
+    case 3: return ITEM_USE_GHOST;
+    case 4: case 5: return ITEM_USE_RANDOM;
+    case 8: return ITEM_USE_BOX;
     default: return ITEM_USE_NOTHING;
   }
 }
@@ -593,6 +595,21 @@ void item_use(Wram* w, const Rom* rom, uint16_t dp, uint16_t y,
       use_one(w, rom, dp, u);
       return;
     }
+    case ITEM_USE_GHOST:
+      // `$80:EB99  JSR $EB48 : STZ $24 : JMP $DACB`.
+      PORT_COVER(item_use_ghost);
+      use_one(w, rom, dp, u);
+      wram_w16(w, dp + PSN_DP_DIR, 0);
+      return;
+    case ITEM_USE_BOX:
+      // `$80:EB63`: the frame stops at its `JSR $EBE6`, which sleeps.
+      PORT_COVER(item_use_box);
+      return;
+    case ITEM_USE_RANDOM:
+      // `$80:EBA1  STZ $24`, and the frame stops at `JSR $EDE0`.
+      PORT_COVER(item_use_random);
+      wram_w16(w, dp + PSN_DP_DIR, 0);
+      return;
     case ITEM_USE_MONSTER:
       // `$80:EB87`: the ground where the player stands, as an enemy's is.
       terrain_blocked_enemy(w, wram_r16(w, dp + ITEM_USE_DP_X),
@@ -849,8 +866,10 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     out->n = out->use.n;
     out->z = out->use.z;
     out->c = out->use.c;
-    if (out->use.end == ITEM_USE_MONSTER) {
-      // The change sleeps, so the frame stops at its `JMP`.
+    if (out->use.end == ITEM_USE_MONSTER || out->use.end == ITEM_USE_GHOST ||
+        out->use.end == ITEM_USE_RANDOM || out->use.end == ITEM_USE_BOX) {
+      // The change sleeps, so the frame stops at its `JMP`, or at the
+      // random potion's `JSR`.
       out->stopped = true;
       return;
     }

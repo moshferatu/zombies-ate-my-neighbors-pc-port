@@ -664,6 +664,29 @@ same in both builds, and it turns nothing down. A blast that tells an
 ordinary enemy of a hit it dies of or survives is priced at the row's
 figure, since `$81:8888`'s deep exits have no table.
 
+**What a player met with no 65816, 2026-10-30.** A few minutes of play
+stopped `zamn.exe` at eight addresses no movie had reached. The items and
+weapons are where a player goes that the corpus does not. Each is ported now,
+with a movie and a survey session (`tools/code_map_survey.py`) that reaches it:
+
+| Stopped at | What it was | Movie |
+|---|---|---|
+| `$80:85C9` | a level's door: the fade out and the level's end | `level21-exit.zmv`'s sessions |
+| `$83:B55E` | a sparkle of gold on level 48 | `level48-sparkle.zmv` |
+| `$81:EAE6` | weapon 4's shot | `fire-walk.zmv` |
+| `$80:E4BA` | the running shoes' second step | `item-walk.zmv` |
+| `$80:D6DC` | the monster potion's end, its punch and a wall it pushes | `item-walk.zmv`, `monster-wall.zmv` |
+| `$80:D1FF` | the ghost potion, the random potion's eight draws, the box and its spirits | `item-walk.zmv` |
+| `$80:E035` | the trampoline's bounce with nothing held | `trampoline.zmv` |
+| `$80:DEC5` | weapon 5's kick into the water | `kick-pool.zmv` |
+
+The corpus still passes, 128,185,011 calls with none diverged, and the 18
+new sessions and the corpus at three widths run in the game with the 65816
+executing nothing; the picture at the three widths is the same, 78,360,128
+lines each. Not reached by any session: a door that stops the first
+of the shoes' two steps; a leap onto a bit-0 tile; the box's far partner and
+a wanderer that is hit, which need two players; the sparkle's quiet path.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

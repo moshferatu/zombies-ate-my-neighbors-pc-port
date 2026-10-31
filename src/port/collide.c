@@ -1394,6 +1394,71 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
 }
 
 // ---------------------------------------------------------------------------
+// $80:DB96  the wanderer's handler
+// ---------------------------------------------------------------------------
+
+#define WANDERER_HEALTH 0x1cb8u  // a word a player
+#define WANDERER_DP_PLAYER 0x0e
+#define WANDERER_DP_7E 0x7e
+#define WANDERER_DP_STATE 0x70
+
+static bool wanderer_collide(Wram* w, uint16_t dp, uint16_t arg,
+                             ActorHandlerRegs* r, uint8_t* exit) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `CMP #$005C : BCS : CLC : RTL`.
+    PORT_COVER(wanderer_ignored);
+    *exit = WANDERER_IGNORED;
+    r->a = arg;
+    r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000u) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+  const uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    *exit = WANDERER_DEEP;
+    return enemy_bubble_react(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    *exit = WANDERER_DEEP;
+    return enemy_freeze(w, dp, r);
+  }
+  PORT_COVER(wanderer_hit);
+  // `SEC : SBC #$005C : ASL : TAX : LDY $0E : LDA $1CB8,Y : DEC : BMI`.
+  r->x = (uint16_t)((id - COLLIDE_ID_PLAYER) << 1);
+  const uint16_t player = wram_r16(w, (uint16_t)(dp + WANDERER_DP_PLAYER));
+  r->y = player;
+  const uint16_t at = (uint16_t)(WANDERER_HEALTH + player);
+  const uint16_t health = wram_r16(w, at);
+  const uint16_t left = (uint16_t)(health - 1);
+  if (left & 0x8000u) {
+    PORT_COVER(wanderer_downed);
+    *exit = WANDERER_DOWNED;
+    wram_w16(w, at, 0);
+    wram_w16(w, (uint16_t)(dp + WANDERER_DP_7E), 0);
+    wram_w16(w, (uint16_t)(dp + WANDERER_DP_STATE), 0);
+    r->a = 0;
+    r->n = false;
+    r->z = true;
+    r->c = true;
+    return true;
+  }
+  if (left == health) {
+    *exit = WANDERER_SAME;
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+  // `STA $1CB8,Y : JML $81:8506`.
+  *exit = WANDERER_DEEP;
+  wram_w16(w, at, left);
+  r->a = left;
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
 // $80:8480  thread_call_handler
 // ---------------------------------------------------------------------------
 
@@ -1537,6 +1602,8 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = exit_door_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_F25D_COLLIDE_ENTRY) {
     served = actor_f25d_collide(w, dp, arg, &r);
+  } else if (entry == WANDERER_COLLIDE_ENTRY) {
+    served = wanderer_collide(w, dp, arg, &r, &work->wanderer_exit);
   } else if (entry == ACTOR_F8FC_COLLIDE_ENTRY) {
     served = actor_f8fc_collide(w, dp, arg, &r);
   } else if (entry == VICTIM_COLLIDE_ENTRY) {

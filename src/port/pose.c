@@ -79,6 +79,16 @@
 #define POSE_JUMP_REACH 0xe06cu
 #define POSE_JUMP_LOOKS 0xe27du
 #define POSE_SFX_BOUNCE 0x001b
+// The other bounce: its speed goes up to this, and its pictures.
+#define POSE_BOUNCE_TOP_SPEED 6
+#define POSE_HIGH_PICTURE_UP 0x10
+#define POSE_HIGH_PICTURE_SLOWING 0x14
+#define POSE_HIGH_PICTURE_TOP 0x18
+#define POSE_HIGH_PICTURE_DOWN 0x1c
+#define POSE_HIGH_FAST 4         // the first picture down to this speed
+#define POSE_HIGH_SLOWING 2      // ...the second above it
+#define POSE_HIGH_TOP 0xfffeu    // ...the third from here up
+#define POSE_HIGH_DOWN 0xfffcu   // ...the fourth from here up
 // What the tile where it lands says. Bit 3 is another trampoline.
 #define POSE_TILE_TRAMPOLINE 0x0008u
 #define POSE_TILE_BIT0 0x0001u
@@ -917,17 +927,13 @@ static void wait_begin(Pose* p) {
   show_in_air(p, POSE_ARC_PICTURE_WAITING);
 }
 
-// `$80:E016`: down from a bounce, on the tile the walk found. Its bit 3 is
-// looked at by tile coordinates, as `$80:E855` divides them.
-static void bounce_down(Pose* p) {
-  PORT_COVER(pose_bounce_down);
+// `$80:E855`: down where they are. The tile's bit 3 is looked at by tile
+// coordinates: with it they wait on the trampoline, and without they stand.
+static void settle(Pose* p) {
   p->log->bounce_down = true;
-  const uint16_t x = field(p, PLAYER_SPAN_DP_POINT_X);
-  const uint16_t y = field(p, PLAYER_SPAN_DP_POINT_Y);
-  set_field(p, STEP_DP_X, x);
-  set_field(p, STEP_DP_Y, y);
   TerrainRegs tile;
-  terrain_tile_bit3(p->w, (uint16_t)(x >> 3), (uint16_t)(y >> 3), &tile);
+  terrain_tile_bit3(p->w, (uint16_t)(field(p, STEP_DP_X) >> 3),
+                    (uint16_t)(field(p, STEP_DP_Y) >> 3), &tile);
   if (tile.blocked) {
     PORT_COVER(pose_bounce_again);
     p->log->on_trampoline = true;
@@ -935,6 +941,88 @@ static void bounce_down(Pose* p) {
   } else {
     stand_begin(p);
   }
+}
+
+// `$80:E016`: down from a bounce, on the tile the walk found.
+static void bounce_down(Pose* p) {
+  PORT_COVER(pose_bounce_down);
+  set_field(p, STEP_DP_X, field(p, PLAYER_SPAN_DP_POINT_X));
+  set_field(p, STEP_DP_Y, field(p, PLAYER_SPAN_DP_POINT_Y));
+  settle(p);
+}
+
+// `$80:E090`: the other bounce, where they are. Its speed is a step higher
+// each time, up to six.
+static void bounce_again(Pose* p) {
+  PORT_COVER(pose_bounced_again);
+  p->log->bounced_again = true;
+  ApuSfxRegs unused;
+  apu_play_sfx(p->w, POSE_SFX_BOUNCE, p->page, &unused);
+  uint16_t speed = field(p, POSE_DP_LAUNCH);
+  if (speed != POSE_BOUNCE_TOP_SPEED) {
+    p->log->launch_raised = true;
+    speed = (uint16_t)(speed + 1);
+    set_field(p, POSE_DP_LAUNCH, speed);
+  }
+  set_field(p, POSE_DP_RISE, speed);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_UP);
+  show_in_air(p, POSE_HIGH_PICTURE_UP);
+}
+
+// `$80:E0B1`: up, fast. Below four the next handler shows the second
+// picture, on the same frame.
+static void bounce_up(Pose* p) {
+  rise(p);
+  show_in_air(p, POSE_HIGH_PICTURE_UP);
+  if (flags_at_least(&p->flags, field(p, POSE_DP_RISE), POSE_HIGH_FAST)) {
+    PORT_COVER(pose_bounce_up_fast);
+    p->log->rising_fast = true;
+    return;
+  }
+  PORT_COVER(pose_bounce_up_slowed);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_TOP);
+  show_in_air(p, POSE_HIGH_PICTURE_SLOWING);
+}
+
+// `$80:E0D0`: about the top, a picture by the speed; past it the last
+// handler, falling.
+static void bounce_top(Pose* p) {
+  rise(p);
+  const uint16_t speed = field(p, POSE_DP_RISE);
+  uint16_t picture;
+  p->log->top_negative = negative(speed);
+  if (!negative(speed)) {
+    picture = speed >= POSE_HIGH_SLOWING ? POSE_HIGH_PICTURE_SLOWING
+                                         : POSE_HIGH_PICTURE_TOP;
+  } else if (speed >= POSE_HIGH_TOP) {
+    picture = POSE_HIGH_PICTURE_TOP;
+  } else if (speed >= POSE_HIGH_DOWN) {
+    picture = POSE_HIGH_PICTURE_DOWN;
+  } else {
+    PORT_COVER(pose_bounce_top_passed);
+    set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_FALL);
+    picture = POSE_HIGH_PICTURE_UP;
+  }
+  PORT_COVER_IF(picture == POSE_HIGH_PICTURE_DOWN, pose_bounce_top_down,
+                pose_bounce_top_shown);
+  p->log->top_picture = picture;
+  show_in_air(p, picture);
+}
+
+// `$80:E106`: down, until the height is nought or under.
+static void bounce_fall(Pose* p) {
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  const uint16_t height = wram_r16(p->w, (uint16_t)(record + ACTOR_Z));
+  if (height == 0 || negative(height)) {
+    PORT_COVER(pose_bounce_fall_down);
+    p->log->fall_down = true;
+    p->log->fall_under = height != 0;
+    settle(p);
+    return;
+  }
+  PORT_COVER(pose_bounce_fall_on);
+  rise(p);
+  show_in_air(p, POSE_HIGH_PICTURE_UP);
 }
 
 // One of a jump off's looks at where it lands: the attributes of the tile
@@ -973,7 +1061,8 @@ static void jump_off(Pose* p) {
   if (tile & POSE_TILE_BIT0) {
     p->log->off_bit0 = true;
     if (!(tile & POSE_TILE_WATER)) {
-      leave_to_rom(p);  // another bounce, `$80:E090`
+      PORT_COVER(pose_bounce_jump_again);
+      bounce_again(p);
       return;
     }
   }
@@ -1030,8 +1119,14 @@ static void bounce_wait(Pose* p) {
     return;
   }
   const uint16_t way = field(p, PSN_DP_DIR);
-  if (field(p, POSE_DP_LAUNCH) < POSE_JUMP_SPEED || way == 0) {
-    leave_to_rom(p);
+  if (!flags_at_least(&p->flags, field(p, POSE_DP_LAUNCH), POSE_JUMP_SPEED)) {
+    p->log->wait_low = true;
+    bounce_again(p);
+    return;
+  }
+  if (way == 0) {
+    p->log->wait_still = true;
+    bounce_again(p);
     return;
   }
   const uint16_t reach = (uint16_t)(way << 1);
@@ -1039,9 +1134,11 @@ static void bounce_wait(Pose* p) {
                                 field(p, STEP_DP_Y));
   const uint16_t x =
       (uint16_t)(table_word(p, POSE_JUMP_REACH, reach) + field(p, STEP_DP_X));
+  p->log->partner_asked = true;
   partner_near(p->w, field(p, POSE_DP_RECORD), x, y, &p->log->partner);
   if (!p->log->partner.c) {
-    leave_to_rom(p);  // too far from the other player
+    PORT_COVER(pose_bounce_partner_far);
+    bounce_again(p);
     return;
   }
   p->log->jumped_off = true;
@@ -1238,6 +1335,18 @@ void pose_bounce_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(bounce_begin, w, rom, page, log);
 }
 
+void pose_bounce_up(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_up, w, rom, page, log);
+}
+
+void pose_bounce_top(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_top, w, rom, page, log);
+}
+
+void pose_bounce_fall(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_fall, w, rom, page, log);
+}
+
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(swim, w, rom, page, log);
 }
@@ -1312,6 +1421,9 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_BOUNCE_LANDED:
       run(bounce_landed, w, rom, page, &log);
       break;
+    case POSE_HANDLER_BOUNCE_UP: run(bounce_up, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE_TOP: run(bounce_top, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE_FALL: run(bounce_fall, w, rom, page, &log); break;
     case POSE_HANDLER_SWIM: run(swim, w, rom, page, &log); break;
     default: return false;
   }

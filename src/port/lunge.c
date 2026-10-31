@@ -12,9 +12,33 @@ static void set_field(Wram* w, const PortCpu* c, uint16_t at, uint16_t v) {
   wram_w16(w, (uint16_t)(c->d + at), v);
 }
 
+// `$80:DEE9`: water. Is there more of it further on, the way they face?
+static void look_ahead(Wram* w, const Rom* rom, PortCpu* c, LungeWork* k,
+                       uint16_t x, uint16_t y) {
+  k->water = true;
+  const uint32_t row = ((uint32_t)c->db << 16) + LUNGE_AHEAD +
+                       (uint16_t)(field(w, c, LUNGE_DP_FACING) << 1);
+  const uint32_t at_y = (row + 2) & 0xffffffu;
+  const uint32_t at_x = row & 0xffffffu;
+  const uint16_t ahead_y = (uint16_t)(y + bus_r16(w, rom, at_y));
+  const uint16_t ahead_x = (uint16_t)(x + bus_r16(w, rom, at_x));
+  k->slow_reads = (bus_fast(at_y) ? 0 : 2) + (bus_fast(at_x) ? 0 : 2);
+  set_field(w, c, LUNGE_DP_STEP_X, ahead_x);
+  set_field(w, c, LUNGE_DP_STEP_Y, ahead_y);
+  terrain_point_bit8(w, ahead_x, ahead_y, &k->ahead);
+  c->a = k->ahead.a;
+  c->x = k->ahead.x;
+  c->y = k->ahead.y;
+  set_c(c, k->ahead.blocked);
+  set_nz16(c, c->d);  // its `PLD`
+  k->blocks[LU_WATER]++;
+  k->leaps = k->ahead.blocked;
+  PORT_COVER_IF(k->leaps, lunge_into_water, lunge_water_shallow);
+}
+
 // May they be at `x`, `y`? Each test leaves its own registers.
-static bool stopped(Wram* w, PortCpu* c, LungeWork* k, uint16_t x,
-                    uint16_t y) {
+static bool stopped(Wram* w, const Rom* rom, PortCpu* c, LungeWork* k,
+                    uint16_t x, uint16_t y) {
   terrain_blocked(w, x, y, &k->ground);
   k->tried = true;
   c->a = k->ground.a;
@@ -27,7 +51,7 @@ static bool stopped(Wram* w, PortCpu* c, LungeWork* k, uint16_t x,
     cmp16(c, c->a, LUNGE_GROUND_ON);
     k->blocks[LU_WALL]++;
     if (c->a == LUNGE_GROUND_ON) {
-      k->declined = true;
+      look_ahead(w, rom, c, k, x, y);
     } else {
       PORT_COVER(lunge_met_ground);
     }
@@ -81,7 +105,7 @@ static bool stopped(Wram* w, PortCpu* c, LungeWork* k, uint16_t x,
   return false;
 }
 
-void lunge_frame(Wram* w, PortCpu* c, LungeWork* k) {
+void lunge_frame(Wram* w, const Rom* rom, PortCpu* c, LungeWork* k) {
   const uint16_t left = (uint16_t)(field(w, c, LUNGE_DP_FRAMES_LEFT) - 1);
   set_field(w, c, LUNGE_DP_FRAMES_LEFT, left);
   set_nz16(c, left);
@@ -99,7 +123,11 @@ void lunge_frame(Wram* w, PortCpu* c, LungeWork* k) {
   const uint16_t y = (uint16_t)(field(w, c, LUNGE_DP_Y) +
                                 field(w, c, LUNGE_DP_STEP_Y));
   set_field(w, c, LUNGE_DP_TRY_Y, y);
-  if (stopped(w, c, k, x, y)) {
+  if (stopped(w, rom, c, k, x, y)) {
+    if (k->leaps) {
+      c->pc = LUNGE_LEAP_PC;
+      return;
+    }
     k->blocks[LU_TAKEN]++;
     return;
   }

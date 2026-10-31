@@ -2660,7 +2660,23 @@ typedef struct {
   bool b592_ended;
   // `$82:F4EF`'s: the player's id it latched, `$05` or `$06`, or nought.
   uint16_t f4ef_hit_by;
+  // `$80:DB96`'s, the wanderer's: which way it left.
+  uint8_t wanderer_exit;
 } ThreadCallWork;
+
+// `$80:DB96`, the handler of a player the random potion made a wanderer.
+// Told of anything under `$5C`, nothing. A player's bubble or freeze is
+// theirs as an enemy's is (`$81:83C6`, `$81:847E`). Any other player's hit
+// takes one of its health: the last leaves it at nought, in the ordinary
+// state, `$7E` cleared and carry set; any other goes on as a hurt enemy's
+// (`$81:8506`).
+#define WANDERER_COLLIDE_ENTRY 0x80db96u
+enum {
+  WANDERER_IGNORED,
+  WANDERER_DOWNED,
+  WANDERER_SAME,  // the health it came from: carry clear
+  WANDERER_DEEP,  // a bubble, a freeze or a hurt: not priced here
+};
 
 bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
                                  uint16_t arg, bool carry_in,

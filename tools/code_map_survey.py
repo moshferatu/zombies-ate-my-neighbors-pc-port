@@ -32,6 +32,12 @@ movie reaches, by a `--poke`:
     bonuses is read instead, and the tallies they pay for poked: every
     bonus but MONSTER FROZEN, which no level lists. Three have the second
     player playing too.
+  * what a player met when the game first ran with no 65816: the items of
+    slots 1, 2, 3 and 8 and six of the random potion's eight draws, each
+    stocked and selected by a `--poke` under `item-walk.zmv`; weapon 4's shot
+    (`fire-walk.zmv`); the trampoline's other bounce (`trampoline.zmv`); weapon
+    5's kick into the pool (`kick-pool.zmv`); a sparkle on level 48
+    (`level48-sparkle.zmv`); and the monster pushing a hedge (`monster-wall.zmv`).
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -153,6 +159,18 @@ def tally_bonus_pokes(record, pokes):
     return out
 
 
+# An item in slot `s`, selected and stocked, and weapon 4 the same way.
+def item(s):
+    return ['--poke', '1750-1760:1CC0=%04X' % s,
+            '--poke', '1750-1760:%04X=0099' % (0x1D0C + 2 * s)]
+
+
+WEAPON4 = ['--poke', '1750-1760:1CBC=0004', '--poke', '1750-1760:1CD4=0999']
+# The random potion's generator the frame before it is drunk, for each of its
+# eight draws: the first is the monster, the fourth the wanderer.
+RANDOM_DRAWS = {'monster': '007A', 'healed': '000B', 'poisoned': '00C4',
+                'sped': '0030', 'ghost': '009F', 'wanderer': '0133'}
+
 BOTH_DEAD = ['--poke', '3000+:1CB8=0000', '--poke', '3000+:1CBA=0000',
              '--poke', '3000+:1E72=4321', '--poke', '3000+:1E74=0765',
              '--poke', '3000+:1E76=0000', '--poke', '3000+:1E78=0800']
@@ -193,6 +211,23 @@ def sessions():
     for name, (record, pokes) in TALLY_BONUSES.items():
         out.append(('level_end_' + name, 'level21-exit.zmv', 7000,
                     tally_bonus_pokes(record, pokes)))
+    # What a player met with no 65816 left to run it, 2026-10-30.
+    for name, slot in (('shoes', 1), ('monster', 2), ('ghost', 3), ('box', 8)):
+        out.append(('item_' + name, 'item-walk.zmv', 4200, item(slot)))
+    for name, seed in RANDOM_DRAWS.items():
+        out.append(('random_' + name, 'item-walk.zmv', 4200,
+                    item(4) + ['--poke', '1799:0024=' + seed]))
+    out.append(('weapon4', 'fire-walk.zmv', 3000, WEAPON4))
+    out.append(('trampoline', 'trampoline.zmv', 2600,
+                ['--poke', '1760:0130=01D6', '--poke', '1760:0132=0250']))
+    out.append(('kick_pool', 'kick-pool.zmv', 2400,
+                ['--poke', '1750-1760:1CBC=0005', '--poke', '1750-1760:1CD6=0099',
+                 '--poke', '1790:0130=0240', '--poke', '1790:0132=01B8']))
+    out.append(('sparkle48', 'level48-sparkle.zmv', 2400,
+                ['--level', '48', '--poke', '1800:0130=0064',
+                 '--poke', '1800:0132=0420']))
+    out.append(('monster_wall', 'monster-wall.zmv', 2600,
+                ['--poke', '1700-1710:1CC0=0002', '--poke', '1700-1710:1D10=0099']))
     return out
 
 

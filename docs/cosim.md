@@ -19865,3 +19865,49 @@ What is left: on level 5 at 21:9, `sprite_build_oam` is priced short on 26
 of 12,943 passes, the first by 6,060 cycles. Its answer is the ROM's. Only
 21:9 at a map's end widens the cull, so a frame there runs ahead of the
 console's by that much.
+
+## What a player met with no 65816
+
+With the game's 65816 gone, a way no port runs stops `zamn.exe` with its
+address. A few minutes of play found eight, all on paths the corpus never
+takes: a level's door, the items, weapons 4 and 5, the trampoline and level
+48's sparkle. The repros are new movies, and each item or weapon is selected
+and stocked by `--poke` rather than `--give-all`, so `verify` and the survey
+run the same sessions as the game (`tools/code_map_survey.py`: `item_*`,
+`random_*`, `weapon4`, `trampoline`, `kick_pool`, `sparkle48`,
+`monster_wall`).
+
+What needed more than a stretch:
+
+* **The shoes' double step** (`$80:E4BA`) is the walk run twice
+  (`WALK_TWICE`). A door that stops the first walk returns to `$80:E4C0`, so
+  a resumed or woken walk says whether it was the first of the two.
+* **Exits under a frame's state.** The monster potion's end
+  (`$80:D318`), its push against a wall (`$80:F1BE`, before `pictures_play`)
+  and the ghost potion's state (`$80:D33F`) stop where the ROM leaves for
+  code outside the port, with the return the frame expects beneath them. The
+  rows that run them became exits rows, and a new row picks up after the
+  wall's pictures (`player_wall_woken`).
+* **The punch's notify box.** A blow that tells an enemy through
+  `$81:8888`'s deep exits has no price. `pose_tried` used to turn the pose
+  down for that; now it runs, and only the box's cost is left to the row.
+* **The kick into water** reads `$80:DF48` through the data bank and leaves
+  for `pose_leap` (`$80:DD0D`), a new row.
+* **The box** writes colours and two jobs for the vertical blank, and
+  multiplies on the console (`$80:C8DC`). These are rows in `vblank.c`, and
+  the product's reads are counted in the runs around it.
+
+| Check | Result |
+|---|---|
+| The corpus, `verify` | 128,185,011 calls, 0 diverged, every row exact |
+| The 18 new sessions, `verify` | 0 diverged, every new row exact |
+| The same sessions in the game, `--profile` | the 65816 executing nothing |
+| `zamn.exe` with each of the 14 weapons and 12 item slots | runs to its end |
+| The corpus at the three widths in the game | 168 sessions, the 65816 executing nothing |
+| The picture at the console's width, 16:9 and 21:9 | 78,360,128 lines each, 0 differ |
+
+Untested: a door that stops the first step of two, a leap onto a bit-0 tile,
+the box's far partner and a wanderer that is hit (both need two players),
+and the sparkle's quiet path. The standing punch is priced 712 or 752 cycles
+high in `pose_begin` and `pose_stand_begin`. That was so before this work,
+and it looks like `verify` counting through `$80:EF7B` into the sound.

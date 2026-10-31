@@ -47,12 +47,15 @@
 // Overflow is whatever the last add in the tests left, and on the big maps of
 // levels 19 and 25 the tilemap address `terrain_blocked` adds up sets it.
 //
-// Two paths are the ROM's, and `walk_supported` says when:
+// **The double step**, bit 15 of `$54`, which the running shoes set, runs
+// the whole walk twice: `JSR $E4C1` and then on into `$E4C1` again, each a
+// step proposed and both axes tried. A door that stops the first leaves that
+// `JSR`'s return on the stack under the axis's, and the walk back from the
+// door's block goes on into the second (`player_walk_resume`).
 //
-// * the double step, bit 15 of `$54`, which runs the whole walk twice. No
-//   input has taken it.
-// * a solid tile with a reaction of its own, but for the five below. The
-//   reaction takes over from inside the walk.
+// One path is the ROM's, and `walk_supported` says when: a solid tile with a
+// reaction of its own, but for the five below. The reaction takes over from
+// inside the walk.
 //
 // ## Five reactions the walk has
 //
@@ -105,9 +108,13 @@
 // the same walk with three differences:
 //
 // * the ground is tested as an enemy's is, `terrain_blocked_enemy`
-// * solid ground of two kinds breaks under it. That is `$80:F1A5`, not
-//   ported, and `monster_walk_checked` says so. Any other solid ground only
-//   stops the axis.
+// * solid ground of two kinds is pushed against (`$80:F1A5`). With no
+//   direction held it is only solid. With one, sound `$2C` plays and the
+//   monster's pictures for it (`$80:F1C3`, by the player and the way) are
+//   played by `pictures_play`, which sleeps: the walk stops at that `JSL`,
+//   with the axis's `JSR $E790` under it, and goes on from its `RTS` at
+//   `$80:F1C2` when the pictures are over (`monster_walk_resume`). Any other
+//   solid ground only stops the axis.
 // * someone standing where the step lands stops it, wherever the monster
 //   stands
 //
@@ -167,6 +174,8 @@ typedef enum {
   WALK_OF_MONSTER,
   WALK_STUCK,
   WALK_SWIM,
+  WALK_GHOST,
+  WALK_WANDER,
 } WalkKind;
 
 // The door: how far up or down to look for each way faced, and what begins
@@ -234,11 +243,31 @@ typedef enum {
 
 // Solid ground a stuck player can still cross: bits of the attribute word.
 #define STUCK_WALK_CROSSES 0x0c00u
+// Slot 3's potion's walk, `$80:E5FF`: the slime's, but through solid ground
+// with bit 8 as well, and nobody standing anywhere stops it.
+#define GHOST_WALK_PC 0x80e5ffu
+#define GHOST_WALK_RTS_PC 0x80e652u
+#define GHOST_WALK_CROSSES 0x0d00u
+// The wanderer's, `$80:E653`: solid ground stops an axis with no reaction
+// asked, and anyone standing where the step lands stops it. Twice on an odd
+// frame (`$0020`) unless it goes slowly (bit 14 of `$54`).
+#define WANDER_WALK_PC 0x80e653u
+#define WANDER_WALK_RTS_PC 0x80e6c1u
+#define WANDER_WALK_SLOW 0x4000u
+#define W_WANDER_FRAME 0x0020u
 #define STUCK_WALK_DP_COVER 0x0a  // the record of what covers the player
 
 // `$80:E790`: the attribute bits that say what solid ground is to the
 // monster, and the two values that break.
 #define MONSTER_WALL_BITS 0x8b38u
+#define MONSTER_WALL_PICTURES_PC 0x80f1beu  // `JSL pictures_play`
+#define MONSTER_WALL_WOKEN_PC 0x80f1c2u     // its `RTS`, when they are over
+#define MONSTER_WALL_PICTURES 0x80f1c3u     // by the player, and the way
+#define MONSTER_WALL_SFX 0x002c
+#define MONSTER_ACROSS_RETURN 0xe5a4u       // what each axis's `JSR $E790` pushes
+#define MONSTER_UP_DOWN_RETURN 0xe5d7u
+#define MONSTER_DP_DIR 0x24
+#define MONSTER_DP_ROW 0x0c
 #define MONSTER_WALL_BREAKS_A 0x0100u
 #define MONSTER_WALL_BREAKS_B 0x0200u
 
@@ -251,6 +280,7 @@ typedef enum {
 #define WALK_DP_WANT_Y 0x36
 #define WALK_DP_MODE 0x54  // bit 15: walk twice
 #define WALK_TWICE 0x8000u
+#define WALK_TWICE_RETURN 0xe4c0u  // what `JSR $E4C1` leaves
 
 // `$80:E739`: the attribute bits that name a tile's reaction, and the six
 // values that have one.
@@ -342,15 +372,22 @@ typedef enum {
 // the last one ended, how each tether test left, and which of the map test's
 // exits each ask took. A walk asks each at most once an axis.
 #define WALK_AXES 2
+// ...and as many again for the double step's second walk.
+#define WALK_STEPS (2 * WALK_AXES)
 // A tether test an axis, and with a leap into the water the edge's own:
 // one an axis again.
-#define WALK_TETHERS (2 * WALK_AXES)
+#define WALK_TETHERS (2 * WALK_STEPS)
 
 typedef struct {
   uint16_t asked[WALK_ASK_COUNT][2];
   uint16_t taken;  // axes the player moved along
   ObstacleWork obstacle;
   bool doubled;    // the step proposed was two
+  bool twice;      // the double step: the walk again...
+  bool doubled_second;  // ...its step proposed two...
+  bool stopped_first;   // ...or a door stopped the first, so not yet
+  bool wander_slow;     // the wanderer's: slowly, so once...
+  bool wander_odd;      // ...or on an odd frame, twice
   uint16_t probes[TERRAIN_PROBE_COUNT];
   uint16_t ground_cut_short;
   TetherRegs tether[WALK_TETHERS];
@@ -359,26 +396,26 @@ typedef struct {
   bool last_yes;
   bool overflow;
   // The monster's ground tests, each as it answered.
-  TerrainRegs enemy_ground[WALK_AXES];
+  TerrainRegs enemy_ground[WALK_STEPS];
   int enemy_grounds;
   bool took[WALK_AXES];  // which axes the player moved along: across, down
   // The reactions it took itself, at most one an axis.
-  WalkReaction reaction[WALK_AXES];
+  WalkReaction reaction[WALK_STEPS];
   int reactions;
   // The swim's: "is it water?" by its answer, and each look at the bank.
   uint16_t water[2];
   uint16_t bank[SWIM_BANK_COUNT];
   // The leaps into the water, one an axis at most, and what each did.
   int leaps;
-  PoseLog leap[WALK_AXES];
-  PlayerSpan leap_span[WALK_AXES];
+  PoseLog leap[WALK_STEPS];
+  PlayerSpan leap_span[WALK_STEPS];
   // ...or a swimmer's climb out onto the bank, which ends the swim.
   bool climbed;
   PoseLog climb;
   PlayerSpan climb_span;
   // ...or onto the trampoline, one an axis at most.
   int bounces;
-  PoseLog bounce[WALK_AXES];
+  PoseLog bounce[WALK_STEPS];
   // A door opened: the walk stopped at its block's `JSL`, on this axis, with
   // these registers for the call and this return under it.
   bool stopped;
@@ -387,6 +424,12 @@ typedef struct {
   uint16_t stop_return;
   // ...or this is the rest of a walk that did, from the `RTS` it came back to.
   bool resumed;
+  // The monster's walls that are pushed against: each met, of the second
+  // kind, with no direction held (only solid), and one that stopped the
+  // walk at its pictures. Or this is the rest of a walk that did.
+  int walls, walls_b, walls_still;
+  bool wall_stopped;
+  bool wall_resumed;
 } WalkLog;
 
 // Would the port walk this frame the way the ROM does? False for the two
@@ -411,14 +454,26 @@ bool player_walk_stoppable(Wram* w, const Rom* rom, uint16_t page,
 // on: `$80:E942` or `$80:E9B2`, the reaction's `RTS`. `v` is the overflow the
 // block's call left. False for what is the ROM's. `log` may be NULL.
 bool player_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
-                        bool v, WalkLog* log);
+                        bool v, bool first_of_two, WalkLog* log);
 
 // `$80:E595`, the monster's walk. False is a wall that breaks, and then `w`
 // is not what the ROM leaves. `log` may be NULL.
 bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
+// `$80:F1C2`, the monster's walk back from the pictures a wall played: the
+// axis's `BRA`, and across, the other axis. `c` and `v` are what the pictures
+// left. False where the rest is the ROM's.
+bool monster_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
+                         bool c, bool v, WalkLog* log);
+
 // `$80:E6C2`, the walk of a player stuck in slime. `log` may be NULL.
 void stuck_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// `$80:E5FF`, slot 3's potion's walk.
+void ghost_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// `$80:E653`, the wanderer's walk.
+void wander_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
 // `$80:E543`, the swim, and the climb out when it reaches the bank. `log`
 // may be NULL.

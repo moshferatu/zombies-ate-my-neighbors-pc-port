@@ -28,6 +28,12 @@
 //   $80:E180  bounce_off     off it, across the ground
 //   $80:E2DA  bounce_landed  down beside it, until they get up
 //
+// and three of its other bounce, straight up and down where they are:
+//
+//   $80:E0B1  bounce_up    rising fast
+//   $80:E0D0  bounce_top   slowing, at the top, and starting down
+//   $80:E106  bounce_fall  falling
+//
 // and one in the water:
 //
 //   $80:DCA2  swim   swimming
@@ -116,6 +122,18 @@
 // for the way they go, and the row has two steps: one for three frames in
 // four and another for the fourth, by the frame count.
 //
+// **A wait that does not jump off bounces again where they are**, `$80:E090`:
+// with no direction held, before the bounce got to five, or with the other
+// player too far. A jump off that would land on a tile with bit 0 and not
+// bit 8 does the same, once it has begun. The sound is `$1B` again, the speed
+// at `$48` goes up by one until it is six, and the flight starts at that
+// speed. It is straight up: no fractions across the ground, no drawing over
+// everything and no state 6. Its pictures are the second half of the
+// facing's eight: the first while the speed is four or more, the second
+// above two, the third about the top, the fourth at minus three and four,
+// and the first again falling faster. Down on the ground, the tile where
+// they are is looked at as a bounce's is (`$80:E855`).
+//
 // **Down from it on a tile with bit 3**, they wait on the trampoline again.
 // Bit 7 of this frame's buttons is set first, and the frame keeps that as
 // last frame's. **Down on other ground**, they lie there, with a word of a
@@ -183,11 +201,6 @@
 //
 // ## What is the ROM's
 //
-// The trampoline's other bounce, `$80:E090`, higher each time: a wait that
-// ends with no direction held, before the bounce has got to five, or with
-// the other player too far, and a jump off that would land on a tile with
-// bit 0 and not bit 8. The three handlers it leads to, `$80:E0B1`, `$80:E0D0`
-// and `$80:E106`.
 // Of the monster's walk, a punch that lands on a wall that comes down.
 // `pose_supported` says which frames those are.
 //
@@ -253,6 +266,9 @@
 #define POSE_HANDLER_BOUNCE_WAIT 0xe035u
 #define POSE_HANDLER_BOUNCE_OFF 0xe180u
 #define POSE_HANDLER_BOUNCE_LANDED 0xe2dau
+#define POSE_HANDLER_BOUNCE_UP 0xe0b1u
+#define POSE_HANDLER_BOUNCE_TOP 0xe0d0u
+#define POSE_HANDLER_BOUNCE_FALL 0xe106u
 #define POSE_HANDLER_SWIM 0xdca2u
 
 #define POSE_ARC_PC 0x80dd41u
@@ -405,10 +421,20 @@ typedef struct {
   bool off_fourth;     // bouncing off: a fourth frame, which has its own step
   bool bounce_down;    // a bounce came down...
   bool on_trampoline;  // ...on a tile with bit 3, so they wait on it again
-  bool jumped_off;     // a wait on it ended in a jump off it...
-  PartnerRegs partner; // ...the other player asked about first
+  bool wait_low;       // a wait over before the bounce got to five...
+  bool wait_still;     // ...or with no direction held
+  bool partner_asked;  // the other player asked about...
+  bool jumped_off;     // ...and a wait on it ended in a jump off it
+  PartnerRegs partner;
   int tile_looks;      // ...and one or two looks at where it lands
   bool off_bit0;       // ......where the tile has bit 0
+  bool bounced_again;  // the other bounce begun, from a wait or a jump off...
+  bool launch_raised;  // ...its speed a step higher
+  bool rising_fast;    // bounce_up: the speed still four or more
+  int top_picture;     // bounce_top: which of its four ends it took...
+  bool top_negative;   // ...the speed under nought
+  bool fall_down;      // bounce_fall: down...
+  bool fall_under;     // ...under nought, not at it
   bool off_down;       // down from the jump off...
   bool off_again;      // ...on the trampoline again
   bool got_up;         // down beside it, and the wait over
@@ -455,6 +481,9 @@ void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_landed(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_up(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_top(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_fall(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 // The pieces, for a frame whose handler is the ROM's. Each is asked of a

@@ -62,6 +62,15 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82a871u, 0x0001},  // the same after `$82:A86D`'s upload
     {0x8085bbu, 0x0007},  // sound 7, as both players reach the way out
     {0x8085c2u, 0x0090},  // ...and 144 ticks
+    {FADE_OUT_PC, 0x0001},  // the fade to black, a tick a step
+    {0x80dad5u, 0x0005},  // the potion of slot 3 drunk: its sound
+    {0x80ee10u, 0x0005},  // the random potion's: health back
+    {0x80db57u, 0x0008},  // ...the wanderer's
+    {0x80ebf4u, BOX_SFX},  // the box opened: its sound
+    {0x80ee26u, 0x0008},  // ...health halved
+    {0x80ee54u, 0x0005},  // ...the running shoes
+    {0x83b5c1u, 0xb65a},  // a sparkle found: its pictures
+    {0x83b5ddu, 0xb5eb},  // ...and its last
     {0x80ea16u, 0x000a},  // ten ticks
     {0x80ef7bu, 0x0023},  // a sound
     {0x80ef88u, 0x0004},  // four ticks
@@ -107,6 +116,8 @@ const ThreadPair THREAD_PAIRS[THREAD_PAIR_COUNT] = {
     {0x80815fu, 0x84b1, 0x0080},  // the main thread, begun at the reset
     {0x81f252u, 0xf25d, 0x0081},  // a decoy's handler
     {0x82f91fu, 0xf958, 0x0082},  // the exit door's handler
+    {0x80ec23u, BOX_SPIRIT, BOX_SPIRIT_BANK},  // the box's second spirit
+    {0x80ec37u, BOX_SPIRIT, BOX_SPIRIT_BANK},  // ...and its third
 };
 
 const WeedThrow WEED_THROWS[WEED_THROW_COUNT] = {
@@ -390,6 +401,54 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_SAUCER_AIMED:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SAUCER_START_RETURN &&
              c->x < 0x1f00;
+    case TS_NEEDS_ONE_FEWER: {
+      const uint16_t player = page(w, c, RANDOM_DP_PLAYER);
+      if (player >= 4 || c->db != 0x80) return false;
+      const uint16_t held = wram_r16(w, (uint16_t)(W_RANDOM_HELD + player));
+      const uint32_t at = (uint32_t)page(w, c, RANDOM_DP_ITEMS) +
+                          (uint16_t)(held << 1);
+      return at < 0x1ffe;
+    }
+    case TS_NEEDS_WANDER:
+      return c->db == 0x80 && page(w, c, RANDOM_DP_PLAYER) < 4;
+    case TS_NEEDS_PLAYER_TABLE:
+      return c->db == 0x80 && page(w, c, POSE_DP_PICTURES_ROW) < 0x40;
+    case TS_NEEDS_SPIRIT_SET:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SPIRIT_SET_RETURN &&
+             page(w, c, SPIRIT_DP_OWNER) < 0x1f00;
+    case TS_NEEDS_SPIRIT:
+    case TS_NEEDS_SPIRIT_WOKE: {
+      const uint16_t way = page(w, c, SPIRIT_DP_WAY);
+      const uint32_t list = page(w, c, SPIRIT_DP_LIST);
+      if (page(w, c, SPIRIT_DP_OWNER) >= 0x1f00 ||
+          page(w, c, SPIRIT_DP_RECORD) >= 0x1f00 ||
+          page(w, c, SPIRIT_DP_TARGET) >= 0x1f00 || way < 1 || way > 8 ||
+          page(w, c, SPIRIT_DP_PICTURE) > 5 || list < 0x8000u ||
+          list + 4 * 5 + 3 > 0xffffu)
+        return false;
+      if (needs == TS_NEEDS_SPIRIT) return true;
+      const uint16_t back = wram_r16(w, (uint16_t)(c->s + 1));
+      return back == SPIRIT_CHASE_RETURN || back == SPIRIT_STEP_RETURN ||
+             back == SPIRIT_FLY_RETURN;
+    }
+    case TS_NEEDS_ARTIFACT_SET:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == ARTIFACT_SET_RETURN;
+    case TS_NEEDS_ARTIFACT: {
+      // The step's two words of the list are read through the data bank.
+      const uint32_t list = page(w, c, ARTIFACT_DP_PICTURES);
+      const uint32_t step = (uint16_t)(page(w, c, ARTIFACT_DP_STEP) + 2);
+      return page(w, c, ARTIFACT_DP_OWNER) < 0x1f00 &&
+             page(w, c, ARTIFACT_DP_RECORD) < 0x1f00 && step <= 0x0010 &&
+             list >= 0x8000u && list + 2 * step + 3 <= 0xffffu;
+    }
+    case TS_NEEDS_SPARKLE_SET:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SPARKLE_SET_RETURN;
+    case TS_NEEDS_SPARKLE:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SPARKLE_ASK_RETURN &&
+             page(w, c, SPARKLE_DP_RECORD) < 0x1f00;
+    case TS_NEEDS_SPARKLE_HEARD:
+      return wram_r16(w, (uint16_t)(c->s + 3)) == SPARKLE_ASK_RETURN &&
+             page(w, c, SPARKLE_DP_RECORD) < 0x1f00;
     case TS_NEEDS_SLIME_BEGUN:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SLIME_BEGIN_RETURN;
     case TS_NEEDS_SLIME_WAY:
@@ -1150,6 +1209,38 @@ void main_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   }
   PORT_COVER(main_back_next);
   c->pc = MAIN_BACK_NEXT_PC;
+}
+
+// `$80:85CD`, the level done and the screen black: carry clear.
+void level_done(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(level_done);
+  set_c(c, false);
+  ran(k, TS_CLC);
+  c->pc = LEVEL_DONE_RTL_PC;
+}
+
+// `$80:893A`, a tick on: the screen a step darker, and another tick, until
+// the step goes under nought. Then it is blanked, and a `WAI`.
+void fade_out_step(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t level = (uint16_t)(wram_r16(w, W_BRIGHTNESS_SHADOW) - 1);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, level);
+  set_nz16(c, level);
+  ran(k, TS_FADE_OUT_STEP);
+  if (!(level & 0x8000u)) {
+    PORT_COVER(fade_out_darker);
+    ran(k, TS_TAKEN);
+    c->pc = FADE_OUT_PC;
+    thread_argument(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(fade_out_black);
+  lda(c, FADE_OUT_BLANK);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, FADE_OUT_BLANK);
+  ran(k, TS_FADE_OUT_BLANK);
+  c->pc = FADE_OUT_WAI_PC;
 }
 
 void game_lost(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
@@ -4444,6 +4535,1496 @@ void piece_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   c->pc = PIECE_ALLOC_CALL_PC;
 }
 
+// --- the potions' pieces -------------------------------------------------------
+
+// --- the wanderer ----------------------------------------------------------
+
+// `$80:DB42`: its record's `$0E` cleared, and its handler.
+void wander_begin(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(wander_begun);
+  wram_w16(w, (uint16_t)(page(w, c, POSE_DP_RECORD) + 0x0e), 0);
+  lda(c, WANDER_HANDLER);
+  ldy(c, WANDER_HANDLER_BANK);
+  ran(k, TS_WANDER_BEGIN);
+  c->pc = WANDER_HANDLER_CALL_PC;
+}
+
+// `$80:DB5E`, drunk: state 8, its frames and its end.
+void wander_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + 0x0e), WANDER_RECORD_0E);
+  set_page(w, c, GHOST_DP_STATE, WANDER_STATE);
+  set_page(w, c, GHOST_DP_FRAMES_LEFT, WANDER_FRAMES);
+  set_page(w, c, WANDER_DP_76, WANDER_76);
+  lda(c, WANDER_ENDS_BY);
+  set_page(w, c, GHOST_DP_ENDS_BY, c->a);
+  ran(k, TS_WANDER_HEARD);
+  c->pc = WANDER_REST_CALL_PC;
+}
+
+// `$80:DB7D`: nothing held, and the flashing.
+void wander_rested(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, GHOST_DP_FIRE_A, 0);
+  set_page(w, c, GHOST_DP_FIRE_B, 0);
+  lda(c, WANDER_FLASH_WORD);
+  ldx(c, WANDER_FLASH_TICKS);
+  ldy(c, WANDER_FLASH_TIMES);
+  ran(k, TS_WANDER_RESTED);
+  c->pc = WANDER_FLASH_CALL_PC;
+}
+
+// `$80:DB8D`: what it holds, and the swap's `JMP`.
+void wander_flashed(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, WANDER_HELD_WEAPON);
+  ldy(c, WANDER_HELD_ITEM);
+  ran(k, TS_WANDER_FLASHED);
+  c->pc = WANDER_SWAP_PC;
+}
+
+// `$80:D3DC`: the timer, and the 1500 frames.
+static void wander_count(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t timer = page(w, c, POSE_DP_TIMER);
+  lda(c, timer);
+  ran(k, TS_WANDER_TIMER);
+  if (timer == 0) {
+    ran(k, TS_TAKEN);
+  } else {
+    set_page(w, c, POSE_DP_TIMER, (uint16_t)(timer - 1));
+    ran(k, TS_WANDER_TIMER_DEC);
+  }
+  const uint16_t left = page(w, c, GHOST_DP_FRAMES_LEFT);
+  lda(c, left);
+  ran(k, TS_WANDER_LEFT);
+  c->pc = WANDER_STATE_RTS_PC;
+  if (left == 0) {
+    ran(k, TS_TAKEN);
+    return;
+  }
+  set_page(w, c, GHOST_DP_FRAMES_LEFT, (uint16_t)(left - 1));
+  set_nz16(c, (uint16_t)(left - 1));
+  ran(k, TS_WANDER_LEFT_DEC);
+  if (left != 1) {
+    ran(k, TS_TAKEN);
+    return;
+  }
+  PORT_COVER(wander_over);
+  set_page(w, c, GHOST_DP_PACE, 0);
+  set_page(w, c, GHOST_DP_ENDS_BY, 0);
+  ran(k, TS_WANDER_OVER);
+  c->pc = WANDER_OVER_PC;
+}
+
+// `$80:D3D1`: the way in A, as the pad's, and doubled.
+static void wander_way(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, PLAYER_DP_BUTTONS, c->a);
+  lda(c, asl16(c, c->a));
+  set_page(w, c, PSN_DP_DIR, c->a);
+  ran(k, TS_WANDER_WAY);
+  if (c->a == 0) {
+    ran(k, TS_TAKEN);
+  } else {
+    set_page(w, c, PSN_DP_DIR_HELD, c->a);
+    ran(k, TS_WANDER_FACE);
+    ran(k, TS_TAKEN);  // its `BRA`
+  }
+  wander_count(w, c, k);
+}
+
+// `$80:D390`: where the player is, to ask who is nearest.
+static void wander_ask(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  ldx(c, page(w, c, GHOST_DP_X));
+  ldy(c, page(w, c, GHOST_DP_Y));
+  ran(k, TS_WANDER_ASK);
+  c->pc = WANDER_NEAREST_CALL_PC;
+}
+
+// `$80:D362`, back from the draw.
+void wander_drawn(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t drawn = (uint16_t)(c->a & 0x001fu);
+  lda(c, drawn);
+  ran(k, TS_WANDER_AND);
+  cmp16(c, drawn, 1);
+  ran(k, TS_WANDER_IS);
+  const uint16_t player = page(w, c, RANDOM_DP_PLAYER);
+  const uint16_t pad = wram_r16(w, (uint16_t)(W_WANDER_PAD_DIR + player));
+  if (drawn == 1) {
+    ran(k, TS_TAKEN);
+    ldx(c, player);
+    lda(c, pad);
+    ran(k, TS_WANDER_AWAY_PAD);
+    if (pad == 0) {
+      ran(k, TS_TAKEN);
+      wander_ask(w, c, k);
+      return;
+    }
+    ldx(c, pad);
+    lda(c, rom_word(rom, ((uint32_t)POSE_BANK << 16) + WANDER_AWAY + pad));
+    cmp16(c, c->a, page(w, c, PLAYER_DP_BUTTONS));
+    ran(k, TS_WANDER_AWAY);
+    if (c->a != page(w, c, PLAYER_DP_BUTTONS)) {
+      PORT_COVER(wander_turned_away);
+      ran(k, TS_TAKEN);
+      wander_way(w, c, k);
+      return;
+    }
+    ran(k, TS_BRANCH);
+    ran(k, TS_TAKEN);  // `BRA $D390`
+    wander_ask(w, c, k);
+    return;
+  }
+  cmp16(c, drawn, 2);
+  ran(k, TS_WANDER_IS);
+  if (drawn == 2) {
+    ran(k, TS_TAKEN);
+    ldx(c, player);
+    set_c(c, (pad & 1u) != 0);
+    lda(c, (uint16_t)(pad >> 1));
+    ran(k, TS_WANDER_PAD);
+    ran(k, TS_BRANCH);  // `BEQ`
+    if (c->a == 0) {
+      ran(k, TS_TAKEN);
+      wander_ask(w, c, k);
+      return;
+    }
+    cmp16(c, c->a, page(w, c, PLAYER_DP_BUTTONS));
+    ran(k, TS_WANDER_PAD_SAME);
+    if (c->a == page(w, c, PLAYER_DP_BUTTONS)) {
+      ran(k, TS_TAKEN);
+      wander_ask(w, c, k);
+      return;
+    }
+    PORT_COVER(wander_followed_pad);
+    ran(k, TS_BRANCH);
+    ran(k, TS_TAKEN);  // `BRA $D3D1`
+    wander_way(w, c, k);
+    return;
+  }
+  ran(k, TS_BRANCH);
+  ran(k, TS_TAKEN);  // `BRA $D390`
+  wander_ask(w, c, k);
+}
+
+// `$80:D398`, back from asking who is nearest, with how far in A.
+void wander_nearest(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  cmp16(c, c->a, WANDER_NEAR);
+  ran(k, TS_WANDER_NEAR_TEST);
+  if (c->a < WANDER_NEAR) {
+    PORT_COVER(wander_near);
+    set_page(w, c, GHOST_DP_PACE, 0);
+    ldy(c, c->x);
+    ldx(c, page(w, c, POSE_DP_RECORD));
+    ran(k, TS_WANDER_NEAR);
+    c->pc = WANDER_BEARING_CALL_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  lda(c, WANDER_SLOW);
+  set_page(w, c, GHOST_DP_PACE, c->a);
+  const uint16_t x = page(w, c, GHOST_DP_X);
+  const uint16_t y = page(w, c, GHOST_DP_Y);
+  lda(c, x);
+  cmp16(c, x, page(w, c, WANDER_DP_LAST_X));
+  ran(k, TS_WANDER_FAR);
+  bool still = false;
+  if (x == page(w, c, WANDER_DP_LAST_X)) {
+    lda(c, y);
+    cmp16(c, y, page(w, c, WANDER_DP_LAST_Y));
+    ran(k, TS_WANDER_FAR_Y);
+    still = y == page(w, c, WANDER_DP_LAST_Y);
+  }
+  if (still) {
+    PORT_COVER(wander_stood);
+    c->pc = WANDER_REDRAW_CALL_PC;
+    return;
+  }
+  PORT_COVER(wander_far);
+  ran(k, TS_TAKEN);
+  set_page(w, c, WANDER_DP_LAST_X, x);
+  lda(c, y);
+  set_page(w, c, WANDER_DP_LAST_Y, y);
+  ran(k, TS_WANDER_MOVED);
+  ran(k, TS_TAKEN);  // its `BRA`
+  wander_count(w, c, k);
+}
+
+// `$80:D3A6`, the way toward the nearest in A.
+void wander_bearing(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  ran(k, TS_TAKEN);  // `BRA $D3D1`
+  wander_way(w, c, k);
+}
+
+// `$80:D3BD`, stood still a frame: one of four ways at random.
+void wander_redrawn(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  // `AND #3 : ASL : ASL : INC : INC : LSR`.
+  const uint16_t four = (uint16_t)(((c->a & 3u) << 2) + 2);
+  set_c(c, false);  // the `LSR` of an even number
+  lda(c, (uint16_t)(four >> 1));
+  ran(k, TS_WANDER_REDRAWN);
+  ran(k, TS_TAKEN);  // its `BRA`
+  wander_way(w, c, k);
+}
+
+// `$80:DBEA`: bit 4 turned over, and its words cleared, to can be touched.
+void wander_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(wander_ended);
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) ^ FLASH_BIT));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  set_page(w, c, GHOST_DP_STATE, 0);
+  set_page(w, c, GHOST_DP_PACE, 0);
+  set_page(w, c, GHOST_DP_ENDS_BY, 0);
+  lda(c, 0);
+  set_page(w, c, WANDER_DP_76, 0);
+  ran(k, TS_WANDER_ENDED);
+  c->pc = WANDER_ENDED_CALL_PC;
+}
+
+// `$80:DBDA`: the flashing, unless something asks it to end.
+void wander_ends(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, GHOST_DP_ENDS_BY));
+  ran(k, TS_WANDER_ENDS_TEST);
+  if (c->a != 0) {
+    PORT_COVER(wander_ends_asked);
+    ran(k, TS_TAKEN);
+    wander_ended(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(wander_ends_spent);
+  lda(c, WANDER_FLASH_WORD);
+  ldx(c, WANDER_FLASH_TICKS);
+  ldy(c, WANDER_FLASH_TIMES);
+  ran(k, TS_WANDER_ENDS_FLASH);
+  c->pc = WANDER_ENDS_FLASH_CALL_PC;
+}
+
+// `$80:EDE0`: the random potion's draw, to where the one drawn begins.
+void random_drawn(Wram* w, const Rom* rom, PortCpu* c,
+                  ThreadStretchWork* k) {
+  ran(k, TS_RANDOM_DRAW);
+  draw(w, c, k);
+  // `AND #$0007 : ASL : TAX`: the shift's carry is clear.
+  const uint16_t at = (uint16_t)((c->a & 7u) << 1);
+  lda(c, at);
+  ldx(c, at);
+  set_c(c, false);
+  ran(k, TS_RANDOM_DRAWN);
+  ran(k, TS_RANDOM_JMP);
+  const uint16_t to = rom_word(rom, RANDOM_TABLE + at);
+  c->pc = (c->pc & 0xff0000u) | to;
+  PORT_COVER_IF(at == 0, random_drew_monster, random_drew_other);
+  if (at == 0) {
+    // `$80:EDFC`: the ground where the player stands, as an enemy's.
+    ldx(c, page(w, c, RANDOM_DP_X));
+    ldy(c, page(w, c, RANDOM_DP_Y));
+    ran(k, TS_RANDOM_MONSTER);
+    c->pc = RANDOM_MONSTER_ASK_CALL_PC;
+  }
+}
+
+// `$80:EE04`: on solid ground nothing at all; otherwise one fewer.
+void random_monster_asked(Wram* w, const Rom* rom, PortCpu* c,
+                          ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(random_monster_blocked);
+    ran(k, TS_TAKEN);
+    c->pc = RANDOM_NOTHING_PC;
+    return;
+  }
+  PORT_COVER(random_monster);
+  c->pc = RANDOM_MONSTER_FEWER_PC;
+}
+
+// `$80:EE17`: health back to ten, and one fewer.
+void random_healed(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(random_healed);
+  ldx(c, page(w, c, RANDOM_DP_PLAYER));
+  lda(c, RANDOM_FULL_HEALTH);
+  wram_w16(w, (uint16_t)(W_RANDOM_HEALTH + c->x), c->a);
+  ran(k, TS_RANDOM_HEALED);
+  c->pc = RANDOM_HEALED_FEWER_PC;
+}
+
+// `$80:EE2D`: `$50`, health halved and one more, and one fewer.
+void random_poisoned(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(random_poisoned);
+  set_page(w, c, RANDOM_DP_50, RANDOM_50);
+  ldx(c, page(w, c, RANDOM_DP_PLAYER));
+  const uint16_t health = wram_r16(w, (uint16_t)(W_RANDOM_HEALTH + c->x));
+  set_c(c, (health & 1u) != 0);  // `LSR`
+  lda(c, (uint16_t)((health >> 1) + 1));
+  wram_w16(w, (uint16_t)(W_RANDOM_HEALTH + c->x), c->a);
+  ran(k, TS_RANDOM_POISONED);
+  c->pc = RANDOM_POISONED_FEWER_PC;
+}
+
+// `$80:EE5B`: the running shoes.
+void random_sped(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(random_sped);
+  set_page(w, c, PSN_DP_T3_TAIL, ITEM_SPEED_BITS);
+  lda(c, ITEM_SPEED_FRAMES);
+  set_page(w, c, PSN_DP_T3, c->a);
+  ran(k, TS_RANDOM_SPED);
+  c->pc = RANDOM_SPED_RTS_PC;
+}
+
+// `$80:EE66`: one fewer of the item held, in decimal; the last gone, the
+// next one selected. `$80:EB48` is the same code, the box's.
+void one_fewer(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const bool box = c->pc == BOX_FEWER_ENTRY_PC;
+  const uint16_t player = page(w, c, RANDOM_DP_PLAYER);
+  const uint16_t held = wram_r16(w, (uint16_t)(W_RANDOM_HELD + player));
+  const uint16_t doubled = asl16(c, held);
+  set_c(c, false);  // `CLC`
+  const uint16_t at = adc16(c, doubled, page(w, c, RANDOM_DP_ITEMS));
+  ldx(c, at);
+  bool carry = true, overflow = false;
+  const uint16_t left = bcd_sub16(wram_r16(w, at), 0x0001, &carry, &overflow);
+  wram_w16(w, at, left);
+  lda(c, left);
+  set_c(c, carry);
+  set_v(c, overflow);
+  ran(k, TS_ONE_FEWER);
+  if (left != 0) {
+    PORT_COVER(one_fewer_left);
+    ran(k, TS_TAKEN);
+    c->pc = box ? BOX_FEWER_LEFT_PC : RANDOM_NOTHING_PC;
+    return;
+  }
+  PORT_COVER(one_fewer_none);
+  c->pc = box ? BOX_FEWER_NEXT_PC : ONE_FEWER_NEXT_PC;
+}
+
+// --- the box's spirits -------------------------------------------------------
+
+// `JSR $F024`: `LDA #1`, and the sleep, with `back` under it.
+static void spirit_sleeps(Wram* w, PortCpu* c, ThreadStretchWork* k,
+                          uint16_t back) {
+  push16(w, c, back);
+  ran(k, TS_JSR);
+  lda(c, 1);
+  ran(k, TS_LDA_IMM);
+  c->pc = SPIRIT_YIELD_PC;
+}
+
+// `$81:EEB7`: the load up, and its record asked for under `JSR $F099`.
+void spirit_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, ARTIFACT_LOAD);
+  push16(w, c, SPIRIT_SET_RETURN);
+  ran(k, TS_ARTIFACT_ENTER);  // the same instructions as weapon 4's
+  c->pc = SPIRIT_ALLOC_CALL_PC;
+}
+
+// `$81:F09D`: its record where the player stood, and no handler.
+void spirit_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(spirit_made);
+  const uint16_t r = c->a;
+  set_page(w, c, SPIRIT_DP_RECORD, r);
+  const uint16_t x = page(w, c, SPIRIT_DP_X_GIVEN);
+  const uint16_t y = page(w, c, SPIRIT_DP_Y_GIVEN);
+  set_page(w, c, SPIRIT_DP_X, x);
+  wram_w16(w, (uint16_t)(r + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(r + ACTOR_Z), 0);
+  set_page(w, c, SPIRIT_DP_Y, y);
+  wram_w16(w, (uint16_t)(r + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(r + ACTOR_META), SPIRIT_META);
+  wram_w16(w, (uint16_t)(r + ACTOR_META_BANK), SPIRIT_META_BANK);
+  wram_w16(w, (uint16_t)(r + 0x0c), wram_r16(w, W_SPIRIT_0008));
+  wram_w16(w, (uint16_t)(r + 0x0e), 0);
+  wram_w16(w, (uint16_t)(r + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(r + ACTOR_FLAGS)) | 0x8008u));
+  set_page(w, c, SPIRIT_DP_WAY, 1);
+  set_page(w, c, SPIRIT_DP_BEARING, 0);
+  set_page(w, c, SPIRIT_DP_TURNED, 0);
+  set_page(w, c, SPIRIT_DP_PICTURE, 0);
+  set_page(w, c, SPIRIT_DP_LIST, SPIRIT_PICTURES);
+  set_c(c, false);  // its `CLC`, which nothing after writes over
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_SP_MADE);
+  c->pc = SPIRIT_HANDLER_CALL_PC;
+}
+
+// `$81:F0F2`, back from the draw: which of sixteen records, by the PPU.
+void spirit_drawn(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ldx(c, (uint16_t)(c->a & 0x000fu));
+  lda(c, SPIRIT_STRIDE);
+  ran(k, TS_SP_DRAWN);
+  c->pc = SPIRIT_MULTIPLY_CALL_PC;
+}
+
+// One axis of a look or a chase: `LDA : SEC : SBC : BPL`, `EOR : INC` when
+// under nought, and `CMP #$0100 : BCS`. True within 256.
+static bool spirit_within(PortCpu* c, ThreadStretchWork* k, uint16_t from,
+                          uint16_t to, int sub, uint16_t* apart) {
+  set_c(c, true);
+  uint16_t d = sbc16(c, from, to);
+  lda(c, d);
+  ran(k, sub);
+  if (d & 0x8000u) {
+    d = (uint16_t)((d ^ 0xffffu) + 1);
+    lda(c, d);
+    ran(k, TS_SR_NEG);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  *apart = d;
+  cmp16(c, d, SPIRIT_FAR);
+  ran(k, TS_WANDER_IS);  // `CMP # : BCS`, as `CMP # : BEQ` costs
+  if (d >= SPIRIT_FAR) {
+    ran(k, TS_TAKEN);
+    return false;
+  }
+  return true;
+}
+
+// `$81:F03C`: the next record that will do, or none with the looks spent.
+static bool spirit_look(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  uint16_t at = page(w, c, SPIRIT_DP_AT);
+  const uint16_t owner = page(w, c, SPIRIT_DP_OWNER);
+  ldx(c, at);
+  ldy(c, owner);
+  ran(k, TS_SR_HEAD);
+  for (;;) {
+    const uint16_t left = (uint16_t)(page(w, c, SPIRIT_DP_LOOKS) - 1);
+    set_page(w, c, SPIRIT_DP_LOOKS, left);
+    set_nz16(c, left);
+    ran(k, TS_SR_COUNT);
+    if (left & 0x8000u) {
+      set_c(c, false);
+      ran(k, TS_SR_NONE);
+      return false;
+    }
+    ran(k, TS_TAKEN);
+    lda(c, at);
+    set_c(c, false);
+    at = adc16(c, at, SPIRIT_STRIDE);
+    lda(c, at);
+    set_page(w, c, SPIRIT_DP_AT, at);
+    ldx(c, at);
+    cmp16(c, at, SPIRIT_LAST);
+    ran(k, TS_SR_NEXT);
+    if (at == SPIRIT_LAST) {
+      ran(k, TS_TAKEN);
+    } else {
+      ran(k, TS_BRANCH);  // `BCC`
+      if (at < SPIRIT_LAST) {
+        ran(k, TS_TAKEN);
+      } else {
+        at = SPIRIT_FIRST;
+        ldx(c, at);
+        set_page(w, c, SPIRIT_DP_AT, at);
+        ran(k, TS_SR_WRAP);
+        ran(k, TS_TAKEN);
+        continue;
+      }
+    }
+    const uint16_t flags = wram_r16(w, (uint16_t)(at + ACTOR_FLAGS));
+    lda(c, flags);
+    ran(k, TS_SR_FLAGS);
+    if (!(flags & 0x8000u)) {
+      ran(k, TS_TAKEN);
+      continue;
+    }
+    set_c(c, (flags & 1u) != 0);
+    lda(c, (uint16_t)(flags >> 1));
+    ran(k, TS_SR_LSR);
+    if (!(flags & 1u)) {
+      ran(k, TS_TAKEN);
+      continue;
+    }
+    const uint16_t kind = wram_r16(w, (uint16_t)(at + 0x0e));
+    lda(c, kind);
+    cmp16(c, kind, 3);
+    ran(k, TS_SR_KIND);
+    if (kind == 3) {
+      ran(k, TS_TAKEN);
+    } else {
+      cmp16(c, kind, 4);
+      ran(k, TS_SR_KIND4);
+      if (kind != 4) {
+        ran(k, TS_TAKEN);
+        continue;
+      }
+    }
+    uint16_t apart;
+    if (!spirit_within(c, k, wram_r16(w, (uint16_t)(at + ACTOR_X)),
+                       wram_r16(w, (uint16_t)(owner + ACTOR_X)), TS_SR_SUB,
+                       &apart))
+      continue;
+    if (!spirit_within(c, k, wram_r16(w, (uint16_t)(at + ACTOR_Y)),
+                       wram_r16(w, (uint16_t)(owner + ACTOR_Y)), TS_SR_SUB,
+                       &apart))
+      continue;
+    set_c(c, true);
+    set_page(w, c, SPIRIT_DP_TARGET, at);
+    ran(k, TS_SR_FOUND);
+    return true;
+  }
+}
+
+// `$81:EEC4`: ten tries, and a look. Something found is chased; nothing, and
+// the spirit flies off.
+static void spirit_seek(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, SPIRIT_TRIES);
+  set_page(w, c, SPIRIT_DP_TRIES, c->a);
+  ran(k, TS_SP_SEEK);
+  const bool found = spirit_look(w, c, k);
+  ran(k, TS_BRANCH);  // `BCS $EED1`
+  if (found) {
+    PORT_COVER(spirit_found);
+    ran(k, TS_TAKEN);
+    spirit_sleeps(w, c, k, SPIRIT_CHASE_RETURN);
+    return;
+  }
+  // `JMP $EFDA`: one spirit fewer, and forty ticks of flying off.
+  PORT_COVER(spirit_gave_up);
+  ran(k, TS_SP_JMP);
+  wram_w16(w, W_BOX_SPIRITS, (uint16_t)(wram_r16(w, W_BOX_SPIRITS) - 1));
+  lda(c, SPIRIT_FLY_TICKS);
+  set_page(w, c, SPIRIT_DP_STEPS, c->a);
+  ran(k, TS_SP_FLYOFF);
+  c->pc = SPIRIT_FLY_CALL_PC;
+}
+
+// `$81:F0FD`, back from the PPU: where it begins to look, its looks, and the
+// setup's `RTS` to the first look.
+void spirit_placed(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_c(c, false);
+  lda(c, adc16(c, c->a, SPIRIT_FIRST));
+  set_page(w, c, SPIRIT_DP_AT, c->a);
+  lda(c, SPIRIT_LOOKS);
+  set_page(w, c, SPIRIT_DP_LOOKS, c->a);
+  pull16(w, c);
+  ran(k, TS_SP_PLACED);
+  spirit_seek(w, c, k);
+}
+
+// `$81:EFB8`: a step of the way's, and another, a tick each; then the chase
+// goes on.
+static void spirit_step(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t record = page(w, c, SPIRIT_DP_RECORD);
+  ldy(c, record);
+  set_c(c, false);
+  const uint16_t x = adc16(c, page(w, c, SPIRIT_DP_X), page(w, c, SPIRIT_DP_STEP_X));
+  set_page(w, c, SPIRIT_DP_X, x);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  set_c(c, false);
+  const uint16_t y = adc16(c, page(w, c, SPIRIT_DP_Y), page(w, c, SPIRIT_DP_STEP_Y));
+  set_page(w, c, SPIRIT_DP_Y, y);
+  lda(c, y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  const uint16_t left = (uint16_t)(page(w, c, SPIRIT_DP_STEPS) - 1);
+  set_page(w, c, SPIRIT_DP_STEPS, left);
+  set_nz16(c, left);
+  ran(k, TS_SP_MOVE);
+  if (left == 0) {
+    // `JMP $EED1`, and its `JSR $F024`.
+    ran(k, TS_TAKEN);
+    ran(k, TS_SP_JMP);
+    spirit_sleeps(w, c, k, SPIRIT_CHASE_RETURN);
+    return;
+  }
+  spirit_sleeps(w, c, k, SPIRIT_STEP_RETURN);
+}
+
+// `$81:EFF7`: a step of the way it flies, and a tick.
+static void spirit_fly_step(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t record = page(w, c, SPIRIT_DP_RECORD);
+  ldy(c, record);
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(record + ACTOR_X),
+           adc16(c, wram_r16(w, (uint16_t)(record + ACTOR_X)),
+                 page(w, c, SPIRIT_DP_STEP_X)));
+  set_c(c, false);
+  lda(c, adc16(c, wram_r16(w, (uint16_t)(record + ACTOR_Y)),
+               page(w, c, SPIRIT_DP_STEP_Y)));
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), c->a);
+  ran(k, TS_SP_FLY_MOVE);
+  spirit_sleeps(w, c, k, SPIRIT_FLY_RETURN);
+}
+
+// `$81:EF4E`: no tries left, another look; otherwise, toward it.
+static void spirit_far(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t tries = (uint16_t)(page(w, c, SPIRIT_DP_TRIES) - 1);
+  set_page(w, c, SPIRIT_DP_TRIES, tries);
+  set_nz16(c, tries);
+  ran(k, TS_SP_TRIES);
+  if (tries & 0x8000u) {
+    PORT_COVER(spirit_tired);
+    ran(k, TS_SP_JMP);
+    spirit_seek(w, c, k);
+    return;
+  }
+  PORT_COVER(spirit_chased);
+  ran(k, TS_TAKEN);
+  ldy(c, page(w, c, SPIRIT_DP_TARGET));
+  ldx(c, page(w, c, SPIRIT_DP_RECORD));
+  ran(k, TS_SP_ASK);
+  c->pc = SPIRIT_BEARING_CALL_PC;
+}
+
+// `$81:EED4`: the one it chases, gone, far, near enough to tell, or between.
+static void spirit_chase(Wram* w, const Rom* rom, PortCpu* c,
+                         ThreadStretchWork* k) {
+  const uint16_t target = page(w, c, SPIRIT_DP_TARGET);
+  ldx(c, target);
+  const uint16_t flags = wram_r16(w, (uint16_t)(target + ACTOR_FLAGS));
+  lda(c, flags);
+  ran(k, TS_SP_CK_TARGET);
+  bool gone = !(flags & 0x8000u);
+  if (!gone) {
+    set_c(c, (flags & 1u) != 0);
+    lda(c, (uint16_t)(flags >> 1));
+    ran(k, TS_SR_LSR);
+    gone = !(flags & 1u);
+  }
+  if (!gone) {
+    const uint16_t kind = wram_r16(w, (uint16_t)(target + 0x0e));
+    lda(c, kind);
+    cmp16(c, kind, 3);
+    ran(k, TS_SR_KIND);
+    if (kind == 3) {
+      ran(k, TS_TAKEN);
+    } else {
+      cmp16(c, kind, 4);
+      ran(k, TS_SR_KIND4);
+      gone = kind != 4;
+    }
+  }
+  if (gone) {
+    PORT_COVER(spirit_lost);
+    ran(k, TS_TAKEN);
+    spirit_seek(w, c, k);
+    return;
+  }
+  const uint16_t record = page(w, c, SPIRIT_DP_RECORD);
+  ldy(c, record);
+  uint16_t apart;
+  // `LDY $0A` is in the first axis's run, the second has none.
+  if (!spirit_within(c, k, wram_r16(w, (uint16_t)(record + ACTOR_X)),
+                     wram_r16(w, (uint16_t)(target + ACTOR_X)), TS_SP_CK_SUB,
+                     &apart)) {
+    spirit_seek(w, c, k);
+    return;
+  }
+  cmp16(c, apart, SPIRIT_NEAR);
+  ran(k, TS_WANDER_IS);
+  if (apart >= SPIRIT_NEAR) {
+    ran(k, TS_TAKEN);
+    spirit_far(w, c, k);
+    return;
+  }
+  if (!spirit_within(c, k, wram_r16(w, (uint16_t)(record + ACTOR_Y)),
+                     wram_r16(w, (uint16_t)(target + ACTOR_Y)), TS_SP_CK_SUB_Y,
+                     &apart)) {
+    spirit_seek(w, c, k);
+    return;
+  }
+  cmp16(c, apart, SPIRIT_NEAR);
+  ran(k, TS_WANDER_IS);
+  if (apart >= SPIRIT_NEAR) {
+    ran(k, TS_TAKEN);
+    spirit_far(w, c, k);
+    return;
+  }
+  // `$81:EF1B`: everything in a box about it is told.
+  PORT_COVER(spirit_told);
+  const uint16_t x = wram_r16(w, (uint16_t)(record + ACTOR_X));
+  const uint16_t y = wram_r16(w, (uint16_t)(record + ACTOR_Y));
+  set_c(c, true);
+  const uint16_t left = sbc16(c, x, SPIRIT_NEAR);
+  wram_w16(w, W_SPIRIT_BOX_LEFT, left);
+  set_c(c, false);
+  wram_w16(w, W_SPIRIT_BOX_RIGHT, adc16(c, left, SPIRIT_BOX));
+  set_c(c, true);
+  const uint16_t top = sbc16(c, y, SPIRIT_NEAR);
+  wram_w16(w, W_SPIRIT_BOX_TOP, top);
+  set_c(c, false);
+  wram_w16(w, W_SPIRIT_BOX_BOTTOM, adc16(c, top, SPIRIT_BOX));
+  ldx(c, page(w, c, SPIRIT_DP_ROW));
+  lda(c, rom_word(rom, ((uint32_t)c->db << 16) + SPIRIT_IDS + c->x));
+  wram_w16(w, W_SPIRIT_BOX_ID, c->a);
+  ran(k, TS_SP_BOX);
+  c->pc = SPIRIT_TELL_CALL_PC;
+}
+
+// `$81:F02B`, a tick on: the next of its six pictures, and the `RTS` to
+// where it slept.
+void spirit_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  uint16_t picture = (uint16_t)(page(w, c, SPIRIT_DP_PICTURE) + 1);
+  cmp16(c, picture, 6);
+  ran(k, TS_SP_WOKE);
+  if (picture == 6) {
+    picture = 0;
+    ran(k, TS_LDA_IMM);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  set_page(w, c, SPIRIT_DP_PICTURE, picture);
+  const uint16_t doubled = asl16(c, picture);
+  ran(k, TS_SP_PICTURE);
+  // `$81:FF2A`, as weapon 4's shot shows its.
+  const uint16_t record = page(w, c, SPIRIT_DP_RECORD);
+  const uint32_t list = ((uint32_t)c->db << 16) + page(w, c, SPIRIT_DP_LIST);
+  ldx(c, record);
+  const uint16_t at = asl16(c, doubled);
+  const uint16_t mask = bus_r16(w, rom, (list + at) & 0xffffffu);
+  ran(k, TS_ARTIFACT_PICTURE);
+  const uint16_t flags = wram_r16(w, (uint16_t)(record + ACTOR_FLAGS));
+  if (mask & 0x8000u) {
+    ran(k, TS_TAKEN);
+    wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), (uint16_t)(flags & mask));
+    ran(k, TS_ARTIFACT_AND);
+  } else {
+    wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), (uint16_t)(flags | mask));
+    ran(k, TS_ARTIFACT_ORA);
+    ran(k, TS_TAKEN);
+  }
+  ldy(c, (uint16_t)(at + 2));
+  lda(c, bus_r16(w, rom, (list + at + 2) & 0xffffffu));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), c->a);
+  ran(k, TS_ARTIFACT_SHOWN);
+  const uint16_t back = pull16(w, c);
+  if (back == SPIRIT_CHASE_RETURN) {
+    spirit_chase(w, rom, c, k);
+    return;
+  }
+  if (back == SPIRIT_STEP_RETURN) {
+    // `BRA $EFB8`.
+    ran(k, TS_BRANCH);
+    ran(k, TS_TAKEN);
+    spirit_step(w, c, k);
+    return;
+  }
+  // `$81:F00E`: a step more, or the end.
+  const uint16_t left = (uint16_t)(page(w, c, SPIRIT_DP_STEPS) - 1);
+  set_page(w, c, SPIRIT_DP_STEPS, left);
+  set_nz16(c, left);
+  ran(k, TS_SP_FLY_COUNT);
+  if (left != 0) {
+    ran(k, TS_TAKEN);
+    spirit_fly_step(w, c, k);
+    return;
+  }
+  PORT_COVER(spirit_gone);
+  c->pc = SPIRIT_END_PC;
+}
+
+// `$81:EF4B`, back from telling: another look.
+void spirit_told(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_SP_JMP);
+  spirit_seek(w, c, k);
+}
+
+// `$81:EF5D`, the way toward it in A: a step round toward that, of eight,
+// the way's steps, and the first.
+void spirit_bearing(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  const uint16_t bearing = c->a;
+  set_page(w, c, SPIRIT_DP_BEARING, bearing);
+  uint16_t way = page(w, c, SPIRIT_DP_WAY);
+  lda(c, way);
+  cmp16(c, way, bearing);
+  ran(k, TS_SP_TURN_TEST);
+  if (way == bearing) {
+    PORT_COVER(spirit_on_course);
+    ran(k, TS_TAKEN);
+  } else {
+    // How far round each way, in eighths.
+    set_c(c, true);
+    uint16_t cw = sbc16(c, bearing, way);
+    lda(c, cw);
+    ran(k, TS_SP_TURN_CW);
+    if (cw & 0x8000u) {
+      set_c(c, false);
+      cw = adc16(c, cw, 8);
+      lda(c, cw);
+      ran(k, TS_SP_TURN_ADD);
+    } else {
+      ran(k, TS_TAKEN);
+    }
+    set_page(w, c, SPIRIT_DP_STEPS, cw);
+    set_c(c, true);
+    uint16_t ccw = sbc16(c, way, bearing);
+    lda(c, ccw);
+    ran(k, TS_SP_TURN_CCW);
+    if (ccw & 0x8000u) {
+      set_c(c, false);
+      ccw = adc16(c, ccw, 8);
+      lda(c, ccw);
+      ran(k, TS_SP_TURN_ADD);
+    } else {
+      ran(k, TS_TAKEN);
+    }
+    cmp16(c, ccw, cw);
+    ran(k, TS_SP_TURN_CMP);
+    bool up;
+    if (ccw == cw) {
+      ran(k, TS_TAKEN);
+      lda(c, page(w, c, SPIRIT_DP_TURNED));
+      ran(k, TS_SP_TURN_TIE);
+      up = c->a != 0;
+      if (!up) ran(k, TS_TAKEN);
+    } else {
+      ran(k, TS_BRANCH);  // `BCS`
+      up = ccw > cw;
+      if (up) {
+        ran(k, TS_TAKEN);
+      } else {
+        ran(k, TS_BRANCH);  // `BRA`
+        ran(k, TS_TAKEN);
+      }
+    }
+    if (up) {
+      PORT_COVER(spirit_turned_up);
+      way = (uint16_t)(way + 1);
+      set_page(w, c, SPIRIT_DP_WAY, way);
+      set_page(w, c, SPIRIT_DP_TURNED,
+               (uint16_t)(page(w, c, SPIRIT_DP_TURNED) + 1));
+      ran(k, TS_SP_TURN_UP);
+      ran(k, TS_TAKEN);
+    } else {
+      PORT_COVER(spirit_turned_down);
+      way = (uint16_t)(way - 1);
+      set_page(w, c, SPIRIT_DP_WAY, way);
+      set_page(w, c, SPIRIT_DP_TURNED, 0);
+      ran(k, TS_SP_TURN_DOWN);
+    }
+    lda(c, way);
+    ran(k, TS_SP_TURN_WRAP);
+    if (way == 0) {
+      lda(c, 8);
+      ran(k, TS_SP_TURN_EIGHT);
+      ran(k, TS_TAKEN);
+      way = 8;
+    } else {
+      ran(k, TS_TAKEN);
+      cmp16(c, way, 9);
+      ran(k, TS_WANDER_IS);
+      if (way == 9) {
+        lda(c, 1);
+        ran(k, TS_LDA_IMM);
+        way = 1;
+      } else {
+        ran(k, TS_TAKEN);
+      }
+    }
+  }
+  // `$81:EFA4`: the way, its steps, and two of them.
+  set_page(w, c, SPIRIT_DP_WAY, way);
+  const uint16_t row = (uint16_t)(way << 2);
+  set_c(c, ((way << 1) & 0x8000u) != 0);
+  ldx(c, row);
+  const uint32_t steps = ((uint32_t)c->db << 16) + SPIRIT_STEPS + row;
+  set_page(w, c, SPIRIT_DP_STEP_X, bus_r16(w, rom, steps & 0xffffffu));
+  set_page(w, c, SPIRIT_DP_STEP_Y, bus_r16(w, rom, (steps + 2) & 0xffffffu));
+  lda(c, 2);
+  set_page(w, c, SPIRIT_DP_STEPS, 2);
+  ran(k, TS_SP_WAY);
+  spirit_step(w, c, k);
+}
+
+// `$81:EFE6`, back from the draw: one way of eight, and the first step.
+void spirit_fly(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t row = (uint16_t)(((c->a & 7u) + 1) << 2);
+  set_c(c, false);
+  ldx(c, row);
+  const uint32_t steps = ((uint32_t)c->db << 16) + SPIRIT_STEPS + row;
+  set_page(w, c, SPIRIT_DP_STEP_X, bus_r16(w, rom, steps & 0xffffffu));
+  lda(c, bus_r16(w, rom, (steps + 2) & 0xffffffu));
+  set_page(w, c, SPIRIT_DP_STEP_Y, c->a);
+  ran(k, TS_SP_FLY_WAY);
+  spirit_fly_step(w, c, k);
+}
+
+// --- the box ------------------------------------------------------------------
+
+// `$80:EBE6`: refused while spirits are out.
+void box_open(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t out = wram_r16(w, W_BOX_SPIRITS);
+  lda(c, out);
+  cmp16(c, out, 1);
+  ran(k, TS_BOX_TEST);
+  if (out >= 1) {
+    PORT_COVER(box_busy);
+    ran(k, TS_TAKEN);
+    c->pc = BOX_BUSY_RTS_PC;
+    return;
+  }
+  PORT_COVER(box_opened);
+  c->pc = BOX_UNHANDLED_CALL_PC;
+}
+
+// `$80:EBFB`: where the spirits begin, the box's picture, and the first.
+void box_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, BOX_DP_X, page(w, c, GHOST_DP_X));
+  set_page(w, c, BOX_DP_Y, page(w, c, GHOST_DP_Y));
+  ldx(c, page(w, c, POSE_DP_PICTURES_ROW));
+  set_page(w, c, BOX_DP_ROW, c->x);
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           rom_word(rom, ((uint32_t)POSE_BANK << 16) + BOX_PICTURES + c->x));
+  lda(c, BOX_SPIRIT);
+  ldy(c, BOX_SPIRIT_BANK);
+  ran(k, TS_BOX_HEARD);
+  c->pc = BOX_SPAWN_CALL_PC;
+}
+
+// `$80:EC19`, `$80:EC2D` and `$80:EC41`: one more out, and a sleep: five
+// ticks after the first two, one after the third.
+void box_spawned(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  wram_w16(w, W_BOX_SPIRITS, (uint16_t)(wram_r16(w, W_BOX_SPIRITS) + 1));
+  const bool last = c->pc == BOX_SPAWNED_3_PC;
+  lda(c, last ? 1 : BOX_TICKS);
+  ran(k, TS_BOX_SPAWNED);
+  c->pc = c->pc == BOX_SPAWNED_PC ? BOX_SLEEP_PC
+          : last                  ? BOX_WAIT_PC
+                                  : BOX_SLEEP_2_PC;
+}
+
+// `$80:EC4B`: a tick more while any spirit is out.
+void box_waited(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, wram_r16(w, W_BOX_SPIRITS));
+  ran(k, TS_BOX_WAITED);
+  if (c->a != 0) {
+    ran(k, TS_TAKEN);
+    lda(c, 1);
+    ran(k, TS_LDA_IMM);
+    c->pc = BOX_WAIT_PC;
+    return;
+  }
+  PORT_COVER(box_all_gone);
+  c->pc = BOX_HANDLED_CALL_PC;
+}
+
+// `$80:EC53`: carry clear, opened.
+void box_done(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  set_c(c, false);
+  ran(k, TS_CLC);
+  c->pc = BOX_BUSY_RTS_PC;
+}
+
+// `$80:EB66`: a box refused is not spent; one opened is one fewer.
+void box_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BOX_BACK);
+  if (flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+    c->pc = BOX_REFUSED_PC;
+    return;
+  }
+  set_page(w, c, PSN_DP_DIR, 0);
+  ran(k, TS_STZ_24);
+  c->pc = BOX_FEWER_PC;
+}
+
+// `$80:EFFF`, the weapon put away: the pictures of drinking, by the player.
+void potion_pictured(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  PORT_COVER(potion_pictured);
+  ldx(c, page(w, c, POSE_DP_PICTURES_ROW));
+  lda(c, rom_word(rom, ((uint32_t)POSE_BANK << 16) + POTION_PICTURES + c->x));
+  ran(k, TS_POTION_PICTURED);
+  c->pc = POTION_PICTURES_CALL_PC;
+}
+
+// `$80:F2D9`: bit 4 of the record's flags turned over, and a sleep.
+static void flash_hide(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) ^ FLASH_BIT));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  lda(c, page(w, c, FLASH_DP_TICKS));
+  ran(k, TS_FLASH_HIDE);
+  c->pc = FLASH_HIDE_YIELD_PC;
+}
+
+// `$80:F2C7`: the word, bit 4 set, and the first half of the first flash.
+void flash_begin(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(flash_begun);
+  set_page(w, c, FLASH_DP_TICKS, c->x);
+  set_page(w, c, FLASH_DP_LEFT, c->y);
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  wram_w16(w, (uint16_t)(record + FLASH_RECORD_10), c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      FLASH_BIT));
+  ran(k, TS_FLASH_BEGIN);
+  flash_hide(w, c, k);
+}
+
+// `$80:F2EA`: bit 4 set again, and a sleep.
+void flash_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | FLASH_BIT));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  lda(c, page(w, c, FLASH_DP_TICKS));
+  ran(k, TS_FLASH_SHOW);
+  c->pc = FLASH_SHOW_YIELD_PC;
+}
+
+// `$80:F2FB`: another flash, or the last.
+void flash_hidden(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t left = (uint16_t)(page(w, c, FLASH_DP_LEFT) - 1);
+  set_page(w, c, FLASH_DP_LEFT, left);
+  set_nz16(c, left);
+  ran(k, TS_FLASH_COUNT);
+  if (left != 0) {
+    PORT_COVER(flash_again);
+    ran(k, TS_TAKEN);
+    flash_hide(w, c, k);
+    return;
+  }
+  PORT_COVER(flash_over);
+  c->pc = FLASH_RTS_PC;
+}
+
+// `$80:DACE`, told of nothing: nothing held, and the drink.
+void ghost_begin(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(ghost_begun);
+  set_page(w, c, GHOST_DP_FIRE_A, 0);
+  set_page(w, c, GHOST_DP_FIRE_B, 0);
+  ran(k, TS_GHOST_BEGIN);
+  c->pc = GHOST_DRINK_CALL_PC;
+}
+
+// `$80:DADC`: state 4.
+void ghost_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, GHOST_STATE);
+  set_page(w, c, GHOST_DP_STATE, c->a);
+  ran(k, TS_GHOST_HEARD);
+  c->pc = GHOST_REST_CALL_PC;
+}
+
+// `$80:DAE4`: its end, its frames, and the flashing.
+void ghost_rested(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, GHOST_DP_ENDS_BY, GHOST_ENDS_BY);
+  set_page(w, c, GHOST_DP_FRAMES_LEFT, GHOST_FRAMES);
+  set_page(w, c, GHOST_DP_PACE, 0);
+  lda(c, GHOST_FLASH_WORD);
+  ldx(c, GHOST_FLASH_TICKS);
+  ldy(c, GHOST_FLASH_TIMES);
+  ran(k, TS_GHOST_RESTED);
+  c->pc = GHOST_FLASH_CALL_PC;
+}
+
+// `$80:DAFC`: what it holds.
+void ghost_flashed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, GHOST_HELD_WEAPON);
+  ldy(c, GHOST_HELD_ITEM);
+  ran(k, TS_GHOST_FLASHED);
+  c->pc = GHOST_SWAP_CALL_PC;
+}
+
+// `$80:DB2B`: bit 4 turned over, and its words cleared, to the hands back.
+void ghost_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(ghost_ended);
+  const uint16_t record = page(w, c, POSE_DP_RECORD);
+  ldy(c, record);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) ^ FLASH_BIT));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  set_page(w, c, GHOST_DP_STATE, 0);
+  set_page(w, c, GHOST_DP_ENDS_BY, 0);
+  set_page(w, c, GHOST_DP_1C, 0);
+  ran(k, TS_GHOST_ENDED);
+  c->pc = GHOST_ENDED_CALL_PC;
+}
+
+// `$80:DB08`: the potion spent, with nothing at `$72`: is the ground where
+// the player stands solid? Or something asks it to end, which skips that and
+// the flashing.
+void ghost_ends(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, GHOST_DP_ENDS_BY));
+  ran(k, TS_GHOST_ENDS_TEST);
+  if (c->a != 0) {
+    PORT_COVER(ghost_ends_asked);
+    ran(k, TS_TAKEN);
+    ghost_ended(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(ghost_ends_spent);
+  ldx(c, page(w, c, GHOST_DP_X));
+  ldy(c, page(w, c, GHOST_DP_Y));
+  ran(k, TS_GHOST_ENDS_ASK);
+  c->pc = GHOST_ENDS_ASK_CALL_PC;
+}
+
+// `$80:DB14`: on solid ground, five frames more; or the end.
+void ghost_ends_asked(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_GHOST_ENDS_ASKED);
+  if (!flag(c, PORT_P_C)) {
+    PORT_COVER(ghost_ends_clear);
+    ran(k, TS_TAKEN);
+    c->pc = GHOST_ENDS_UNHANDLED_PC;
+    return;
+  }
+  PORT_COVER(ghost_ends_later);
+  lda(c, GHOST_LATER);
+  set_page(w, c, GHOST_DP_FRAMES_LEFT, c->a);
+  ran(k, TS_GHOST_ENDS_LATER);
+  c->pc = GHOST_ENDS_LATER_PC;
+}
+
+// `$80:DB1F`: the flashing again.
+void ghost_ends_flash(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, GHOST_FLASH_WORD);
+  ldx(c, GHOST_FLASH_TICKS);
+  ldy(c, GHOST_FLASH_TIMES);
+  ran(k, TS_GHOST_ENDS_FLASH);
+  c->pc = GHOST_ENDS_FLASH_CALL_PC;
+}
+
+// --- weapon 4's shot -----------------------------------------------------------
+
+// `$81:EAE6`: the load up, and where its owner is, under `JSR $EB46`, to the
+// record's `JSL`.
+void artifact_enter(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, ARTIFACT_LOAD);
+  push16(w, c, ARTIFACT_SET_RETURN);
+  ran(k, TS_ARTIFACT_ENTER);
+  set_page(w, c, ARTIFACT_DP_PICTURES, ARTIFACT_PICTURES);
+  const uint16_t owner = page(w, c, ARTIFACT_DP_OWNER);
+  ldy(c, owner);
+  set_page(w, c, ARTIFACT_DP_OWNER_X, wram_r16(w, (uint16_t)(owner + ACTOR_X)));
+  lda(c, wram_r16(w, (uint16_t)(owner + ACTOR_Y)));
+  set_page(w, c, ARTIFACT_DP_OWNER_Y, c->a);
+  ran(k, TS_ARTIFACT_ASK);
+  c->pc = ARTIFACT_ALLOC_CALL_PC;
+}
+
+// `$81:EB5B`: its record, off the screen, with no handler.
+void artifact_made(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  PORT_COVER(artifact_made);
+  const uint16_t r = c->a;
+  set_page(w, c, ARTIFACT_DP_RECORD, r);
+  set_page(w, c, ARTIFACT_DP_STEP, 0);
+  wram_w16(w, (uint16_t)(r + ACTOR_X), ARTIFACT_OFF);
+  wram_w16(w, (uint16_t)(r + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(r + ACTOR_Y), ARTIFACT_OFF);
+  wram_w16(w, (uint16_t)(r + ACTOR_META_BANK), ARTIFACT_META_BANK);
+  wram_w16(w, (uint16_t)(r + ACTOR_META), ARTIFACT_META);
+  wram_w16(w, (uint16_t)(r + 0x0c), wram_r16(w, W_ARTIFACT_0008));
+  ldx(c, page(w, c, ARTIFACT_DP_PLAYER));
+  wram_w16(w, (uint16_t)(r + 0x0e),
+           bus_r16(w, rom, (ARTIFACT_IDS + c->x) & 0xffffffu));
+  wram_w16(w, (uint16_t)(r + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(r + ACTOR_FLAGS)) | 0x8000u));
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_ARTIFACT_MADE);
+  c->pc = ARTIFACT_HANDLER_CALL_PC;
+}
+
+// `$81:EB9D`: the setup's `RTS`, and the sound.
+void artifact_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  pull16(w, c);
+  ran(k, TS_ARTIFACT_SET);
+  lda(c, ARTIFACT_SFX);
+  ran(k, TS_LDA_IMM);
+  c->pc = ARTIFACT_SOUND_CALL_PC;
+}
+
+// `$81:EAFA`: the steps begun, and the first sleep.
+void artifact_heard(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, ARTIFACT_DP_STEP, ARTIFACT_FIRST_STEP);
+  ran(k, TS_ARTIFACT_HEARD);
+  lda(c, ARTIFACT_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = ARTIFACT_YIELD_PC;
+}
+
+// `$81:EB06`: the next step, its picture and its place; or after the
+// eighth, the load down and the record let go.
+void artifact_woke(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  const uint16_t step = (uint16_t)(page(w, c, ARTIFACT_DP_STEP) + 2);
+  set_page(w, c, ARTIFACT_DP_STEP, step);
+  lda(c, step);
+  cmp16(c, step, ARTIFACT_LAST_STEP);
+  ran(k, TS_ARTIFACT_STEP);
+  if (step == ARTIFACT_LAST_STEP) {
+    PORT_COVER(artifact_ended);
+    ran(k, TS_TAKEN);
+    c->pc = ARTIFACT_END_PC;
+    return;
+  }
+  PORT_COVER(artifact_stepped);
+  ran(k, TS_ARTIFACT_SHOW);
+  // `$81:FF2A`: the step's picture, as `$80:F300` shows one.
+  const uint16_t record = page(w, c, ARTIFACT_DP_RECORD);
+  const uint32_t list = ((uint32_t)c->db << 16) + page(w, c, ARTIFACT_DP_PICTURES);
+  ldx(c, record);
+  const uint16_t at = asl16(c, step);
+  const uint16_t mask = bus_r16(w, rom, (list + at) & 0xffffffu);
+  ran(k, TS_ARTIFACT_PICTURE);
+  const uint16_t flags = wram_r16(w, (uint16_t)(record + ACTOR_FLAGS));
+  if (mask & 0x8000u) {
+    PORT_COVER(artifact_masked);
+    ran(k, TS_TAKEN);
+    wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), (uint16_t)(flags & mask));
+    ran(k, TS_ARTIFACT_AND);
+  } else {
+    wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), (uint16_t)(flags | mask));
+    ran(k, TS_ARTIFACT_ORA);
+    ran(k, TS_TAKEN);
+  }
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           bus_r16(w, rom, (list + at + 2) & 0xffffffu));
+  ran(k, TS_ARTIFACT_SHOWN);
+  // Its place: the owner's, and the step's two words. The second add takes
+  // the first's carry.
+  const uint16_t owner = page(w, c, ARTIFACT_DP_OWNER);
+  ldx(c, asl16(c, step));
+  const uint32_t steps = ((uint32_t)c->db << 16) + (ARTIFACT_STEPS & 0xffffu) + c->x;
+  const uint16_t x = adc16(c, wram_r16(w, (uint16_t)(owner + ACTOR_X)),
+                           bus_r16(w, rom, steps & 0xffffffu));
+  const uint16_t y = adc16(c, wram_r16(w, (uint16_t)(owner + ACTOR_Y)),
+                           bus_r16(w, rom, (steps + 2) & 0xffffffu));
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  ran(k, TS_ARTIFACT_PLACE);
+  ran(k, TS_TAKEN);  // its `BRA`
+  lda(c, ARTIFACT_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = ARTIFACT_YIELD_PC;
+}
+
+// --- a sparkle -----------------------------------------------------------------
+
+// `$83:B55E`: its placement, retired.
+void sparkle_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, SPARKLE_DP_PLACEMENT));
+  ran(k, TS_LDA_DP);
+  c->pc = SPARKLE_MARK_CALL_PC;
+}
+
+// `$83:B564`: where it is kept, and a record asked for, under `JSR $B616`.
+void sparkle_marked(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  jsr_and_back(w, c, (uint16_t)(SPARKLE_PLACE_RETURN - 2), k);
+  set_page(w, c, SPARKLE_DP_X, page(w, c, SPARKLE_DP_PLACE_X));
+  lda(c, page(w, c, SPARKLE_DP_PLACE_Y));
+  set_page(w, c, SPARKLE_DP_Y, c->a);
+  set_page(w, c, SPARKLE_DP_10, 0);
+  set_page(w, c, SPARKLE_DP_BLINK, 0);
+  set_page(w, c, SPARKLE_DP_DONE, 0);
+  ran(k, TS_SPARKLE_PLACE);
+  push16(w, c, SPARKLE_SET_RETURN);
+  ran(k, TS_JSR);
+  c->pc = SPARKLE_ALLOC_CALL_PC;
+}
+
+// `$83:B61A`: its record, with no handler.
+void sparkle_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(sparkle_made);
+  set_page(w, c, SPARKLE_DP_RECORD, c->a);
+  const uint16_t r = c->a;
+  ldx(c, r);
+  wram_w16(w, (uint16_t)(r + ACTOR_X), page(w, c, SPARKLE_DP_PLACE_X));
+  wram_w16(w, (uint16_t)(r + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(r + ACTOR_Y), page(w, c, SPARKLE_DP_PLACE_Y));
+  wram_w16(w, (uint16_t)(r + ACTOR_META_BANK), SPARKLE_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(r + ACTOR_META), SPARKLE_PICTURE);
+  wram_w16(w, (uint16_t)(r + 0x0e), SPARKLE_RECORD_0E);
+  wram_w16(w, (uint16_t)(r + 0x0c), wram_r16(w, W_SPARKLE_0008));
+  wram_w16(w, (uint16_t)(r + 0x10), SPARKLE_RECORD_10);
+  wram_w16(w, (uint16_t)(r + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(r + ACTOR_FLAGS)) |
+                      SPARKLE_FLAGS));
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_SPARKLE_MADE);
+  c->pc = SPARKLE_HANDLER_CALL_PC;
+}
+
+// Back in the loop from `$83:B57F`: three ticks more, or, once a player came
+// near, the record let go.
+static void sparkle_back(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  c->pc = (uint32_t)(c->pc & 0xff0000u) | (uint16_t)(pull16(w, c) + 1);
+  lda(c, page(w, c, SPARKLE_DP_DONE));
+  ran(k, TS_SPARKLE_BACK);
+  if (c->a == 0) {
+    PORT_COVER(sparkle_waits);
+    ran(k, TS_TAKEN);
+    lda(c, SPARKLE_TICKS);
+    ran(k, TS_LDA_IMM);
+    c->pc = SPARKLE_YIELD_PC;
+    return;
+  }
+  PORT_COVER(sparkle_let_go);
+  lda(c, page(w, c, SPARKLE_DP_RECORD));
+  ran(k, TS_LDA_DP);
+  c->pc = SPARKLE_FREE_CALL_PC;
+}
+
+// `$83:B659`: the setup's `RTS`, and the loop's first sleep.
+void sparkle_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  pull16(w, c);
+  ran(k, TS_SPARKLE_SET);
+  lda(c, SPARKLE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = SPARKLE_YIELD_PC;
+}
+
+// `$83:B571`: is a player near?
+void sparkle_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, SPARKLE_ASK_RETURN);
+  ran(k, TS_JSR);
+  lda(c, SPARKLE_NEAR);
+  ldx(c, page(w, c, SPARKLE_DP_X));
+  ldy(c, page(w, c, SPARKLE_DP_Y));
+  ran(k, TS_SPARKLE_ASK);
+  c->pc = SPARKLE_ASK_CALL_PC;
+}
+
+// `$83:B58A`: a player came near, or a frame of the blink.
+void sparkle_asked(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  ldx(c, c->a);
+  ran(k, TS_SPARKLE_FOUND_TEST);
+  if (c->x != 0) {
+    PORT_COVER(sparkle_found);
+    ran(k, TS_TAKEN);
+    lda(c, SPARKLE_SFX_FOUND);
+    ran(k, TS_LDA_IMM);
+    c->pc = SPARKLE_FOUND_SOUND_PC;
+    return;
+  }
+  const uint16_t left = (uint16_t)(page(w, c, SPARKLE_DP_BLINK) - 1);
+  lda(c, left);
+  ran(k, TS_SPARKLE_COUNT);
+  if (!(left & 0x8000u)) {
+    PORT_COVER(sparkle_blinked);
+    set_page(w, c, SPARKLE_DP_BLINK, left);
+    // `AND #8 : LSR : LSR`: the second picture while bit 3 is set.
+    const uint16_t which = (uint16_t)(left & SPARKLE_BLINK_BIT);
+    set_c(c, false);
+    ldx(c, (uint16_t)(which >> 2));
+    const uint16_t record = page(w, c, SPARKLE_DP_RECORD);
+    ldy(c, record);
+    lda(c, rom_word(rom, ((uint32_t)(c->pc >> 16) << 16) + SPARKLE_PICTURES +
+                             c->x));
+    wram_w16(w, (uint16_t)(record + ACTOR_META), c->a);
+    ran(k, TS_SPARKLE_BLINK);
+    sparkle_back(w, c, k);
+    return;
+  }
+  ran(k, TS_TAKEN);
+  push16(w, c, left);
+  lda(c, wram_r16(w, W_APU_SOUNDS));
+  cmp16(c, c->a, SPARKLE_SOUNDS);
+  ran(k, TS_SPARKLE_SOUNDS);
+  if (c->a == SPARKLE_SOUNDS) {
+    PORT_COVER(sparkle_ticked);
+    lda(c, SPARKLE_SFX_TICK);
+    ran(k, TS_LDA_IMM);
+    c->pc = SPARKLE_TICK_SOUND_PC;
+    return;
+  }
+  PORT_COVER(sparkle_quiet);
+  ran(k, TS_TAKEN);
+  sparkle_heard(w, rom, c, k);
+}
+
+// `$83:B5B3`: the countdown started again.
+void sparkle_heard(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, SPARKLE_DP_BLINK, SPARKLE_BLINK);
+  lda(c, pull16(w, c));
+  ran(k, TS_SPARKLE_AGAIN);
+  sparkle_back(w, c, k);
+}
+
+// `$83:B5C8`: its record's countdown cleared and its picture bank changed,
+// and the last sound.
+void sparkle_pictured(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = page(w, c, SPARKLE_DP_RECORD);
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + 0x0e), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SPARKLE_GONE_PICTURE_BANK);
+  lda(c, SPARKLE_SFX_GONE);
+  ran(k, TS_SPARKLE_PICTURED);
+  c->pc = SPARKLE_GONE_SOUND_PC;
+}
+
+// `$83:B5E4`: done, and back to the loop, which lets the record go.
+void sparkle_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, SPARKLE_DP_DONE,
+           (uint16_t)(page(w, c, SPARKLE_DP_DONE) - 1));
+  ran(k, TS_SPARKLE_GONE);
+  sparkle_back(w, c, k);
+}
+
 // `$83:B1EB`: its record, as a puff's, and its sound.
 void piece_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   (void)rom;
@@ -4615,6 +6196,27 @@ void monster_ends(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   }
   PORT_COVER(monster_ends_unshown);
   ran(k, TS_TAKEN);
+  monster_ends_after(w, rom, c, k);
+}
+
+// `$80:DA5E`, the potion spent and the player's handler and touch put away:
+// the end's pictures, by the player, read through the data bank.
+void monster_ends_shown(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  PORT_COVER(monster_ends_pictured);
+  ldx(c, page(w, c, POSE_DP_PICTURES_ROW));
+  lda(c, bus_r16(w, rom,
+                 (((uint32_t)c->db << 16) + MONSTER_ENDS_PICTURES + c->x) &
+                     0xffffffu));
+  ran(k, TS_MONSTER_ENDS_PICTURES);
+  c->pc = MONSTER_ENDS_PICTURES_CALL_PC;
+}
+
+// `$80:DA67`: its words cleared, and to the `JSR` that gives the hands back.
+void monster_ends_after(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)rom;
+  if (c->pc == MONSTER_ENDS_AFTER_PC) PORT_COVER(monster_ends_shown);
   set_page(w, c, MONSTER_DP_PUNCH, 0);
   set_page(w, c, POSE_DP_PICTURES_SET, 0);
   set_page(w, c, PLAYER_DP_STATE, 0);
