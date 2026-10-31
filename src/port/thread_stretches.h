@@ -1627,6 +1627,21 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define MAIN_BACK_PC 0x8084d5u
 #define MAIN_BACK_NEXT_PC 0x8084d7u   // `JSL $80:866F`
 #define MAIN_BACK_OVER_PC 0x8084fcu   // `JSL $80:8A00`
+// The main thread after a level, `$80:84DB`, the next level's number
+// already counted by `$80:866F`. Was it 49, the credits? Then the ending.
+// Was it 48? Then the ending of the last level proper, `$80:8BBB`, before
+// the step. Otherwise the screen after a level, `$82:BD6A`.
+#define LEVEL_NEXT_PC 0x8084dbu
+#define LEVEL_NEXT_CREDITS_PC 0x808500u  // `JSL $80:CC27`, then the ending
+#define LEVEL_NEXT_LAST_PC 0x8084e8u     // `JSL $80:8BBB`
+#define LEVEL_NEXT_SCREEN_PC 0x8084f2u   // `JSL level_end`
+#define LEVEL_NEXT_CREDITS 0x0031u
+#define LEVEL_NEXT_LAST 0x0030u
+// `$80:8909`, the step to the next level: one on, and back to nought past
+// the count of records at `$9F:8000`.
+#define LEVEL_STEP_PC 0x808909u
+#define LEVEL_STEP_RTL_PC 0x808919u
+#define LEVEL_STEP_COUNT 0x9f8000u
 // The main loop's way out with nobody playing: `SEC`, and its `RTL`.
 #define GAME_LOST_PC 0x8085b5u
 #define GAME_LOST_RTL_PC 0x8085b6u
@@ -2395,6 +2410,11 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SPARKLE_GONE, 0x83b5e4, 0x83b5e7, 0)    /* DEC : RTS */ \
   X(TS_FADE_OUT_STEP, 0x80893a, 0x80893f, 0)  /* DEC : BPL */ \
   X(TS_FADE_OUT_BLANK, 0x80893f, 0x808945, 0) \
+  X(TS_LEVEL_NEXT, 0x8084db, 0x8084e3, 0)     /* LDA : CMP : BEQ */ \
+  X(TS_LEVEL_NEXT_LAST, 0x8084e3, 0x8084e8, 0) /* CMP : BNE */ \
+  X(TS_LEVEL_STEP, 0x808909, 0x808913, 0)     /* LDA : INC : CMP : BNE */ \
+  X(TS_LEVEL_STEP_WRAP, 0x808913, 0x808916, 0) \
+  X(TS_LEVEL_STEP_STORE, 0x808916, 0x808919, 0) \
   X(TS_SQUARE_BAND, 0x82f6ba, 0x82f6ea, 0)   /* the RTS too */ \
   X(TS_SQUARE_HANDLER, 0x82f6ab, 0x82f6b0, 0)  /* the RTS too */ \
   X(TS_SQUARE_CALL, 0x82f6f8, 0x82f6ff, 0)   /* PEA : LDA : DEC : PHA : RTS */ \
@@ -3093,6 +3113,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_fade_out, "$80:8933", FADE_OUT_PC, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(fade_out_step, "$80:893A", FADE_OUT_STEP_PC, fade_out_step, FADE_OUT, TS_NEEDS_NOTHING) \
   X(level_done, "$80:85CD", LEVEL_DONE_PC, level_done, SMALL, TS_NEEDS_NOTHING) \
+  X(level_next, "$80:84DB", LEVEL_NEXT_PC, level_next, SMALL, TS_NEEDS_NOTHING) \
+  X(level_step, "$80:8909", LEVEL_STEP_PC, level_step, SMALL, TS_NEEDS_NOTHING) \
   X(argument_80ea16, "$80:EA16", 0x80ea16u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_80ef7b, "$80:EF7B", 0x80ef7bu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_80ef88, "$80:EF88", 0x80ef88u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \

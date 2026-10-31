@@ -687,6 +687,17 @@ lines each. Not reached by any session: a door that stops the first
 of the shoes' two steps; a leap onto a bit-0 tile; the box's far partner and
 a wanderer that is hit, which need two players; the sparkle's quiet path.
 
+**Past level 1's door, 2026-10-31.** The next stop was `$80:84DB`, the main
+thread after the fade: the credits after level 49, the last level's ending
+after 48, and otherwise the screen after a level and the step to the next
+(`$80:8909`). Both are stretches now (`level_next`, `level_step`), with links
+where the ROM's returns land. No corpus movie had shown it missing, because
+the game does not reach `level21-exit.zmv`'s door: it plays that movie apart
+from the tracer. `level1_door` and `credits_door` in the survey end level 1
+by `--poke`, and the game reaches the door in those. The ending after level
+48, `$80:8BBB`, is the next stop on that path, and is not ported. The step's
+wrap past the count of records is unreached, since 49 never steps.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

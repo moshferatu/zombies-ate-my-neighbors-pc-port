@@ -1221,6 +1221,53 @@ void level_done(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   c->pc = LEVEL_DONE_RTL_PC;
 }
 
+// `$80:84DB`, the main thread after a level: the credits after 49, the last
+// level's ending after 48, and otherwise the screen after a level.
+void level_next(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t level = wram_r16(w, W_LEVEL_NUMBER);
+  lda(c, level);
+  cmp16(c, level, LEVEL_NEXT_CREDITS);
+  ran(k, TS_LEVEL_NEXT);
+  if (level == LEVEL_NEXT_CREDITS) {
+    PORT_COVER(level_next_credits);
+    ran(k, TS_TAKEN);
+    c->pc = LEVEL_NEXT_CREDITS_PC;
+    return;
+  }
+  cmp16(c, level, LEVEL_NEXT_LAST);
+  ran(k, TS_LEVEL_NEXT_LAST);
+  if (level == LEVEL_NEXT_LAST) {
+    PORT_COVER(level_next_last);
+    c->pc = LEVEL_NEXT_LAST_PC;
+    return;
+  }
+  PORT_COVER(level_next_screen);
+  ran(k, TS_TAKEN);
+  c->pc = LEVEL_NEXT_SCREEN_PC;
+}
+
+// `$80:8909`, the level number a step on, and back to nought past the count
+// of records.
+void level_step(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  uint16_t level = (uint16_t)(wram_r16(w, W_LEVEL_NUMBER) + 1);
+  cmp16(c, level, rom_word(rom, LEVEL_STEP_COUNT));
+  ran(k, TS_LEVEL_STEP);
+  if (flag(c, PORT_P_Z)) {
+    PORT_COVER(level_step_wraps);
+    level = 0;
+    set_nz16(c, level);
+    ran(k, TS_LEVEL_STEP_WRAP);
+  } else {
+    PORT_COVER(level_step_on);
+    ran(k, TS_TAKEN);
+  }
+  c->a = level;
+  wram_w16(w, W_LEVEL_NUMBER, level);
+  ran(k, TS_LEVEL_STEP_STORE);
+  c->pc = LEVEL_STEP_RTL_PC;
+}
+
 // `$80:893A`, a tick on: the screen a step darker, and another tick, until
 // the step goes under nought. Then it is blanked, and a `WAI`.
 void fade_out_step(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {

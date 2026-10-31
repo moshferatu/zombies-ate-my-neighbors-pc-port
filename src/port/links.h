@@ -241,6 +241,10 @@
   X(8084d1, "$80:84D1", 0x8084d1u) /* JSL $80:8516 */ \
   X(8084d7, "$80:84D7", 0x8084d7u) /* JSL $80:866F */ \
   X(8084fc, "$80:84FC", 0x8084fcu) /* JSL $80:8A00, the game over */ \
+  X(8084ec, "$80:84EC", 0x8084ecu) /* JSL $80:866F, after the last level's ending */ \
+  X(8084f0, "$80:84F0", 0x8084f0u) /* BRA $84F6 */ \
+  X(8084f6, "$80:84F6", 0x8084f6u) /* JSL level_step, after the screen after a level */ \
+  X(8084fa, "$80:84FA", 0x8084fau) /* BRA $84C1 */ \
   X(8085cf, "$80:85CF", 0x8085cfu) /* JSL $80:88A9 */ \
   X(8085dd, "$80:85DD", 0x8085ddu) /* JSL $80:C049 */ \
   X(80c049, "$80:C049", 0x80c049u) /* JSR $80:B9C7 */ \

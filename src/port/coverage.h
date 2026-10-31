@@ -1987,6 +1987,11 @@
   X(sparkle_ticked, "ts_sparkle_asked", "...or its countdown started again, with its tick") \
   X(sparkle_quiet, "ts_sparkle_asked", "...or without, another sample set loaded") \
   X(level_done, "ts_level_done", "the level done and the screen black: carry clear, and out") \
+  X(level_next_credits, "ts_level_next", "the main thread after a level: 49 next, the credits") \
+  X(level_next_last, "ts_level_next", "...or 48, the last level's ending") \
+  X(level_next_screen, "ts_level_next", "...or the screen after a level") \
+  X(level_step_on, "ts_level_step", "the level number a step on") \
+  X(level_step_wraps, "ts_level_step", "...or past the records, back to nought") \
   X(fade_out_darker, "ts_fade_out_step", "the fade to black: a step darker, and another tick") \
   X(fade_out_black, "ts_fade_out_step", "...or under nought: blanked, and a `WAI`") \
   X(main_back_over, "ts_main_back", "the main thread back from the level: the game over") \

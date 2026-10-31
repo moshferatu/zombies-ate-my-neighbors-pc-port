@@ -129,6 +129,11 @@ LEVEL_END_PAID = LEVEL_END + ['--poke', '4700:1F9C=000A', '--poke', '4700:1E7C=0
 LEVEL_END_CUT = LEVEL_END + ['--poke', '4700:1F9C=000B', '--poke', '4700:1D4C=0005',
                              '--poke', '4700:1E7C=0018']
 LEVEL_END_FEW = LEVEL_END + ['--poke', '4700:1F9C=0004', '--poke', '4700:1E7C=001D']
+# Level 1 under `level1.zmv` ended at frame 1500: no neighbours left, one
+# saved, and the player out by the door a hundred frames on. The game
+# reaches this door, and not `level21-exit.zmv`'s, which it plays apart.
+LEVEL1_DOOR = ['--poke', '1490-1700:1F9C=0001', '--poke', '1500-1510:1D52=0000',
+               '--poke', '1600-1700:1FB8=0001']
 # The bonuses another level's record lists, by its record, and the tallies
 # that pay them; `$1E8A` has the second player playing.
 TALLY_BONUSES = {
@@ -228,6 +233,11 @@ def sessions():
                  '--poke', '1800:0132=0420']))
     out.append(('monster_wall', 'monster-wall.zmv', 2600,
                 ['--poke', '1700-1710:1CC0=0002', '--poke', '1700-1710:1D10=0099']))
+    # ...and, 2026-10-31, the main thread after level 1's door (`$80:84DB`),
+    # and after level 49's, into the ending.
+    out.append(('level1_door', 'level1.zmv', 3600, LEVEL1_DOOR))
+    out.append(('credits_door', 'level1.zmv', 6000,
+                LEVEL1_DOOR + ['--poke', '1500:1E7C=0031']))
     return out
 
 

@@ -19911,3 +19911,12 @@ the box's far partner and a wanderer that is hit (both need two players),
 and the sparkle's quiet path. The standing punch is priced 712 or 752 cycles
 high in `pose_begin` and `pose_stand_begin`. That was so before this work,
 and it looks like `verify` counting through `$80:EF7B` into the sound.
+
+**Past the door.** The main thread after a level, `$80:84DB`, and the level
+step, `$80:8909`, are `level_next` and `level_step`. The returns into
+`$80:84EC`, `$84F0`, `$84F6` and `$84FA` are links. The game did not reach
+the level end in `level21-exit.zmv`: its run of that movie drifts from the
+tracer's before the door. So the survey's `level1_door` and `credits_door`
+end level 1 by `--poke`, and the game does reach the door in those. Both
+rows are exact on the door, the credits (level 49) and level 48. Level 48
+goes on to `$80:8BBB`, its ending, which is not ported.

@@ -10001,6 +10001,11 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_SPARKLE_GONE] = {90, 3, 1},
     [TS_FADE_OUT_STEP] = {68, 5, 0},
     [TS_FADE_OUT_BLANK] = {52, 6, 0},
+    [TS_LEVEL_NEXT] = {64, 8, 0},
+    [TS_LEVEL_NEXT_LAST] = {30, 5, 0},
+    [TS_LEVEL_STEP] = {94, 12, 0},
+    [TS_LEVEL_STEP_WRAP] = {18, 3, 0},
+    [TS_LEVEL_STEP_STORE] = {34, 3, 0},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -10111,7 +10116,9 @@ static const uint32_t TS_EXITS_SMALL[] = {
     PAGE_CLEAR_RTS_PC,    PAGE_PULL_RTL_PC,     CARRY_SET_RTS_PC,
     VICTIM_GONE_CALL_PC,  GAME_LOST_RTL_PC,     STUCK_FREED_RTS_PC,
     PANEL_SIDE_1_CALL_PC, PANEL_SIDE_2_CALL_PC, MAIN_BACK_NEXT_PC,
-    MAIN_BACK_OVER_PC,    LEVEL_DONE_RTL_PC,    BOX_BUSY_RTS_PC};
+    MAIN_BACK_OVER_PC,    LEVEL_DONE_RTL_PC,    BOX_BUSY_RTS_PC,
+    LEVEL_NEXT_CREDITS_PC, LEVEL_NEXT_LAST_PC,  LEVEL_NEXT_SCREEN_PC,
+    LEVEL_STEP_RTL_PC};
 static const uint32_t TS_EXITS_PLAYER_HIT[] = {PLAYER_HIT_SHOW_CALL_PC,
                                                PLAYER_HIT_SHOWN_CALL_PC,
                                                FLASHING_END_CALL_PC};
