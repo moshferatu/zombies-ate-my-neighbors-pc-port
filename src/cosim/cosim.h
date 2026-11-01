@@ -91,8 +91,9 @@ enum {
 // 448 until the martians' start and ends took it to 449, and 512 until the
 // fishman's leap and twenty more thread ends took it to 519, and 768 until
 // the big figure's thread took it to 769, and 1024 until the screens of
-// words between their calls took it to 1095. It is 2048.
-#define COSIM_MAX_ROUTINES 2048
+// words between their calls took it to 1095, and 2048 until the giant spider
+// took it to 2093. It is 4096.
+#define COSIM_MAX_ROUTINES 4096
 #define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
 
 // Which routines are switched on. A struct rather than a `uint64_t` so it keeps

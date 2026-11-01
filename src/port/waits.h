@@ -35,7 +35,9 @@
 // count under zero the wait is over, at `$82:F2C2`. `$FF` there is the
 // record taken away, and the thread ends at `$82:F2CA`.
 //
-// I have not seen any of them on a screen.
+// I have not seen the last two on a screen. The thread at `$83:AD33` is the
+// giant spider's, and what it does once its wait is over is
+// `port/giant_spider.h`.
 //
 // Port code: libc only.
 

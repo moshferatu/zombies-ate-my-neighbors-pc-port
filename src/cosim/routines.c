@@ -57,6 +57,7 @@
 #include "port/frankenstein.h"
 #include "port/level_end.h"
 #include "port/cast.h"
+#include "port/giant_spider.h"
 #include "port/spray.h"
 #include "port/thrown.h"
 #include "port/neighbours.h"
@@ -2290,6 +2291,37 @@ static const CosimRun HANDLER_PIECE_COST[HANDLER_PIECE_COUNT] = {
     [HP_FRANKENSTEIN_DIED] = {308, 25, 4},
     [HP_FRANKENSTEIN_NO_DAMAGE] = {242, 23, 2},
     [HP_FRANKENSTEIN_SURVIVED] = {234, 27, 3},
+    // `$83:B13D`, the giant spider's: the way to `$83:B1A0` by the id, taken
+    // branches and all; the damage counted, with `$83:AAE1` and its draw at
+    // 5; and the way out.
+    [HP_GIANT_SPIDER_SELF_OFF] = {164, 13, 0},
+    [HP_GIANT_SPIDER_SELF_SHOT] = {194, 18, 0},
+    [HP_GIANT_SPIDER_FLASHING] = {234, 22, 1},
+    [HP_GIANT_SPIDER_IGNORE] = {258, 27, 1},
+    [HP_GIANT_SPIDER_60_5D] = {392, 48, 2},
+    [HP_GIANT_SPIDER_60_5C] = {404, 50, 2},
+    [HP_GIANT_SPIDER_70_5D] = {428, 53, 2},
+    [HP_GIANT_SPIDER_70_5C] = {440, 55, 2},
+    [HP_GIANT_SPIDER_6F_5D] = {464, 58, 2},
+    [HP_GIANT_SPIDER_6F_63] = {528, 66, 2},
+    [HP_GIANT_SPIDER_6F_5C] = {540, 68, 2},
+    [HP_GIANT_SPIDER_61] = {448, 57, 2},
+    [HP_GIANT_SPIDER_62] = {484, 62, 2},
+    [HP_GIANT_SPIDER_OTHER] = {436, 55, 2},
+    [HP_GIANT_SPIDER_STUNG] = {244, 24, 3},
+    [HP_GIANT_SPIDER_TURNS_ONCE] = {918, 85, 7},
+    [HP_GIANT_SPIDER_TURNS_TWICE] = {952, 88, 7},
+    [HP_GIANT_SPIDER_DIED] = {198, 15, 2},
+    [HP_GIANT_SPIDER_NO_DAMAGE] = {188, 17, 2},
+    [HP_GIANT_SPIDER_SURVIVED] = {228, 21, 3},
+    // `$83:B525`, a spider's: the id refused, `$5E`, or the damage and the
+    // way out of it.
+    [HP_SPIDER_IGNORE] = {84, 7, 0},
+    [HP_SPIDER_FIVE_E] = {222, 19, 2},
+    [HP_SPIDER_HIT] = {284, 37, 2},
+    [HP_SPIDER_DIED] = {110, 4, 1},
+    [HP_SPIDER_NO_DAMAGE] = {100, 6, 1},
+    [HP_SPIDER_SURVIVED] = {92, 10, 2},
 };
 
 // False when a piece is `HP_DEEP`, or there were none.
@@ -2749,6 +2781,24 @@ static void shim_enemy_b95f_collide(Wram* w, const Rom* rom,
   cost_pieces(&pieces, in);
 }
 
+static void shim_spider_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  HandlerPieces pieces = {0};
+  spider_collide(w, rom, in->d, in->a, &r, &pieces);
+  handler_regs(&r, out);
+  cost_pieces(&pieces, in);
+}
+
+static void shim_giant_spider_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  HandlerPieces pieces = {0};
+  giant_spider_collide(w, rom, in->d, in->a, &r, &pieces);
+  handler_regs(&r, out);
+  cost_pieces(&pieces, in);
+}
+
 static void shim_frankenstein_collide(Wram* w, const Rom* rom,
                                  const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
@@ -3055,6 +3105,8 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     case ENEMY_9B6B_COLLIDE_ENTRY:
     case ENEMY_B95F_COLLIDE_ENTRY:
     case FRANKENSTEIN_COLLIDE_ENTRY:
+    case GIANT_SPIDER_COLLIDE_ENTRY:
+    case SPIDER_COLLIDE_ENTRY:
     case ACTOR_C8C3_COLLIDE_ENTRY:
     case ACTOR_84AC_COLLIDE_ENTRY:
     case VICTIM_COLLIDE_ENTRY:
@@ -21449,6 +21501,7 @@ static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
     [CL_SIZE] = {46, 5, 1},
     [CL_STEP] = {258, 23, 2},
     [CL_TAIL] = {54, 2, 0},
+    [UP_STEP] = {366, 32, 3},
 };
 
 // The dispatcher and the NMI both leave 16-bit registers, page zero and a data
@@ -21507,6 +21560,7 @@ VBL_SHIM(mosaic_job)
 VBL_SHIM(boss_shake_job)
 VBL_SHIM(snakeoid_shake_job)
 VBL_SHIM(boss_bg_clear_job)
+VBL_SHIM(boss_bg_tiles_job)
 VBL_SHIM(box_colours_set)
 VBL_SHIM(box_up_job)
 VBL_SHIM(box_down_job)
@@ -26430,6 +26484,387 @@ static const uint32_t CAST_STORM_EXIT_PCS[] = {
 };
 
 static const uint32_t CAST_STORM_JOB_EXITS[] = {CAST_STORM_JOB_RTL_PC};
+
+// ---------------------------------------------------------------------------
+// The giant spider of levels 36 and 48 -- see `port/giant_spider.h`
+// ---------------------------------------------------------------------------
+//
+// Priced as the cast is: every stretch hands over its trace, the runs it took
+// and a taken branch at 6 more. It writes no register, so the trace is runs
+// only. The runs are `tools/price_runs.py`'s, the four that read a script
+// through a pointer told where it points. Its draws are `rng_next`'s two
+// prices, and its wide test is `WIDE_COST`'s blocks, which make their own page
+// zero and so owe nothing for an unaligned one.
+static const CosimRun GIANT_SPIDER_RUN_COST[GIANT_SPIDER_RUN_COUNT] = {
+    [GIANT_SPIDER_RUN_AD36] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
+    [GIANT_SPIDER_RUN_ACA5] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_ACAF] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_ACB9] = {244, 30, 0},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : LDY
+    [GIANT_SPIDER_RUN_ACDB] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ACE2] = {46, 5, 0},  // LDA : BNE
+    [GIANT_SPIDER_RUN_ACE7] = {572, 47, 14},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : LDA : STA : LDA : STA : RTS
+    [GIANT_SPIDER_RUN_AD43] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AD98] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AF03] = {650, 59, 3},  // STA : TAX : LDA : STA : STZ : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : TAY
+    [GIANT_SPIDER_RUN_AF42] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD9B] = {28, 2, 1},  // STZ
+    [GIANT_SPIDER_RUN_AD9D] = {74, 7, 2},  // LDA : LDX : LDY
+    [GIANT_SPIDER_RUN_ADA8] = {24, 3, 0},  // TAX : BNE
+    [GIANT_SPIDER_RUN_ADAB] = {52, 5, 1},  // LDA : DEC : BPL
+    [GIANT_SPIDER_RUN_ADB0] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AF43] = {64, 8, 0},  // LDA : CMP : BNE
+    [GIANT_SPIDER_RUN_AF4B] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AF52] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_ADB3] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ADB6] = {204, 21, 2},  // STA : AND : LSR : LSR : TAX : LDY : LDA : STA : LDA
+    [GIANT_SPIDER_RUN_ADCD] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_ADCF] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ADD6] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ADDD] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ADE4] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_ADEB] = {224, 21, 2},  // LDA : SEC : SBC : STA : LDA : SEC : SBC : STA : JSR
+    [GIANT_SPIDER_RUN_A51A] = {360, 29, 0},  // LDA : CLC : ADC : SEC : SBC : STA : LDA : CLC : ADC : SEC : SBC : STA : RTS
+    [GIANT_SPIDER_RUN_AE00] = {58, 6, 0},  // LDA : JSR
+    [GIANT_SPIDER_RUN_A448] = {252, 28, 1},  // ASL : ASL : TAX : LDA : STA : LDA : STA : LDA : BIT : BPL
+    [GIANT_SPIDER_RUN_A45E] = {30, 4, 0},  // EOR : INC
+    [GIANT_SPIDER_RUN_A462] = {144, 15, 1},  // STA : LDA : STA : LDA : BNE
+    [GIANT_SPIDER_RUN_A46F] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A474] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A426] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_A436] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A472] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_A477] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A437] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_A447] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AE06] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_AE0B] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AE12] = {52, 5, 1},  // LDA : DEC : BMI
+    [GIANT_SPIDER_RUN_AE17] = {192, 20, 2},  // STA : AND : ASL : TAX : LDY : LDA : STA : LDA
+    [GIANT_SPIDER_RUN_AE2D] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_AE2F] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AE32] = {104, 12, 1},  // LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_AE3E] = {52, 5, 1},  // LDA : DEC : BMI
+    [GIANT_SPIDER_RUN_AE43] = {64, 8, 1},  // STA : LDA : LDY
+    [GIANT_SPIDER_RUN_AE4F] = {110, 12, 0},  // LDA : INC : STA : LDA
+    [GIANT_SPIDER_RUN_AE5F] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_AE63] = {30, 5, 0},  // CMP : BCS
+    [GIANT_SPIDER_RUN_AE68] = {272, 25, 5},  // LDA : ASL : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_AE81] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_AE83] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AE8D] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_AE8F] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A537] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A4F1] = {178, 14, 2},  // LDA : STA : LDA : STA : JSL
+    [GIANT_SPIDER_RUN_80E0] = {76, 4, 0},  // LDA : RTL
+    [GIANT_SPIDER_RUN_A4FF] = {12, 2, 0},  // BNE
+    [GIANT_SPIDER_RUN_A501] = {68, 6, 2},  // LDA : CMP : BEQ
+    [GIANT_SPIDER_RUN_A507] = {128, 12, 1},  // STA : ASL : TAX : LDA : JSR
+    [GIANT_SPIDER_RUN_A511] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A53A] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A4A0] = {40, 4, 1},  // LDA : BEQ
+    [GIANT_SPIDER_RUN_A4A4] = {62, 4, 1},  // DEC : BNE
+    [GIANT_SPIDER_RUN_A4A8] = {18, 3, 0},  // LDX
+    [GIANT_SPIDER_RUN_A4AB] = {168, 15, 1},  // LDY : LDA : AND : STA : DEX : DEX : BPL
+    [GIANT_SPIDER_RUN_A4BA] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_A4C4] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A4C5] = {40, 4, 1},  // BIT : BPL
+    [GIANT_SPIDER_RUN_A4C9] = {114, 11, 3},  // STZ : LDA : STA : LDA : BNE
+    [GIANT_SPIDER_RUN_A4D4] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_A4DE] = {18, 3, 0},  // LDX
+    [GIANT_SPIDER_RUN_A4E1] = {168, 15, 1},  // LDY : LDA : ORA : STA : DEX : DEX : BPL
+    [GIANT_SPIDER_RUN_A4F0] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A53D] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A540] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AE92] = {58, 6, 0},  // LDA : JSR
+    [GIANT_SPIDER_RUN_AE98] = {28, 2, 1},  // LDA
+    [GIANT_SPIDER_RUN_AE9E] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_AEA3] = {52, 5, 1},  // LDA : DEC : BMI
+    [GIANT_SPIDER_RUN_AEA8] = {64, 8, 1},  // STA : LDA : LDY
+    [GIANT_SPIDER_RUN_AEB4] = {110, 12, 0},  // LDA : DEC : STA : LDA
+    [GIANT_SPIDER_RUN_AEC4] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_AEC8] = {30, 5, 0},  // CMP : BCS
+    [GIANT_SPIDER_RUN_AECD] = {272, 25, 5},  // LDA : ASL : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_AEE6] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_AEE8] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AEF2] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_AEF4] = {68, 3, 1},  // STZ : RTS
+    [GIANT_SPIDER_RUN_AD46] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AD16] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A661] = {64, 8, 1},  // STZ : LDX : LDY
+    [GIANT_SPIDER_RUN_A669] = {100, 10, 1},  // STY : TXA : SEC : SBC : TAX : BPL
+    [GIANT_SPIDER_RUN_A673] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD19] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AC36] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_AC3F] = {930, 85, 7},  // LDX : STA : TAX : LDA : ASL : TAY : LDA : CLC : ADC : STA : STZ : LDA : CLC : ADC : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : DEC : DEC : STA : BPL
+    [GIANT_SPIDER_RUN_AC8C] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD1C] = {64, 8, 1},  // LDA : STA : LDA
+    [GIANT_SPIDER_RUN_AD28] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AD32] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD49] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AAD2] = {92, 10, 2},  // LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_AADC] = {62, 4, 1},  // DEC : BMI
+    [GIANT_SPIDER_RUN_AAE0] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AAE1] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_AAE5] = {88, 10, 1},  // AND : INC : ASL : STA : JMP
+    [GIANT_SPIDER_RUN_AAEF] = {160, 13, 3},  // STZ : LDA : STA : LDA : STA : RTS
+    [GIANT_SPIDER_RUN_AD4C] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AD4F] = {170, 10, 2},  // STZ : PEA : LDA : DEC : PHA : RTS
+    [GIANT_SPIDER_RUN_AD59] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AD60] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A541] = {62, 4, 1},  // DEC : BPL
+    [GIANT_SPIDER_RUN_A545] = {142, 12, 4},  // LDA : STA : LDA : INC : AND : STA
+    [GIANT_SPIDER_RUN_A551] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD63] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A580] = {40, 4, 1},  // LDA : BEQ
+    [GIANT_SPIDER_RUN_A584] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_A587] = {40, 4, 1},  // LDX : BEQ
+    [GIANT_SPIDER_RUN_A58B] = {62, 4, 1},  // DEC : BPL
+    [GIANT_SPIDER_RUN_A58F] = {80, 8, 2},  // LDX : LDA : BEQ
+    [GIANT_SPIDER_RUN_A595] = {258, 21, 4},  // STA : LDY : LDA : STA : LDA : CLC : ADC : STA : RTS
+    [GIANT_SPIDER_RUN_A5A7] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A5A8] = {68, 3, 1},  // STZ : RTS
+    [GIANT_SPIDER_RUN_A5AB] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_A5AF] = {164, 17, 1},  // AND : TAY : LDX : LDA : TAX : LDA : BEQ
+    [GIANT_SPIDER_RUN_A5BE] = {132, 13, 3},  // STX : LDA : STA : STZ : BRA
+    [GIANT_SPIDER_RUN_A5C9] = {40, 4, 1},  // LDX : BEQ
+    [GIANT_SPIDER_RUN_A5CD] = {12, 2, 0},  // BPL
+    [GIANT_SPIDER_RUN_A5CF] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_A5D2] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A5FD] = {168, 17, 1},  // LDY : LDA : STA : STA : LDA : LDY
+    [GIANT_SPIDER_RUN_A5DA] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A608] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_A612] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A5D5] = {30, 5, 0},  // LDA : BRA
+    [GIANT_SPIDER_RUN_A5DD] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_A5E0] = {92, 10, 1},  // STA : LDX : CPX : BNE
+    [GIANT_SPIDER_RUN_A5EA] = {58, 6, 1},  // SEC : SBC : STA
+    [GIANT_SPIDER_RUN_A5F0] = {154, 13, 4},  // STZ : LDA : DEC : DEC : STA : STZ : JMP
+    [GIANT_SPIDER_RUN_AD66] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A674] = {46, 5, 1},  // LDX : STX
+    [GIANT_SPIDER_RUN_A679] = {92, 9, 2},  // LDX : LDY : CPY : BEQ
+    [GIANT_SPIDER_RUN_A682] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_A685] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_A68F] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A690] = {74, 6, 2},  // LDX : LDA : BPL
+    [GIANT_SPIDER_RUN_A696] = {58, 5, 1},  // INC : STA : BMI
+    [GIANT_SPIDER_RUN_A69B] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_A6A0] = {60, 9, 0},  // EOR : INC : BIT : BEQ
+    [GIANT_SPIDER_RUN_A6A9] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_A6AC] = {244, 21, 0},  // LSR : TAX : LDA : STA : LDA : TAX : LDA : TAY : JSR
+    [GIANT_SPIDER_RUN_AA89] = {332, 36, 0},  // TXA : SEC : SBC : STA : CLC : ADC : STA : TYA : SEC : SBC : STA : CLC : ADC : STA : LDA : STA
+    [GIANT_SPIDER_RUN_AAB1] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A6BF] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_A6C2] = {58, 5, 1},  // DEC : STA : BMI
+    [GIANT_SPIDER_RUN_A6C7] = {264, 20, 2},  // LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : BRA
+    [GIANT_SPIDER_RUN_A6DB] = {168, 17, 1},  // LDA : STA : LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_A6EC] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A6ED] = {254, 21, 3},  // LDA : LSR : LSR : LSR : STA : LDA : LSR : LSR : LSR : STA : LDX : STX
+    [GIANT_SPIDER_RUN_A702] = {292, 26, 7},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDX : LDY
+    [GIANT_SPIDER_RUN_A71C] = {30, 5, 0},  // BIT : BEQ
+    [GIANT_SPIDER_RUN_A721] = {92, 10, 1},  // LDA : LDX : CPX : BEQ
+    [GIANT_SPIDER_RUN_A72B] = {30, 4, 0},  // CLC : ADC
+    [GIANT_SPIDER_RUN_A72F] = {104, 10, 2},  // TAX : LDA : LDX : LDY
+    [GIANT_SPIDER_RUN_A73B] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_A745] = {114, 9, 3},  // LDX : LDY : LDA : STY
+    [GIANT_SPIDER_RUN_A752] = {90, 3, 1},  // DEC : RTS
+    [GIANT_SPIDER_RUN_AD69] = {40, 4, 1},  // LDA : BEQ
+    [GIANT_SPIDER_RUN_AD6D] = {40, 4, 1},  // LDA : BEQ
+    [GIANT_SPIDER_RUN_AD71] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AD78] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_AD7A] = {58, 7, 1},  // LDX : LDA : BEQ
+    [GIANT_SPIDER_RUN_AD85] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_B109] = {46, 5, 1},  // LDX : STX
+    [GIANT_SPIDER_RUN_B10E] = {62, 4, 2},  // LDX : LDA
+    [GIANT_SPIDER_RUN_B116] = {92, 8, 2},  // LDA : DEC : DEC : STA : BPL
+    [GIANT_SPIDER_RUN_B11E] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AD88] = {110, 12, 0},  // SEC : LDA : SBC : STA : BMI
+    [GIANT_SPIDER_RUN_AD94] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AF53] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_AF58] = {236, 22, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_AF6E] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_AF70] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AF7A] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AF84] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AF8B] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AF95] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_AF9C] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_AFA6] = {104, 12, 1},  // LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_AFB2] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AFBC] = {110, 12, 0},  // LDA : INC : STA : LDA
+    [GIANT_SPIDER_RUN_AFCC] = {58, 7, 1},  // LDA : BIT : BNE
+    [GIANT_SPIDER_RUN_AFD3] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AFDD] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_AFDF] = {272, 25, 5},  // LDA : ASL : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_AFF8] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_AFFA] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B004] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B00E] = {62, 4, 1},  // DEC : BNE
+    [GIANT_SPIDER_RUN_B012] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_B017] = {236, 22, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_B02D] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_B02F] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B039] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_B043] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_B04A] = {176, 16, 4},  // LDA : STA : LDA : STA : LDA : CMP : BNE
+    [GIANT_SPIDER_RUN_B05A] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_B061] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B06B] = {12, 2, 0},  // BEQ
+    [GIANT_SPIDER_RUN_B06D] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_B06F] = {64, 8, 0},  // LDA : CMP : BCC
+    [GIANT_SPIDER_RUN_B077] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_B07E] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_B080] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B08A] = {12, 2, 0},  // BEQ
+    [GIANT_SPIDER_RUN_B08C] = {18, 3, 0},  // LDA
+    [GIANT_SPIDER_RUN_B093] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_8113] = {244, 30, 0},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : LDY
+    [GIANT_SPIDER_RUN_8135] = {42, 1, 0},  // RTL
+    [GIANT_SPIDER_RUN_B097] = {98, 10, 0},  // LDA : STA : JSR
+    [GIANT_SPIDER_RUN_B11F] = {64, 8, 0},  // LDA : CMP : BNE
+    [GIANT_SPIDER_RUN_B127] = {36, 6, 0},  // LDX : LDY
+    [GIANT_SPIDER_RUN_B131] = {48, 7, 0},  // INC : LDX : LDY
+    [GIANT_SPIDER_RUN_B13C] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_B0A1] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_B0AB] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AAFC] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [GIANT_SPIDER_RUN_A87B] = {28, 2, 1},  // STA
+    [GIANT_SPIDER_RUN_A881] = {40, 4, 1},  // CMP : BCS
+    [GIANT_SPIDER_RUN_A885] = {98, 10, 1},  // STA : LDY : CPY : BEQ
+    [GIANT_SPIDER_RUN_A88F] = {30, 5, 0},  // CPY : BEQ
+    [GIANT_SPIDER_RUN_A894] = {30, 5, 0},  // CPY : BEQ
+    [GIANT_SPIDER_RUN_A899] = {30, 5, 0},  // CPY : BEQ
+    [GIANT_SPIDER_RUN_A89E] = {12, 2, 0},  // BRA
+    [GIANT_SPIDER_RUN_A8A0] = {160, 11, 0},  // LDY : LDA : PHX : TAX : JSR
+    [GIANT_SPIDER_RUN_A8B5] = {160, 16, 1},  // STX : STY : LDX : LDA : CMP : BEQ
+    [GIANT_SPIDER_RUN_A8C5] = {66, 7, 0},  // TXA : ADC : ASL : ASL : TAX
+    [GIANT_SPIDER_RUN_A8CC] = {74, 7, 1},  // LDA : CMP : BEQ
+    [GIANT_SPIDER_RUN_A8D3] = {42, 5, 0},  // TXA : ADC : TAX
+    [GIANT_SPIDER_RUN_A8D8] = {94, 10, 0},  // LDA : AND : RTS
+    [GIANT_SPIDER_RUN_A8AB] = {102, 4, 1},  // PLX : LDY : RTS
+    [GIANT_SPIDER_RUN_A8AF] = {82, 6, 0},  // LDA : TAX : TAY : RTS
+    [GIANT_SPIDER_RUN_AB06] = {300, 27, 5},  // LDA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [GIANT_SPIDER_RUN_A8ED] = {46, 5, 1},  // LDA : STA
+    [GIANT_SPIDER_RUN_A8F2] = {300, 30, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : AND : BNE
+    [GIANT_SPIDER_RUN_A90C] = {96, 7, 2},  // LDX : LDY : JSR
+    [GIANT_SPIDER_RUN_A913] = {96, 7, 2},  // LDX : LDY : JSR
+    [GIANT_SPIDER_RUN_A91A] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_A91C] = {56, 4, 2},  // LDX : LDY
+    [GIANT_SPIDER_RUN_A924] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_A926] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_A930] = {158, 13, 5},  // LDA : STA : LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_A93D] = {422, 37, 6},  // LDX : LDY : TXA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : DEC : DEC : STA : BPL
+    [GIANT_SPIDER_RUN_A95E] = {238, 20, 2},  // LDA : ASL : CLC : ADC : TAX : LDA : LDY : STA : CLC : RTS
+    [GIANT_SPIDER_RUN_A96F] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AB1D] = {12, 2, 0},  // BCC
+    [GIANT_SPIDER_RUN_AB1F] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_AB22] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_AB26] = {30, 5, 0},  // CMP : BCC
+    [GIANT_SPIDER_RUN_AB2B] = {54, 4, 0},  // JSL
+    [GIANT_SPIDER_RUN_AB2F] = {30, 5, 0},  // CMP : BCC
+    [GIANT_SPIDER_RUN_AB34] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AB39] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_AB3C] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_AB3F] = {64, 8, 0},  // LDA : CMP : BCS
+    [GIANT_SPIDER_RUN_AB47] = {150, 16, 2},  // LDA : STA : LDA : STA : LDA : JSR
+    [GIANT_SPIDER_RUN_AB57] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A552] = {52, 5, 1},  // CLC : LDX : BEQ
+    [GIANT_SPIDER_RUN_A557] = {62, 4, 1},  // DEC : BPL
+    [GIANT_SPIDER_RUN_A55B] = {80, 8, 2},  // LDX : LDA : BEQ
+    [GIANT_SPIDER_RUN_A561] = {270, 22, 4},  // STA : LDY : LDA : STA : LDA : CLC : ADC : STA : SEC : RTS
+    [GIANT_SPIDER_RUN_A573] = {52, 2, 0},  // SEC : RTS
+    [GIANT_SPIDER_RUN_A575] = {80, 4, 1},  // STZ : CLC : RTS
+    [GIANT_SPIDER_RUN_A579] = {74, 7, 2},  // STA : STZ : JMP
+    [GIANT_SPIDER_RUN_AB58] = {40, 3, 0},  // JSR
+    [GIANT_SPIDER_RUN_AB5B] = {12, 2, 0},  // BCC
+    [GIANT_SPIDER_RUN_AB5D] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AB5E] = {64, 8, 0},  // LDA : CMP : BCS
+    [GIANT_SPIDER_RUN_AB66] = {82, 11, 0},  // LDX : LDA : CMP : BNE
+    [GIANT_SPIDER_RUN_AB71] = {18, 3, 0},  // LDX
+    [GIANT_SPIDER_RUN_AB74] = {28, 2, 1},  // STX
+    [GIANT_SPIDER_RUN_AB76] = {236, 22, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [GIANT_SPIDER_RUN_AB8C] = {12, 2, 0},  // BCS
+    [GIANT_SPIDER_RUN_AB8E] = {36, 6, 0},  // LDA : LDY
+    [GIANT_SPIDER_RUN_AB98] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [GIANT_SPIDER_RUN_ABA2] = {18, 3, 0},  // JMP
+    [GIANT_SPIDER_RUN_ABDB] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [GIANT_SPIDER_RUN_ABE5] = {30, 5, 0},  // CMP : BEQ
+    [GIANT_SPIDER_RUN_ABEA] = {198, 17, 2},  // DEC : DEC : AND : INC : STA : TYA : LSR : LSR : LSR : STA : JSR
+    [GIANT_SPIDER_RUN_ABFB] = {224, 23, 4},  // LDY : LDA : STA : LDA : STA : LDA : STA : LDA : STA
+    [GIANT_SPIDER_RUN_AC12] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AC13] = {80, 7, 2},  // LDA : DEC : STA : BMI
+    [GIANT_SPIDER_RUN_AC1A] = {30, 5, 0},  // BIT : BNE
+    [GIANT_SPIDER_RUN_AC1F] = {126, 11, 2},  // LDA : INC : AND : STA : JSR
+    [GIANT_SPIDER_RUN_AC2A] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_AC2B] = {104, 11, 1},  // LDY : LDA : STA : JMP
+    [GIANT_SPIDER_RUN_A79D] = {58, 7, 1},  // LDA : CMP : BCS
+    [GIANT_SPIDER_RUN_A7A4] = {18, 3, 0},  // LDX
+    [GIANT_SPIDER_RUN_A7A7] = {64, 7, 1},  // LDA : CMP : BEQ
+    [GIANT_SPIDER_RUN_A7AE] = {66, 8, 0},  // TXA : SEC : SBC : TAX : BPL
+    [GIANT_SPIDER_RUN_A7B6] = {40, 1, 0},  // RTS
+    [GIANT_SPIDER_RUN_A7B7] = {78, 3, 1},  // INC : PHX
+    [GIANT_SPIDER_RUN_A7BE] = {1154, 94, 12},  // PLX : STA : PHA : LDA : STA : LDA : ASL : ASL : ASL : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : PLY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : ORA : STA : RTS
+    [GIANT_SPIDER_RUN_TAKEN] = {6, 0, 0},
+    [GIANT_SPIDER_RUN_RNG_ONCE] = {338, 31, 0},
+    [GIANT_SPIDER_RUN_RNG_TWICE] = {372, 34, 0},
+};
+
+// The table with the wide test's blocks in, and the same with an idle more on
+// each direct-page instruction for a page off its boundary.
+static const CosimRun* giant_spider_costs(bool unaligned) {
+  static CosimRun aligned[GIANT_SPIDER_RUN_COUNT], skewed[GIANT_SPIDER_RUN_COUNT];
+  static bool made;
+  if (!made) {
+    for (int i = 0; i < GIANT_SPIDER_RUN_COUNT; i++) aligned[i] = GIANT_SPIDER_RUN_COST[i];
+    for (int i = 0; i < WIDE_BLOCK_COUNT; i++) {
+      aligned[GIANT_SPIDER_RUN_WIDE + i] = WIDE_COST[i];
+      aligned[GIANT_SPIDER_RUN_WIDE + i].dp = 0;
+    }
+    for (int i = 0; i < GIANT_SPIDER_RUN_COUNT; i++) {
+      skewed[i] = aligned[i];
+      skewed[i].cycles += 6 * aligned[i].dp;
+    }
+    made = true;
+  }
+  return unaligned ? skewed : aligned;
+}
+
+static void shim_giant_spider(Wram* w, const Rom* rom, const CosimRegs* in,
+                        CosimRegs* out) {
+  PortCpu c;
+  GiantSpiderWork k;
+  giant_spider_work_init(&k);
+  cpu_from(in, &c);
+  giant_spider_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (k.v_unknown) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+  cosim_hw(&k.trace, giant_spider_costs((in->d & 0x00ffu) != 0), fetch_fast(in));
+}
+
+// A stretch that would go back to an address the thread does not know, or
+// write where it should not, is turned down, which only running it can tell.
+static bool guard_giant_spider(Wram* scratch, const Rom* rom, const CosimRegs* in) {
+  PortCpu c;
+  GiantSpiderWork k;
+  giant_spider_work_init(&k);
+  cpu_from(in, &c);
+  giant_spider_run(scratch, rom, &c, &k);
+  return !k.lost && !k.trace.full;
+}
+
+// Its own data bank.
+static bool accepts_giant_spider(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == GIANT_SPIDER_BANK;
+}
+
+static const uint32_t GIANT_SPIDER_EXIT_PCS[] = {
+#define X(pc) pc,
+    GIANT_SPIDER_EXITS(X)
+#undef X
+};
 
 // ---------------------------------------------------------------------------
 // The spray of the extinguisher and the flamethrower -- see `port/spray.h`
@@ -36310,6 +36745,18 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 900,
     },
+    {
+        .name = "boss_bg_tiles_job",
+        .symbol = "$82:8259",
+        .entry = BOSS_BG_TILES_JOB_PC,
+        .ret_op = BOSS_BG_TILES_JOB_RTL_PC,  // the other returns alike
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_bg_tiles_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 1000,
+    },
     // The Snakeoid's death's mosaic, and its end: the saucer's jobs, byte for
     // byte.
     {
@@ -37045,6 +37492,72 @@ static const CosimRoutine ROUTINES[] = {
         .hw = true,
         .cycles = 98,
         .stack_bytes = 3,
+    },
+    // The giant spider, from when a player comes near. See `port/giant_spider.h`.
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "giant_spider_" #name_,                                            \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_giant_spider,                                                  \
+        .accepts = accepts_giant_spider,                                           \
+        .supported = guard_giant_spider,                                           \
+        COSIM_EXITS(GIANT_SPIDER_EXIT_PCS),                                        \
+        .uncalled = true,                                                    \
+        .hw = true,                                                          \
+        .cycles = 300,                                                       \
+        /* Four `JSR`s deep, a `PHX`, the wide test's two pushes, and the */ \
+        /* call's three bytes. */                                            \
+        .stack_bytes = 16,                                                   \
+    },
+    GIANT_SPIDER_ENTRIES(X)
+#undef X
+    {
+        .name = "spider_collide",
+        .symbol = "$83:B525",
+        .entry = SPIDER_COLLIDE_ENTRY,
+        .ret_op = 0x83b52b,  // the refusal's `CLC : RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_spider_collide,
+        // The freezes, which `enemy_freeze` does not price; the mean of
+        // 2,018 calls on `spider48_shot`.
+        .cycles = 135,
+        .stack_bytes = 0,  // a survivor leaves through `$81:8506`
+    },
+    {
+        .name = "giant_spider_collide",
+        .symbol = "$83:B13D",
+        .entry = GIANT_SPIDER_COLLIDE_ENTRY,
+        .ret_op = 0x83b157,  // the refusals' `CLC : RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_giant_spider_collide,
+        .cycles = 300,
+        .stack_bytes = 5,  // `JSR $AAE1` and its `JSL rng_next`
+    },
+    // Its mosaic, the saucer's jobs to the byte.
+    {
+        .name = "giant_spider_mosaic_job",
+        .symbol = "$83:B0EC",
+        .entry = GIANT_SPIDER_MOSAIC_JOB_PC,
+        .ret_op = GIANT_SPIDER_MOSAIC_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 220,
+    },
+    {
+        .name = "giant_spider_mosaic_off_job",
+        .symbol = "$83:B100",
+        .entry = GIANT_SPIDER_MOSAIC_OFF_JOB_PC,
+        .ret_op = GIANT_SPIDER_MOSAIC_OFF_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_off_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 120,
     },
     // The spray of the extinguisher and the flamethrower. See
     // `port/spray.h`.

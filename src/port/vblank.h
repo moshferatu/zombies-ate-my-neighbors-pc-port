@@ -141,6 +141,9 @@ enum {
   CL_STEP,      // REP #$20 to `STA $1E56 : BEQ`: both moved on
   CL_TAIL,      // SEC : RTL, or CLC : RTL
 
+  // $82:8259 boss_bg_tiles_job: `boss_bg_clear_job`'s blocks but this
+  UP_STEP,      // REP #$20 to `STA $1E56 : BEQ`: the source moved on too
+
   VBL_BLOCK_COUNT
 };
 
@@ -283,6 +286,16 @@ void snakeoid_shake_job(Wram* w, PortCpu* c, HwTrace* t);
 #define BOSS_BG_CLEAR_STEP 0x0400u
 #define W_BOSS_BG_CLEAR_SENT 0x005cu
 void boss_bg_clear_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:8259 boss_bg_tiles_job -------------------------------------------------
+//
+// The same with a source that moves: a big figure's tiles sent from the
+// cartridge, a kilobyte a vblank, by DMA mode 1. The giant spider queues it for
+// its tiles, `$2800` bytes from `$92:A800` to VRAM `$5000`
+// (`port/giant_spider.h`), and its spider form after it does the same.
+#define BOSS_BG_TILES_JOB_PC 0x828259u
+#define BOSS_BG_TILES_JOB_RTL_PC 0x8282b2u  // of two: the other is at `$82B4`
+void boss_bg_tiles_job(Wram* w, PortCpu* c, HwTrace* t);
 
 // --- $80:9C63 and $80:9C7D: the screen's brightness, a step a vblank ----------
 //

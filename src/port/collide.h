@@ -239,6 +239,32 @@ typedef enum {
   HP_FRANKENSTEIN_DIED,      // $81:A5D8, health under nought
   HP_FRANKENSTEIN_NO_DAMAGE, // ...none taken
   HP_FRANKENSTEIN_SURVIVED,  // ...or some, and to the `JML $81:8506`
+  HP_GIANT_SPIDER_SELF_OFF,        // $83:B13D, its record wearing nothing
+  HP_GIANT_SPIDER_SELF_SHOT,       // ...wearing id 9
+  HP_GIANT_SPIDER_FLASHING,        // ...flashing
+  HP_GIANT_SPIDER_IGNORE,          // ...an id below a shot's
+  HP_GIANT_SPIDER_60_5D,           // ...$60, answered as $5D
+  HP_GIANT_SPIDER_60_5C,           // ...or as $5C, on the eighth tick
+  HP_GIANT_SPIDER_70_5D,           // ...$70, the same
+  HP_GIANT_SPIDER_70_5C,
+  HP_GIANT_SPIDER_6F_5D,           // ...$6F, as $5D
+  HP_GIANT_SPIDER_6F_63,           // ...or $63
+  HP_GIANT_SPIDER_6F_5C,           // ...or $5C
+  HP_GIANT_SPIDER_61,              // ...$61, as $5C
+  HP_GIANT_SPIDER_62,              // ...$62, as $5C
+  HP_GIANT_SPIDER_OTHER,           // ...any other, as itself
+  HP_GIANT_SPIDER_STUNG,           // $83:B1A0, its damage counted
+  HP_GIANT_SPIDER_TURNS_ONCE,      // ...and at 5 a new way, `rng_next` once
+  HP_GIANT_SPIDER_TURNS_TWICE,     // ...or twice
+  HP_GIANT_SPIDER_DIED,            // $83:B1B9, health under nought
+  HP_GIANT_SPIDER_NO_DAMAGE,       // ...none taken
+  HP_GIANT_SPIDER_SURVIVED,        // ...or some
+  HP_SPIDER_IGNORE,          // $83:B525, an id below a shot's
+  HP_SPIDER_FIVE_E,          // ...$5E, and it is dead
+  HP_SPIDER_HIT,             // ...any other but $5D, its damage taken off
+  HP_SPIDER_DIED,            // ...health under nought
+  HP_SPIDER_NO_DAMAGE,       // ...none taken
+  HP_SPIDER_SURVIVED,        // ...or some, and to the `JML $81:8506`
   HP_DEEP,
   HANDLER_PIECE_COUNT,
 } HandlerPiece;
@@ -2423,6 +2449,24 @@ bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 #define FRANKENSTEIN_ID_61_AS 0x0070
 #define FRANKENSTEIN_ID_70 0x0070     // answered as `$63`
 #define FRANKENSTEIN_ID_70_AS 0x0063
+// --- $83:B525  spider_collide — a spider, level 17's and the giant one's ---
+//
+// Its thread (`port/spider.h`) sets it as it begins, at `$83:B397`. Below a
+// shot's id it takes nothing. `$5E` kills it outright, `$5D` freezes it
+// (`enemy_freeze`), and anything else takes the damage table's word off its
+// health at `$22`: under nought it is dead, `DEC $20`; nothing taken, nothing
+// done; and otherwise the health is kept and it reacts as an enemy does
+// (`enemy_survived_react`). What hit it is kept at `$24` first.
+#define SPIDER_COLLIDE_ENTRY 0x83b525u
+#define SPIDER_DP_FATE_WORD 0x20
+#define SPIDER_DP_HEALTH 0x22
+#define SPIDER_DP_HIT_ID 0x24
+#define SPIDER_ID_DEAD 0x005e
+#define SPIDER_ID_FROZEN 0x005d
+
+bool spider_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                    ActorHandlerRegs* r, HandlerPieces* pieces);
+
 bool frankenstein_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                      ActorHandlerRegs* r, HandlerPieces* pieces);
 

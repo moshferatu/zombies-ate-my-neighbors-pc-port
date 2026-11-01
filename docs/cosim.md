@@ -19935,3 +19935,22 @@ pages are half of them not on a page's boundary, so the shim prices those
 with an idle more on each direct-page instruction. Over `level48-cast.zmv`
 every row is exact: nothing kept, the count by one digit, two and three,
 999, both pads' Start, and the storm lit and not.
+
+**The giant spider.** `$83:AD36` is ported as `port/giant_spider.h`. Its
+stretches hand over a trace of runs only, since it writes no register, and
+every row is `hw`. Its runs are `price_runs.py`'s, the four that read a
+mouth's or a part's script through a pointer told where it points with
+`--ind`. Three calls are made in the stretches and priced there: `rng_next`
+at its own two prices, `$82:80E0` as a run, and the wide test at
+`$83:A97C`, the Snakeoid's `$82:A214` to the byte, by `WIDE_COST`'s blocks,
+with nothing owed for an unaligned page because it makes its own page zero.
+Its overflow after the wide test is not known and not compared. Its handler
+and the small spiders' are pieces, in `thread_call_cycles` and on rows of
+their own. A freeze of a small spider goes to `enemy_freeze` and is not
+priced, as Frankenstein's is not. Over the six `spider*` sessions every row
+is exact, the two handlers to the refresh, and nothing diverges. Untaken:
+the picture mirrored (`$50` is only ever cleared), something not a player
+near (`actor_nearest` only answers players), no web slot free with fewer
+than three out (the two cannot disagree), no room for the sparkle or for
+what comes after on 48, a hit of `$6F`, a probe stopped by the map's edge,
+the last picture not up, and a small spider surviving a hit.

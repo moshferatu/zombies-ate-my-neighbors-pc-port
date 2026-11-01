@@ -8,7 +8,10 @@
 //   $83:B299  frame   the state body, then the picture
 //
 // What is not here is the thread's setup and its death. Nothing in a pass
-// sleeps, so every pass in a state it knows is the port's.
+// sleeps, so every pass in a state it knows is the port's. Its handler,
+// `$83:B525`, is `spider_collide` in `port/collide.h`. The giant spider
+// (`port/giant_spider.h`) begins these too, two or three at a time and five
+// as it dies.
 //
 // ## What a spider does
 //

@@ -19,6 +19,9 @@
 #include "port/rng.h"
 #include "port/score.h"
 #include "port/thread.h"
+// For `giant_spider_collide`, the giant spider's handler, which lives with its
+// thread because half of it is the thread's own `$83:AAE1`.
+#include "port/giant_spider.h"
 
 // `src/cheats.h`. Both false unless a frontend sets them.
 PortCheats port_cheats;
@@ -1578,6 +1581,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = actor_a638_collide(w, dp, arg, &r);
   } else if (entry == FRANKENSTEIN_COLLIDE_ENTRY) {
     served = frankenstein_collide(w, rom, dp, arg, &r, &work->pieces);
+  } else if (entry == SPIDER_COLLIDE_ENTRY) {
+    served = spider_collide(w, rom, dp, arg, &r, &work->pieces);
+  } else if (entry == GIANT_SPIDER_COLLIDE_ENTRY) {
+    served = giant_spider_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == ACTOR_84AC_COLLIDE_ENTRY) {
     served = actor_84ac_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == ENEMY_B95F_COLLIDE_ENTRY) {
@@ -3778,6 +3785,80 @@ bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg,
   r->z = false;
   r->c = false;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// $83:B525  spider_collide
+// ---------------------------------------------------------------------------
+
+bool spider_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                    ActorHandlerRegs* r, HandlerPieces* pieces) {
+  r->a = arg;
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `CMP #$005C : BCS`, then `CLC : RTL`.
+    PORT_COVER(spider_hit_ignore);
+    piece(pieces, HP_SPIDER_IGNORE);
+    r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$83:B52C  STA $24 : AND #$7FFF`.
+  wram_w16(w, (uint32_t)dp + SPIDER_DP_HIT_ID, arg);
+  const uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+  if (id == SPIDER_ID_DEAD) {
+    // `BEQ $B55A  DEC $20 : SEC : RTL`.
+    PORT_COVER(spider_hit_dead);
+    piece(pieces, HP_SPIDER_FIVE_E);
+    const uint16_t fate =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + SPIDER_DP_FATE_WORD) - 1);
+    wram_w16(w, (uint32_t)dp + SPIDER_DP_FATE_WORD, fate);
+    r->n = (fate & 0x8000) != 0;
+    r->z = fate == 0;
+    r->c = true;
+    return true;
+  }
+  if (id == SPIDER_ID_FROZEN) {
+    PORT_COVER(spider_hit_freeze);  // `JML $81:847E`
+    piece(pieces, HP_DEEP);
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `SEC : SBC #$005C : ASL : TAX`, then `SEC : LDA $22 : SBC $818561,X`.
+  piece(pieces, HP_SPIDER_HIT);
+  const uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  r->x = index;
+  const uint16_t health = wram_r16(w, (uint32_t)dp + SPIDER_DP_HEALTH);
+  const uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->a = left;
+  if (left & 0x8000) {
+    PORT_COVER(spider_hit_died);
+    piece(pieces, HP_SPIDER_DIED);
+    const uint16_t fate =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + SPIDER_DP_FATE_WORD) - 1);
+    wram_w16(w, (uint32_t)dp + SPIDER_DP_FATE_WORD, fate);
+    r->n = (fate & 0x8000) != 0;
+    r->z = fate == 0;
+    r->c = true;
+    return true;
+  }
+  if (left == health) {
+    // `CMP $22 : BEQ $B55C  SEC : RTL`.
+    PORT_COVER(spider_hit_no_damage);
+    piece(pieces, HP_SPIDER_NO_DAMAGE);
+    r->n = false;
+    r->z = true;
+    r->c = true;
+    return true;
+  }
+  // `STA $22 : JML $81:8506`.
+  PORT_COVER(spider_hit_survived);
+  piece(pieces, HP_SPIDER_SURVIVED);
+  wram_w16(w, (uint32_t)dp + SPIDER_DP_HEALTH, left);
+  return survived_in_pieces(w, dp, r, pieces);
 }
 
 // ---------------------------------------------------------------------------

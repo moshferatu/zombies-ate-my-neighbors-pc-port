@@ -713,6 +713,25 @@ the vblank handler reads the pads every frame. The survey's `cast48`,
 each, as it did not under `level21-exit.zmv`. `$82:E019`, after the storm's
 loop, is not ported: nothing goes there.
 
+**The giant spider, 2026-11-01.** `$83:AD36` is ported: `port/giant_spider.h`.
+It is the boss of levels 36 and 48, a red spider on the big figures' layer,
+and `$83:AD36` is where its thread goes on once a player has come within
+250 of its point. It comes up out of the floor under the first layer's
+mosaic, then goes about on six records, lays small spiders, and webs a
+player: three webs that fly and spread, and leave web tiles on the floor.
+It has six lives and dies in puffs and flashes. On level 36 it leaves a
+gold sparkle; on level 48 it begins `$83:C687`, what comes after it, which
+is the next stop: a second boss of about 4 KB. It is written as blocks, as
+the cast is, and makes three calls itself: the draws, whether the last
+picture is up, and its wide test, which is the Snakeoid's. Its handler,
+`$83:B13D`, is called from `thread_call_handler` and priced in pieces; so is
+the small spiders' handler, `$83:B525`, which no session had reached before
+the giant spider began them, and the game stopped on it next. Its tiles go
+up by a job of their own, `boss_bg_tiles_job` (`$82:8259`), and its two
+mosaic jobs are the saucer's to the byte. It took the registry past 2048,
+so `COSIM_MAX_ROUTINES` is 4096. The survey's six `spider*` sessions run it,
+from the player poked beside its point to its death on both levels.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

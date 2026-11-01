@@ -638,6 +638,56 @@ void boss_bg_clear_job(Wram* w, PortCpu* c, HwTrace* t) {
   hw_run(t, CL_TAIL);
 }
 
+void boss_bg_tiles_job(Wram* w, PortCpu* c, HwTrace* t) {
+  hw_run(t, VS_VMAIN);
+  lda8(c, 0x80);
+  hw_w8(t, 0x2115, 0x80);
+  rep30(c);
+  hw_run(t, CL_MODE);
+  hw_w16(t, 0x4300, 0x1801);
+  const uint16_t from = wram_r16(w, W_BOSS_BG_ONE_SRC);
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x4302, from);
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x4304, wram_r16(w, W_BOSS_BG_ONE_BANK));
+
+  const uint16_t left = wram_r16(w, W_BOSS_BG_ONE_BYTES);
+  hw_run(t, CL_TEST);
+  cmp16(c, BOSS_BG_CLEAR_STEP, left);
+  uint16_t sent = BOSS_BG_CLEAR_STEP;
+  if (left > BOSS_BG_CLEAR_STEP) {
+    hw_run(t, VBL_TAKEN);
+  } else {
+    hw_run(t, CL_LEFT);
+    sent = left;
+  }
+  wram_w16(w, W_BOSS_BG_CLEAR_SENT, sent);
+  hw_run(t, CL_SIZE);
+  hw_w16(t, 0x4305, sent);
+  const uint16_t at = wram_r16(w, W_BOSS_BG_ONE_VRAM);
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x2116, at);
+  dma_go(c, t);
+
+  // The source in bytes and VRAM's address in words. Neither carry goes
+  // anywhere: each `ADC` has a `CLC` before it.
+  wram_w16(w, W_BOSS_BG_ONE_SRC, (uint16_t)(from + sent));
+  wram_w16(w, W_BOSS_BG_ONE_VRAM, (uint16_t)(at + (sent >> 1)));
+  set_c(c, true);
+  lda16(c, sbc16(c, left, sent));
+  wram_w16(w, W_BOSS_BG_ONE_BYTES, c->a);
+  hw_run(t, UP_STEP);
+  if (c->a == 0) {
+    PORT_COVER(boss_bg_tiles_sent);
+    hw_run(t, VBL_TAKEN);
+    set_c(c, false);
+  } else {
+    PORT_COVER(boss_bg_tiles_sending);
+    set_c(c, true);
+  }
+  hw_run(t, CL_TAIL);
+}
+
 bool brightness_up_job(Wram* w, PortCpu* c) {
   c->a = (uint16_t)(wram_r16(w, W_BRIGHTNESS_SHADOW) + 1);
   wram_w16(w, W_BRIGHTNESS_SHADOW, c->a);

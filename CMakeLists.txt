@@ -411,6 +411,7 @@ add_library(zamn_port STATIC
   src/port/frankenstein.c
   src/port/level_end.c
   src/port/cast.c
+  src/port/giant_spider.c
   src/port/spray.c
   src/port/thrown.c
   src/port/tentacle.c

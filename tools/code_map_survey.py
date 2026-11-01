@@ -42,6 +42,12 @@ movie reaches, by a `--poke`:
     (`level48-cast.zmv`): once with no kills, left by the second pad's Start;
     once with three kinds' kills poked, counted up and left by the first
     pad's; and once with more than 999 zombies, which shows 999.
+  * the giant spider of levels 36 and 48 (`port/giant_spider.h`), with the
+    player poked beside its point: going about, laying spiders and webbing
+    for 9000 frames; shot by each of thirteen weapons held in turn, on its
+    fifth life, until it dies; blinking first with a player too far, its
+    puffs with no room; and its lives and death poked on both levels, paid
+    and not, with the wait for fewer than 18 records on level 48.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -251,6 +257,42 @@ def sessions():
                         '--poke', '1500:1F6A=0065']))
     out.append(('cast48_most', 'level48-cast.zmv', 5000,
                 cast + ['--poke', '1500:1F64=0400']))
+    # ...and, the same day, the giant spider (`$83:AD36`), with the player
+    # poked beside the point it waits at on each level. Its page is `$0500`
+    # on level 48 and `$0700` on level 36: `$14` its lives, `$52` broken and
+    # `$5A` what hit it.
+    near48 = ['--level', '48', '--poke', '1800+:1CB8=000A',
+              '--poke', '1800:130=00D2', '--poke', '1800:132=0180']
+    near36 = ['--level', '36', '--poke', '1800+:1CB8=000A',
+              '--poke', '1800:130=0118', '--poke', '1800:132=00F0']
+    out.append(('spider48', 'level1.zmv', 9000, near48))
+    armed = []
+    for i in range(13):
+        frame = 2100 + 450 * i
+        armed += ['--poke', '%d+:1CBC=%04X' % (frame, i),
+                  '--poke', '%d+:%04X=0099' % (frame, 0x1CCC + 2 * i)]
+    out.append(('spider48_shot', 'hold-y.zmv', 8200,
+                near48 + ['--poke', '2100+:130=00D2', '--poke', '2100+:132=0110',
+                          '--poke', '3000:0514=0000'] + armed))
+    out.append(('spider48_blink', 'level1.zmv', 3200,
+                ['--level', '48', '--poke', '1800+:1CB8=000A',
+                 '--poke', '1800-2300:130=00D2', '--poke', '1800-2300:132=0110',
+                 '--poke', '1800-2300:1F52=0000', '--poke', '2301:132=0180',
+                 '--poke', '2300-2500:00DE=00F0']))
+    out.append(('spider48_killed', 'level1.zmv', 5000,
+                near48 + ['--poke', '2300:0552=FFFF', '--poke', '2400-2700:0006=000F',
+                          '--poke', '2500:0514=0000', '--poke', '2500:0552=FFFF',
+                          '--poke', '2700:0514=FFFE', '--poke', '2700:0552=FFFF',
+                          '--poke', '2700:055A=005C',
+                          '--poke', '2850-3000:0006=0012']))
+    out.append(('spider36_killed', 'level1.zmv', 3600,
+                near36 + ['--poke', '2300:0752=FFFF',
+                          '--poke', '2500:0714=0000', '--poke', '2500:0752=FFFF',
+                          '--poke', '2700:0714=FFFE', '--poke', '2700:0752=FFFF']))
+    out.append(('spider36_blink', 'level1.zmv', 3000,
+                ['--level', '36', '--poke', '1800+:1CB8=000A',
+                 '--poke', '1800-2300:130=0118', '--poke', '1800-2300:132=0060',
+                 '--poke', '1800+:1F52=0003', '--poke', '2301:132=00F0']))
     return out
 
 

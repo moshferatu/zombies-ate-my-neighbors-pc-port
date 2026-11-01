@@ -460,6 +460,8 @@
   X(snakeoid_shake_job, "snakeoid_shake_job", "the ground and the Snakeoid's layer, a few lines down") \
   X(boss_bg_clearing, "boss_bg_clear_job",  "a kilobyte of the big figures' layer blanked, more to do") \
   X(boss_bg_cleared,  "boss_bg_clear_job",  "...and the last of it") \
+  X(boss_bg_tiles_sending, "boss_bg_tiles_job", "a kilobyte of a big figure's tiles sent, more to do") \
+  X(boss_bg_tiles_sent, "boss_bg_tiles_job", "...and the last of them") \
   X(brightness_up,    "brightness_up_job",  "a step brighter, and more to go") \
   X(brightness_full,  "brightness_up_job",  "...and the fifteenth") \
   X(brightness_down,  "brightness_down_job","a step darker") \
@@ -1912,6 +1914,101 @@
   X(cast_storm_lit, "cast_storm_lights", "...the screen lit") \
   X(cast_storm_unlit, "cast_storm_lights", "...or not") \
   X(cast_storm_job, "cast_storm_job", "...the job that sends its colour") \
+  X(giant_spider_wakes, "giant_spider", "the giant spider: a player came near, and it comes up") \
+  X(giant_spider_tiles_wait, "giant_spider", "...its tiles still going up: a tick more") \
+  X(giant_spider_tiles_sent, "giant_spider", "...its tiles up, and where it is") \
+  X(giant_spider_record_made, "giant_spider", "...its record, blinking at the point") \
+  X(giant_spider_seen, "giant_spider", "...a player within 65: its cries") \
+  X(giant_spider_blinks, "giant_spider", "...nobody yet: its picture, five ticks") \
+  X(giant_spider_blink_heard, "giant_spider", "...and every 45th, a sound") \
+  X(giant_spider_quiet, "giant_spider", "$83:AF43: `$1F52` is not 3, no sound") \
+  X(giant_spider_heard, "giant_spider", "...it is 3: sound $27") \
+  X(giant_spider_picture_mirrored, "giant_spider", "$83:A448: the picture mirrored, `$50` negative") \
+  X(giant_spider_picture_flips, "giant_spider", "...put up by `boss_bg_queue_flip`") \
+  X(giant_spider_picture_shown, "giant_spider", "...or by `boss_bg_queue`") \
+  X(giant_spider_rise_turn, "giant_spider", "risen: the next of two pictures") \
+  X(giant_spider_rise_no_puff, "giant_spider", "a mosaic step with no puff, by the draw") \
+  X(giant_spider_rise_puff, "giant_spider", "...or a puff about it") \
+  X(giant_spider_rise_no_room, "giant_spider", "...and no room for its thread") \
+  X(giant_spider_parts_made, "giant_spider", "its six parts made") \
+  X(giant_spider_waits, "giant_spider", "$83:AADC: waiting a frame more") \
+  X(giant_spider_chooses, "giant_spider", "$83:AAE1: a way chosen at random") \
+  X(giant_spider_next_picture, "giant_spider", "$83:A541: the next of its four pictures") \
+  X(giant_spider_plays_ends, "giant_spider", "$83:A580: a part's little script at its end") \
+  X(giant_spider_plays, "giant_spider", "...its next picture") \
+  X(giant_spider_plays_gone, "giant_spider", "...a part with no picture: none begun") \
+  X(giant_spider_plays_begins, "giant_spider", "...one begun") \
+  X(giant_spider_last_life, "giant_spider", "broken with no part left: its last life") \
+  X(giant_spider_life_lost, "giant_spider", "...or a part goes") \
+  X(giant_spider_dies, "giant_spider", "...or none left at all: it dies") \
+  X(giant_spider_life_36, "giant_spider", "...ten less health on level 36") \
+  X(giant_spider_web_spread, "giant_spider", "$83:A690: a shot done bursting: its tiles") \
+  X(giant_spider_web_spreads, "giant_spider", "...bursting: a picture and a box told") \
+  X(giant_spider_web_lands, "giant_spider", "...flown its way: its burst begun") \
+  X(giant_spider_web_flies, "giant_spider", "...flying") \
+  X(giant_spider_tile_bare, "giant_spider", "a tile about a burst that cannot break") \
+  X(giant_spider_tile_webbed, "giant_spider", "...or one that does") \
+  X(giant_spider_webs_wait, "giant_spider", "broken, it waits for its shots") \
+  X(giant_spider_dead, "giant_spider", "dead") \
+  X(giant_spider_unpaid, "giant_spider", "...with nobody to pay") \
+  X(giant_spider_death_no_room, "giant_spider", "its death: no room for a thread") \
+  X(giant_spider_death_puff, "giant_spider", "...a puff, the mosaic coarser") \
+  X(giant_spider_death_flash, "giant_spider", "...a flash") \
+  X(giant_spider_leaves_48, "giant_spider", "on level 48: what comes after it") \
+  X(giant_spider_leaves_36, "giant_spider", "on level 36: a gold sparkle") \
+  X(giant_spider_sparkle_again, "giant_spider", "...no room: tried again") \
+  X(giant_spider_after_waits, "giant_spider", "...18 records about: a wait") \
+  X(giant_spider_after_again, "giant_spider", "...no room: tried again") \
+  X(giant_spider_tile_36, "giant_spider", "$83:B11F: the tile put down, level 36") \
+  X(giant_spider_ends, "giant_spider", "its thread ends") \
+  X(giant_spider_picture_waits, "giant_spider", "$83:A4F1: the last picture not up yet") \
+  X(giant_spider_picture_put, "giant_spider", "...a new one put up") \
+  X(giant_spider_flashing, "giant_spider", "$83:A4A0: flashing, a frame more") \
+  X(giant_spider_unflash, "giant_spider", "...the flash over") \
+  X(giant_spider_flash, "giant_spider", "...hit: a flash begun") \
+  X(giant_spider_flash_last, "giant_spider", "...on its last life, its colours too") \
+  X(giant_spider_nobody_near, "giant_spider", "$83:A87B: nobody within reach") \
+  X(giant_spider_player_near, "giant_spider", "...a player") \
+  X(giant_spider_other_near, "giant_spider", "...something else") \
+  X(giant_spider_probe_told, "giant_spider", "$83:A8ED: a box told at a probe") \
+  X(giant_spider_probe_wide, "giant_spider", "...its wide test stops it") \
+  X(giant_spider_probe_ground, "giant_spider", "...the ground stops it") \
+  X(giant_spider_steps, "giant_spider", "...it steps, and its parts with it") \
+  X(giant_spider_stopped, "giant_spider", "$83:AAFC: stopped, a new way") \
+  X(giant_spider_to_spiders, "giant_spider", "...by the draw, to its spiders") \
+  X(giant_spider_to_webs, "giant_spider", "...by the draw, to spit") \
+  X(giant_spider_goes_on, "giant_spider", "...or on its way") \
+  X(giant_spider_no_spiders, "giant_spider", "$83:AB3F: fifteen records about, no spiders") \
+  X(giant_spider_script_begins, "giant_spider", "$83:A552: the mouth's script begun") \
+  X(giant_spider_script_ends, "giant_spider", "...at its end") \
+  X(giant_spider_script_plays, "giant_spider", "...its next picture") \
+  X(giant_spider_spiders_no_room, "giant_spider", "$83:AB58: no room left for spiders") \
+  X(giant_spider_spiders_36, "giant_spider", "...one on level 36") \
+  X(giant_spider_spider_no_room, "giant_spider", "...no room for one") \
+  X(giant_spider_spider, "giant_spider", "...a spider begun") \
+  X(giant_spider_no_webs, "giant_spider", "$83:ABDB: no player near: no spit") \
+  X(giant_spider_webs, "giant_spider", "...it spits") \
+  X(giant_spider_webs_done, "giant_spider", "$83:AC13: done spitting") \
+  X(giant_spider_webs_again, "giant_spider", "...the next shot, the next way round") \
+  X(giant_spider_webs_full, "giant_spider", "$83:A79D: three shots out already") \
+  X(giant_spider_webs_none_free, "giant_spider", "...no slot free") \
+  X(giant_spider_web, "giant_spider", "...a shot") \
+  X(giant_spider_hit_self, "giant_spider_collide", "its handler: the part touched wears id 0 or 9") \
+  X(giant_spider_hit_flashing, "giant_spider_collide", "...flashing: no hit") \
+  X(giant_spider_hit_ignore, "giant_spider_collide", "...an id below a player's shot's") \
+  X(giant_spider_hit_tossed, "giant_spider_collide", "...$60 or $70, by the tick") \
+  X(giant_spider_hit_6f, "giant_spider_collide", "...$6F, by the tick") \
+  X(giant_spider_hit_as_5c, "giant_spider_collide", "...$61 or $62, as $5C") \
+  X(giant_spider_hit_turns, "giant_spider_collide", "...stung enough to turn") \
+  X(giant_spider_hit_broken, "giant_spider_collide", "...its health under nought") \
+  X(giant_spider_hit_no_damage, "giant_spider_collide", "...a hit that cost nothing") \
+  X(giant_spider_hit_hurt, "giant_spider_collide", "...a hit") \
+  X(spider_hit_ignore, "spider_collide", "a spider touched by an id below a shot's") \
+  X(spider_hit_dead, "spider_collide", "...$5E: dead") \
+  X(spider_hit_freeze, "spider_collide", "...$5D, into $81:847E") \
+  X(spider_hit_died, "spider_collide", "...its health under nought") \
+  X(spider_hit_no_damage, "spider_collide", "...a hit that cost nothing") \
+  X(spider_hit_survived, "spider_collide", "...a hit, and into $81:8506") \
   X(level_end_lit, "level_end_fading_in", "the screen faded in") \
   X(level_end_saved_cut, "level_end_fading_in", "the two saved more than ten: one fewer each") \
   X(level_end_saved_shown, "level_end_ticked", "a neighbour saved shown") \
