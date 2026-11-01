@@ -622,7 +622,17 @@ uint16_t text_map_job(const Wram* w, HwTrace* t);
   /* `$82:BA4F`, the top scores' */ \
   X(82ba5c, "$82:BA5C", 0x82ba5cu, 0x82ba65u, 0, -1, 0x0083, 0xf18c, 0x0100) \
   X(82ba69, "$82:BA69", 0x82ba69u, 0x82ba76u, 0, 0x0096, 0x9683, 0x4000, 0x1620) \
-  X(82ba7a, "$82:BA7A", 0x82ba7au, 0x82ba7bu, 1, -1, -1, -1, -1)
+  X(82ba7a, "$82:BA7A", 0x82ba7au, 0x82ba7bu, 1, -1, -1, -1, -1) \
+  /* `$82:ACF0`, the big letters' pictures, which the cast after level 48 \
+     calls with the main thread's data bank, where `port/level_card.h`'s own \
+     stretches here do not run; then `$82:AD1F`, the monsters' colours and \
+     pictures. Each ends on its `RTL`. */ \
+  X(82acfd, "$82:ACFD", 0x82acfdu, 0x82ad0au, 0, 0xcf80, 0x0092, 0x007e, 0x8000) \
+  X(82ad0e, "$82:AD0E", 0x82ad0eu, 0x82ad19u, 1, 0x007e, 0x8000, 0x2000, -1) \
+  X(82ad1d, "$82:AD1D", 0x82ad1du, 0x82ad1eu, 1, -1, -1, -1, -1) \
+  X(82ad1f, "$82:AD1F", 0x82ad1fu, 0x82ad2cu, 0, 0x0010, 0x0083, 0xf1ac, 0x0020) \
+  X(82ad30, "$82:AD30", 0x82ad30u, 0x82ad3eu, 1, 0x0096, 0x9683, 0x4000, 0x1620) \
+  X(82ad42, "$82:AD42", 0x82ad42u, 0x82ad43u, 1, -1, -1, -1, -1)
 
 typedef struct {
   uint32_t pc, exit;

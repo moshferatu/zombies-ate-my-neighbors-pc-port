@@ -56,6 +56,7 @@
 #include "port/snakeoid.h"
 #include "port/frankenstein.h"
 #include "port/level_end.h"
+#include "port/cast.h"
 #include "port/spray.h"
 #include "port/thrown.h"
 #include "port/neighbours.h"
@@ -7188,10 +7189,13 @@ static bool accepts_body_list(const Wram* w, const CosimRegs* in) {
 }
 
 // `$81:832C`: the list in the cartridge, all of the pair it is on, through a
-// bank that shows low WRAM as well, where the sprite's record is.
+// bank that shows low WRAM as well, where the sprite's record is. That is
+// `$80-$BF`, or `$00-$3F`, which the cast after level 48 calls it with: the
+// main thread's. The list's bytes are priced by the bank they are read
+// through (`body_cycles`).
 static bool pictures_ok(const Wram* w, const CosimRegs* in, uint16_t list,
                         uint16_t y) {
-  return body_ok(in) && in->db >= 0x80 && in->db < 0xc0 && list >= 0x8000 &&
+  return body_ok(in) && (in->db & 0x40) == 0 && list >= 0x8000 &&
          (uint32_t)list + y + 3 <= 0xffffu &&
          wram_r16(w, (uint16_t)(in->d + PICTURES_DP_SPRITE)) <= 0x1ff6u;
 }
@@ -26184,6 +26188,250 @@ static const uint32_t LEVEL_END_EXIT_PCS[] = {
 };
 
 // ---------------------------------------------------------------------------
+// The cast after level 48 -- see `port/cast.h`
+// ---------------------------------------------------------------------------
+//
+// Every stretch hands over its trace, the runs it took, a taken branch at 6
+// more, and its register writes, so every row is `hw`. A run that ends on a
+// store to a register is priced to the store's write, which the trace makes:
+// 6 less for a byte, 12 for a word. The rest are `tools/price_runs.py`'s, and
+// the ones that begin with an 8-bit accumulator are `tools/cycles816.py
+// --m=1`'s. The screen runs with the main thread's data bank, `$00`, so the
+// four runs that read its tables read the cartridge at 8 a byte, whatever
+// `$420D` says: those are `--db=00`'s.
+static const CosimRun CAST_RUN_COST[CAST_RUN_COUNT] = {
+    [CAST_RUN_8BBB] = {86, 9, 0},  // LDA : ORA : STA
+    [CAST_RUN_8BD5] = {54, 4, 0},  // JSL
+    [CAST_RUN_ACF0] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8BE5] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8BF3] = {40, 3, 0},  // JSR
+    [CAST_RUN_8D28] = {542, 51, 1},  // STA : LDA : STA : ... : LDA : TAY
+    [CAST_RUN_8D5F] = {40, 1, 0},  // RTS
+    [CAST_RUN_8BF6] = {40, 3, 0},  // JSR
+    [CAST_RUN_8D10] = {48, 7, 0},  // SEP : LDA : STA $212C, to the write
+    [CAST_RUN_8D17] = {54, 8, 0},  // REP : LDA : LDX
+    [CAST_RUN_8D23] = {40, 1, 0},  // RTS
+    [CAST_RUN_8BF9] = {40, 3, 0},  // JSR
+    [CAST_RUN_8CCD] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8CD7] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8CE1] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8CEB] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8CF5] = {36, 6, 0},  // LDA : LDY
+    [CAST_RUN_8CFF] = {104, 12, 0},  // STZ : STZ : LDA : LDY
+    [CAST_RUN_8D0F] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C00] = {40, 3, 0},  // JSR
+    [CAST_RUN_8C04] = {46, 5, 1},  // LDA : STA
+    [CAST_RUN_8C09] = {40, 3, 0},  // JSR
+    [CAST_RUN_8E29] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8E36] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C0C] = {40, 3, 0},  // JSR
+    [CAST_RUN_8E06] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8E13] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C0F] = {40, 3, 0},  // JSR
+    [CAST_RUN_8DEA] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8DF7] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C12] = {126, 11, 1},  // LDX : STZ : STZ : LDA
+    [CAST_RUN_8C21] = {264, 21, 2},  // LDA : ASL : ASL : TAX : LDY : LDA : STA : LDA : STA : BEQ
+    [CAST_RUN_8C36] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C3D] = {40, 3, 0},  // JSR
+    [CAST_RUN_8E14] = {18, 3, 0},  // LDA
+    [CAST_RUN_8E1B] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8E28] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C40] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C47] = {40, 3, 0},  // JSR
+    [CAST_RUN_8DF8] = {54, 9, 0},  // LDA : LDX : LDY
+    [CAST_RUN_8E05] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C4A] = {224, 18, 2},  // LDA : INC : ASL : TAX : LDA : TAX : LDA : CMP : BCC
+    [CAST_RUN_8C5C] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C5F] = {56, 4, 2},  // STA : STZ
+    [CAST_RUN_8C63] = {104, 11, 1},  // LDA : LDX : LDY : JSR
+    [CAST_RUN_8D60] = {670, 42, 10},  // PHA : LDA : XBA : STA : ... : PLA : CMP : BCC
+    [CAST_RUN_8D8A] = {30, 5, 0},  // CMP : BCC
+    [CAST_RUN_8D8F] = {18, 3, 0},  // STA $4204, to its writes
+    [CAST_RUN_8D92] = {48, 7, 0},  // SEP : LDA : STA $4206, to the write
+    [CAST_RUN_8D99] = {282, 22, 2},  // NOP x6 : REP : LDA : CLC : ADC : STA : INC : LDA
+    [CAST_RUN_8DAF] = {18, 3, 0},  // STA $4204, to its writes
+    [CAST_RUN_8DB2] = {48, 7, 0},  // SEP : LDA : STA $4206, to the write
+    [CAST_RUN_8DB9] = {282, 22, 2},  // NOP x6 : REP : LDA : CLC : ADC : STA : INC : LDA
+    [CAST_RUN_8DCF] = {256, 22, 3},  // CLC : ADC : STA : INC : LDA : STA : LDA : LDX : LDY
+    [CAST_RUN_8DE9] = {40, 1, 0},  // RTS
+    [CAST_RUN_8C6E] = {68, 6, 2},  // LDA : CMP : BCS
+    [CAST_RUN_8C74] = {68, 5, 1},  // INC : LDA
+    [CAST_RUN_8C7D] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C84] = {12, 2, 0},  // BRA
+    [CAST_RUN_8C86] = {40, 3, 0},  // JSR
+    [CAST_RUN_8E37] = {18, 3, 0},  // LDA
+    [CAST_RUN_8E3E] = {128, 11, 1},  // LDA : DEC : ASL : ASL : TAX : LDA : BEQ
+    [CAST_RUN_8E49] = {68, 5, 1},  // LDY : STA
+    [CAST_RUN_8E4E] = {40, 3, 0},  // LDA
+    [CAST_RUN_8E55] = {148, 9, 1},  // LDX : STZ : STZ : RTS
+    [CAST_RUN_8C89] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C90] = {18, 3, 0},  // JMP
+    [CAST_RUN_8C93] = {18, 3, 0},  // LDA
+    [CAST_RUN_8C9A] = {64, 8, 0},  // LDA : CMP : BEQ
+    [CAST_RUN_8CA2] = {64, 8, 0},  // LDA : CMP : BNE
+    [CAST_RUN_8CAE] = {48, 7, 0},  // SEP : LDA : STA $2125, to the write
+    [CAST_RUN_8CB5] = {30, 5, 0},  // LDA : STA $2130, to the write
+    [CAST_RUN_8CBA] = {30, 5, 0},  // LDA : STA $2131, to the write
+    [CAST_RUN_8CBF] = {30, 5, 0},  // LDA : STA $2132, to the write
+    [CAST_RUN_8CC4] = {44, 6, 0},  // STZ $1370 : STZ $2132, to the write
+    [CAST_RUN_8CCA] = {58, 3, 0},  // REP : RTS
+    [CAST_RUN_A2AB] = {68, 5, 0},  // DEC : BPL
+    [CAST_RUN_A2B0] = {172, 17, 0},  // LDA : STA : INC : LDA : CMP : BCC
+    [CAST_RUN_A2C1] = {52, 6, 0},  // LDA : STA
+    [CAST_RUN_A2C7] = {184, 22, 0},  // ASL : TAX : LDA : PHA : LDA : CLC : ADC : TAX : LDA : LDY
+    [CAST_RUN_A2DF] = {46, 2, 0},  // PLA : SEC
+    [CAST_RUN_A2E0] = {12, 1, 0},  // SEC
+    [CAST_RUN_TAKEN] = {6, 0, 0},
+};
+
+static const CosimRun CAST_STORM_RUN_COST[CAST_STORM_RUN_COUNT] = {
+    [CAST_STORM_RUN_DF6F] = {18, 3, 0},  // AND
+    [CAST_STORM_RUN_DF7A] = {28, 2, 1},  // STA
+    [CAST_STORM_RUN_DF7C] = {28, 2, 1},  // LDY
+    [CAST_STORM_RUN_DF82] = {30, 5, 0},  // CMP : BCC
+    [CAST_STORM_RUN_DF87] = {30, 5, 0},  // CMP : BCS
+    [CAST_STORM_RUN_DF8C] = {12, 2, 0},  // BRA
+    [CAST_STORM_RUN_DF8E] = {98, 9, 0},  // STA : LDA : STA
+    [CAST_STORM_RUN_DF9B] = {30, 5, 0},  // CMP : BCS
+    [CAST_STORM_RUN_DFA0] = {288, 27, 0},  // STA : LDA : STA : ... : LDA : STA
+    [CAST_STORM_RUN_DFBF] = {246, 26, 0},  // AND : ASL : TAX : LDA : STA : LDA : ORA : STA : LDA : TAY
+    [CAST_STORM_RUN_DFDB] = {18, 3, 0},  // LDA
+    [CAST_STORM_RUN_DFE2] = {18, 3, 0},  // LDA
+    [CAST_STORM_RUN_DFE9] = {86, 8, 1},  // LDX : LDA : STA
+    [CAST_STORM_RUN_DFF5] = {30, 5, 0},  // AND : BEQ
+    [CAST_STORM_RUN_DFFA] = {40, 3, 0},  // JSR
+    [CAST_STORM_RUN_DFFD] = {12, 2, 0},  // BRA
+    [CAST_STORM_RUN_DFFF] = {18, 3, 0},  // LDA
+    [CAST_STORM_RUN_E006] = {108, 8, 1},  // LDX : STZ : STZ
+    [CAST_STORM_RUN_E016] = {18, 3, 0},  // JMP
+    [CAST_STORM_RUN_E01F] = {48, 7, 0},  // SEP : LDA : STA $2130, to the write
+    [CAST_STORM_RUN_E026] = {30, 5, 0},  // LDA : STA $2131, to the write
+    [CAST_STORM_RUN_E02B] = {144, 19, 0},  // LDA : STA : REP : LDA : STA : LDA : LDY
+    [CAST_STORM_RUN_E042] = {18, 3, 0},  // LDA
+    [CAST_STORM_RUN_E049] = {18, 3, 0},  // LDA
+    [CAST_STORM_RUN_E050] = {70, 9, 0},  // STZ : LDA : LDY
+    [CAST_STORM_RUN_E05D] = {48, 7, 0},  // SEP : LDA : STA $2125, to the write
+    [CAST_STORM_RUN_E064] = {30, 5, 0},  // LDA : STA $2130, to the write
+    [CAST_STORM_RUN_E069] = {30, 5, 0},  // LDA : STA $2131, to the write
+    [CAST_STORM_RUN_E06E] = {30, 5, 0},  // LDA : STA $2132, to the write
+    [CAST_STORM_RUN_E073] = {58, 3, 0},  // REP : RTS
+    [CAST_STORM_RUN_E076] = {62, 8, 0},  // SEP : LDA : STA $2132, to the write
+    [CAST_STORM_RUN_E07E] = {30, 3, 0},  // REP : CLC
+    [CAST_STORM_RUN_TAKEN] = {6, 0, 0},
+};
+
+// A thread's page that is not on a page's boundary costs an idle more on
+// every direct-page instruction, and half of them are not: the same tables
+// with that in.
+static const CosimRun* cast_costs(const CosimRun* aligned, CosimRun* unaligned,
+                                  int n, bool* made, uint16_t d) {
+  if ((d & 0x00ffu) == 0) return aligned;
+  if (!*made) {
+    for (int i = 0; i < n; i++) {
+      unaligned[i] = aligned[i];
+      unaligned[i].cycles += 6 * aligned[i].dp;
+    }
+    *made = true;
+  }
+  return unaligned;
+}
+
+static void cast_shim(Wram* w, const Rom* rom, const CosimRegs* in,
+                      CosimRegs* out, bool storm) {
+  static CosimRun screen_unaligned[CAST_RUN_COUNT];
+  static CosimRun storm_unaligned[CAST_STORM_RUN_COUNT];
+  static bool screen_made, storm_made;
+  PortCpu c;
+  CastWork k;
+  cast_work_init(&k);
+  cpu_from(in, &c);
+  const CosimRun* costs;
+  if (storm) {
+    cast_storm_run(w, rom, &c, &k);
+    costs = cast_costs(CAST_STORM_RUN_COST, storm_unaligned,
+                       CAST_STORM_RUN_COUNT, &storm_made, in->d);
+  } else {
+    cast_run(w, rom, &c, &k);
+    costs = cast_costs(CAST_RUN_COST, screen_unaligned, CAST_RUN_COUNT,
+                       &screen_made, in->d);
+  }
+  cpu_to(&c, out);
+  cosim_hw(&k.trace, costs, fetch_fast(in));
+}
+
+static void shim_cast(Wram* w, const Rom* rom, const CosimRegs* in,
+                      CosimRegs* out) {
+  cast_shim(w, rom, in, out, false);
+}
+
+static void shim_cast_storm(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  cast_shim(w, rom, in, out, true);
+}
+
+// A stretch that would go back to an address the screen does not know is
+// turned down, which only running it can tell.
+static bool guard_cast(Wram* scratch, const Rom* rom, const CosimRegs* in) {
+  PortCpu c;
+  CastWork k;
+  cast_work_init(&k);
+  cpu_from(in, &c);
+  cast_run(scratch, rom, &c, &k);
+  return !k.lost && !k.trace.full;
+}
+
+static bool guard_cast_storm(Wram* scratch, const Rom* rom,
+                             const CosimRegs* in) {
+  PortCpu c;
+  CastWork k;
+  cast_work_init(&k);
+  cpu_from(in, &c);
+  cast_storm_run(scratch, rom, &c, &k);
+  return !k.lost && !k.trace.full;
+}
+
+// The main thread's page and data bank, and a storm thread's.
+static bool accepts_cast(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == CAST_DATA_BANK;
+}
+
+static bool accepts_cast_storm(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == CAST_STORM_BANK;
+}
+
+// The colours' job reads its table through the data bank.
+static bool accepts_cast_job(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && in->db == CAST_BANK && low_stack(in);
+}
+
+static bool accepts_cast_storm_job(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && low_stack(in);
+}
+
+static const uint32_t CAST_EXIT_PCS[] = {
+#define X(pc) pc,
+    CAST_EXITS(X)
+#undef X
+};
+
+static const uint32_t CAST_JOB_EXIT_PCS[] = {
+#define X(pc) pc,
+    CAST_JOB_EXITS(X)
+#undef X
+};
+
+static const uint32_t CAST_STORM_EXIT_PCS[] = {
+#define X(pc) pc,
+    CAST_STORM_EXITS(X)
+#undef X
+};
+
+static const uint32_t CAST_STORM_JOB_EXITS[] = {CAST_STORM_JOB_RTL_PC};
+
+// ---------------------------------------------------------------------------
 // The spray of the extinguisher and the flamethrower -- see `port/spray.h`
 // ---------------------------------------------------------------------------
 //
@@ -36734,6 +36982,70 @@ static const CosimRoutine ROUTINES[] = {
     },
     LEVEL_END_ENTRIES(X)
 #undef X
+    // The cast after level 48, its colours' job, and the storm behind it.
+    // See `port/cast.h`.
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "cast_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_cast,                                                    \
+        .accepts = accepts_cast,                                             \
+        .supported = guard_cast,                                             \
+        COSIM_EXITS(CAST_EXIT_PCS),                                          \
+        .uncalled = true,                                                    \
+        .hw = true,                                                          \
+        .cycles = 200,                                                       \
+        /* Two of its own `JSR`s, a `PHA`, and the call's three bytes. */    \
+        .stack_bytes = 12,                                                   \
+    },
+    CAST_ENTRIES(X)
+#undef X
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "cast_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_cast,                                                    \
+        .accepts = accepts_cast_job,                                         \
+        .supported = guard_cast,                                             \
+        COSIM_EXITS(CAST_JOB_EXIT_PCS),                                      \
+        .uncalled = true,                                                    \
+        .hw = true,                                                          \
+        .cycles = 120,                                                       \
+        .stack_bytes = 5,  /* the word it gives the send, and the call */    \
+    },
+    CAST_JOB_ENTRIES(X)
+#undef X
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "cast_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_cast_storm,                                              \
+        .accepts = accepts_cast_storm,                                       \
+        .supported = guard_cast_storm,                                       \
+        COSIM_EXITS(CAST_STORM_EXIT_PCS),                                    \
+        .uncalled = true,                                                    \
+        .hw = true,                                                          \
+        .cycles = 100,                                                       \
+        .stack_bytes = 5,  /* its `JSR`, and the call */                     \
+    },
+    CAST_STORM_ENTRIES(X)
+#undef X
+    {
+        .name = "cast_storm_job",
+        .symbol = "$82:E076",
+        .entry = CAST_STORM_JOB_PC,
+        .run = shim_cast_storm,
+        .accepts = accepts_cast_storm_job,
+        .supported = guard_cast_storm,
+        COSIM_EXITS(CAST_STORM_JOB_EXITS),
+        .uncalled = true,
+        .hw = true,
+        .cycles = 98,
+        .stack_bytes = 3,
+    },
     // The spray of the extinguisher and the flamethrower. See
     // `port/spray.h`.
 #define SPRAY_ROW(name_, sym, pc, exits_, mean)                              \

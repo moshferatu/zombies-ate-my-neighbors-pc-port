@@ -1887,6 +1887,31 @@
   X(frankenstein_thing_moved, "frankenstein_woke", "a thing moved") \
   X(frankenstein_dies, "frankenstein_woke", "its handler said it died: its things' lives ended") \
   X(frankenstein_died, "frankenstein_dies_woke", "none of its things out: to be paid for") \
+  X(cast_begins, "cast_begins", "the cast after level 48: the screen off") \
+  X(cast_record_made, "cast_record_made", "...its record, in the middle") \
+  X(cast_storm_asked, "cast_record_handled", "...the storm's threads begun") \
+  X(cast_faded_in, "cast_faded_in", "...faded in, and the roll call") \
+  X(cast_turn, "cast_blank_waited", "a kind of monster shown") \
+  X(cast_last_turn, "cast_blank_waited", "...or the eighteen done") \
+  X(cast_count_most, "cast_sign_written", "more than 999 of a kind killed: 999") \
+  X(cast_count_digit, "cast_sign_written", "a count of one digit written") \
+  X(cast_count_digits, "cast_count_waited", "...of two") \
+  X(cast_count_hundreds, "cast_count_waited", "...of three") \
+  X(cast_counted, "cast_count_written", "the count a step up") \
+  X(cast_end_bank, "cast_end_heard", "a kind's last pictures in a bank of their own") \
+  X(cast_end_same_bank, "cast_end_heard", "...or in the bank of its first") \
+  X(cast_waits, "cast_start_waited", "waiting for Start") \
+  X(cast_start_a, "cast_start_waited", "the first player's Start") \
+  X(cast_start_b, "cast_start_waited", "...or the second's") \
+  X(cast_ends, "cast_faded_out", "faded out: the colour maths put back") \
+  X(cast_colours_wait, "cast_colours_job", "the colours' job: a frame nearer the next set") \
+  X(cast_colours_turn, "cast_colours_job", "...the next set sent") \
+  X(cast_colours_wrap, "cast_colours_job", "...the first again, after the sixth") \
+  X(cast_storm_across_again, "cast_storm_across", "the storm: a place in the middle, drawn again") \
+  X(cast_storm_down_again, "cast_storm_down", "...too far down, drawn again") \
+  X(cast_storm_lit, "cast_storm_lights", "...the screen lit") \
+  X(cast_storm_unlit, "cast_storm_lights", "...or not") \
+  X(cast_storm_job, "cast_storm_job", "...the job that sends its colour") \
   X(level_end_lit, "level_end_fading_in", "the screen faded in") \
   X(level_end_saved_cut, "level_end_fading_in", "the two saved more than ten: one fewer each") \
   X(level_end_saved_shown, "level_end_ticked", "a neighbour saved shown") \

@@ -19920,3 +19920,18 @@ tracer's before the door. So the survey's `level1_door` and `credits_door`
 end level 1 by `--poke`, and the game does reach the door in those. Both
 rows are exact on the door, the credits (level 49) and level 48. Level 48
 goes on to `$80:8BBB`, its ending, which is not ported.
+
+**The cast.** `$80:8BBB` is ported as `port/cast.h`, with the colours' job
+at `$80:A2AB` and the storm at `$82:DF6B` with its job. Every stretch hands
+over a trace and every row is `hw`. Its runs are `price_runs.py`'s, but for
+three kinds: a run that ends on a store to a register is priced to the
+write, which the trace makes; one that begins with an 8-bit accumulator is
+`cycles816.py --m=1`'s, which the tool cannot be told through
+`price_runs.py`; and the four that read the screen's tables are `--db=00`'s,
+because the main thread's data bank is `$00`, the cartridge at 8 a byte. The
+divider's results are computed, not read: `verify` keeps no register reads
+but the APU's and the NMI's, and the writes are in the trace. The storm's
+pages are half of them not on a page's boundary, so the shim prices those
+with an idle more on each direct-page instruction. Over `level48-cast.zmv`
+every row is exact: nothing kept, the count by one digit, two and three,
+999, both pads' Start, and the storm lit and not.

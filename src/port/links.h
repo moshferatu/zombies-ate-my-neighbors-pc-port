@@ -248,6 +248,17 @@
   X(8085cf, "$80:85CF", 0x8085cfu) /* JSL $80:88A9 */ \
   X(8085dd, "$80:85DD", 0x8085ddu) /* JSL $80:C049 */ \
   X(80c049, "$80:C049", 0x80c049u) /* JSR $80:B9C7 */ \
+  X(808bc5, "$80:8BC5", 0x808bc5u) /* JSL apu_fixed_2, the cast's first */ \
+  X(808bc9, "$80:8BC9", 0x808bc9u) /* JSL sched_tables_clear */ \
+  X(808bcd, "$80:8BCD", 0x808bcdu) /* JSL actor_slots_clear */ \
+  X(808bd1, "$80:8BD1", 0x808bd1u) /* JSL frontend_vram_clear_ask */ \
+  X(808bd9, "$80:8BD9", 0x808bd9u) /* JSL $82:AD1F, the monsters' pictures */ \
+  X(808bdd, "$80:8BDD", 0x808bddu) /* JSL text_map_clear */ \
+  X(808be1, "$80:8BE1", 0x808be1u) /* JSL words_layer_setup */ \
+  X(808bef, "$80:8BEF", 0x808befu) /* JSL $80:C049 */ \
+  X(82df6b, "$82:DF6B", 0x82df6bu) /* JSL rng, the storm's start */ \
+  X(82df76, "$82:DF76", 0x82df76u) /* JSL actor_slot_alloc */ \
+  X(82e012, "$82:E012", 0x82e012u) /* JSL thread_yield */ \
   X(808632, "$80:8632", 0x808632u) /* JSL $80:9F9D */ \
   X(809128, "$80:9128", 0x809128u) /* JSL $80:88A9 */ \
   X(8183c3, "$81:83C3", 0x8183c3u) /* RTL */ \

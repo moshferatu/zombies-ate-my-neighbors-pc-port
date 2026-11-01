@@ -698,6 +698,21 @@ by `--poke`, and the game reaches the door in those. The ending after level
 48, `$80:8BBB`, is the next stop on that path, and is not ported. The step's
 wrap past the count of records is unreached, since 49 never steps.
 
+**The cast after level 48, 2026-11-01.** That stop is ported: `port/cast.h`.
+The screen parades the eighteen kinds of monster and counts up how many of
+each were killed, over a storm of five threads, and waits for Start. It is
+written as blocks, as the screen after a level is, with a trace of its runs
+and register writes, so every row is `hw`. The two sets of pictures it sends
+first are `port/dma.h`'s table of sends, four rows of which share their
+entries with the screen before a level's own stretches: those want bank
+`$82` and this calls them with the main thread's, `$00`. `pictures_play`
+now takes a list through `$00-$3F` as well. `level48-cast.zmv` is level 1's
+door with two presses of Start after it, because a press cannot be poked:
+the vblank handler reads the pads every frame. The survey's `cast48`,
+`cast48_kills` and `cast48_most` run it, and the game reaches the cast in
+each, as it did not under `level21-exit.zmv`. `$82:E019`, after the storm's
+loop, is not ported: nothing goes there.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

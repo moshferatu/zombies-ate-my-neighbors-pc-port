@@ -38,6 +38,10 @@ movie reaches, by a `--poke`:
     (`fire-walk.zmv`); the trampoline's other bounce (`trampoline.zmv`); weapon
     5's kick into the pool (`kick-pool.zmv`); a sparkle on level 48
     (`level48-sparkle.zmv`); and the monster pushing a hedge (`monster-wall.zmv`).
+  * the cast after level 48, from level 1's door with `$1E7C` poked
+    (`level48-cast.zmv`): once with no kills, left by the second pad's Start;
+    once with three kinds' kills poked, counted up and left by the first
+    pad's; and once with more than 999 zombies, which shows 999.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -238,6 +242,15 @@ def sessions():
     out.append(('level1_door', 'level1.zmv', 3600, LEVEL1_DOOR))
     out.append(('credits_door', 'level1.zmv', 6000,
                 LEVEL1_DOOR + ['--poke', '1500:1E7C=0031']))
+    # ...and, 2026-11-01, the cast after level 48 (`$80:8BBB`), from the same
+    # door.
+    cast = LEVEL1_DOOR + ['--poke', '1500:1E7C=0030']
+    out.append(('cast48', 'level48-cast.zmv', 8200, cast))
+    out.append(('cast48_kills', 'level48-cast.zmv', 9200,
+                cast + ['--poke', '1500:1F64=0005', '--poke', '1500:1F66=000C',
+                        '--poke', '1500:1F6A=0065']))
+    out.append(('cast48_most', 'level48-cast.zmv', 5000,
+                cast + ['--poke', '1500:1F64=0400']))
     return out
 
 
