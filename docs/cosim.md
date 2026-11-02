@@ -19955,6 +19955,17 @@ than three out (the two cannot disagree), no room for the sparkle or for
 what comes after on 48, a hit of `$6F`, a probe stopped by the map's edge,
 the last picture not up, and a small spider surviving a hit.
 
+That last line missed one. In `spider48_shot` a small spider is frozen
+twice, and the two rows of what a frozen creature runs, `ts_freeze_begin`
+at `$81:84D6` and `ts_freeze_pass`, turned all 122 of their calls down:
+the thread stretches take only their own data bank, and the frozen thread
+is the small spider's, with bank `$83`. A decline is not a divergence, so
+the session read clean; the game, which has no 65816 to decline to,
+stopped there. Both rows now take any bank that sees low WRAM, which is all
+the freeze reads through it, as the survivor's flash already did, and their
+2 and 120 calls are exact. The bubble's rows keep the narrower test: no
+handler on a thread of bank `$83` sends `$5E` to `$81:83C6`.
+
 **Dr. Tongue.** `$83:C687` and its shot's thread, `$83:CA4A`, are ported as
 `port/dr_tongue.h`, one block machine for both. Its blocks, runs, entries and
 exits were generated from the listing by a script and written over by hand,

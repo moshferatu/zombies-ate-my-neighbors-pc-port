@@ -752,6 +752,31 @@ both call, with link rows for the call after a sleep and for the `RTL` after
 its job is asked for. With it level 48 plays through to the end with
 nothing for a 65816 to run. The survey's seven `tongue48*` sessions run it.
 
+**The map again, 2026-11-02.** Over the survey's 168 sessions the game's
+run stopped once, in `spider48_shot`, at `$81:84D6`: a small spider frozen
+by the ice weapon. `freeze_begin` and `freeze_pass` are ported, but their
+rows took only a data bank of `$81`, and a frozen creature runs on its own
+thread, whose bank for the spiders is `$83`. The freeze reads nothing but
+low WRAM through it, so both now take any bank that sees low WRAM, and
+match the ROM on every call. With that the 65816 runs nothing in any of the
+168. The map, all exits assumed:
+
+| | Bytes | Never run in a session |
+|---|---|---|
+| Core: reached, and in no port's stretch | 1,306 | 190 |
+| Guarded: run only when a guard turns a call down | 1,070 | 223 |
+| Ported: inside a port's stretch | 79,326 | 2,866 |
+| Data | 32,897 | |
+| Touched by nothing | 16,473 | |
+
+With only the exits the game saw taken, the core is 1,287 bytes, 180 of
+them never run. The largest piece of that, 88 bytes at `$80:FF6E`, is the
+bank's `$FF` fill, walked into from an orphan; the next, 61 at `$80:DB96`,
+is the wanderer's handler, which is ported and is core only by a chain of
+exits no session took. Most of the guarded code is the level-end bonuses'
+handlers, which the 65816 would run only if `level_end_ticked` turned one
+down, and it has a port for every one in the table.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

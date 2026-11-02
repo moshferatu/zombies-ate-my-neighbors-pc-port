@@ -10133,10 +10133,12 @@ static int thread_stretch_cycles(const ThreadStretchWork* k,
 
 // The weed, the follower and the martian read their tables and the level's
 // load through the data bank, which has to be their own. The main thread
-// reads low WRAM through it.
+// reads low WRAM through it, and so does a frozen creature, which runs on
+// whatever thread was frozen: the giant spider's has bank `$83`.
 static bool thread_stretch_bank_ok(const CosimRegs* in) {
   const uint8_t bank = (uint8_t)(in->pc >> 16);
-  if (bank == 0x80) return bank_sees_low_wram(in->db);
+  if (bank == 0x80 || in->pc == FREEZE_BEGIN_PC || in->pc == FREEZE_PASS_PC)
+    return bank_sees_low_wram(in->db);
   return in->db == bank;
 }
 
