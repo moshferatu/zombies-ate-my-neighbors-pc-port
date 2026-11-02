@@ -12,6 +12,7 @@
 //   $80:A27D  turn_seven   colours 97-103, after 1 to 8 ticks drawn at random
 //   $80:A106  pulse        colour 90's green goes up and comes down, every 4
 //   $80:A180  figure       the big figure's row steps through ten arrangements
+//   $80:A379  head         Dr. Tongue's head's colours, eight arrangements
 //
 // And each thread's start, which runs once. The pulse's is a thread
 // stretch: see `port/thread_stretches.h`. The others:
@@ -21,6 +22,7 @@
 //   $80:A264  pulled off the stack eight bits wide. Then the first sleep:
 //             five ticks, or for the seven a draw
 //   $80:A137  the figure's, at its first row, and its first waking at once
+//   $80:A36E  the head's: its step cleared, and the first sleep, ten ticks
 //
 // ## Turning
 //
@@ -46,6 +48,13 @@
 // A table in the cartridge, `$80:A182`, of ten rows of eight words: how long
 // to sleep, and then for seven of the row's colours which of the level's
 // sixteen to show there. The first colour of the row is never written.
+//
+// ## The head
+//
+// Dr. Tongue's head begins it as it is made (`port/dr_tongue.h`). Every ten
+// ticks four of the background's colours, 120, 121, 123 and 124, are shown
+// as the next of eight arrangements of the level's own: `$80:A3C1`, four
+// words a row, each the place of a colour of the level's to show.
 //
 // ## Its contract with the ROM
 //
@@ -108,6 +117,15 @@ extern const PalcycleTurn PALCYCLE_TURN_SEVEN;
 #define PALCYCLE_FIGURE_DP_ROW_AT 0x04  // the row's place in the table
 #define PALCYCLE_FIGURE_DP_COLOUR 0x06  // the colour being written
 
+#define PALCYCLE_HEAD_BEGIN_PC 0x80a36eu
+#define PALCYCLE_HEAD_PC 0x80a379u
+#define PALCYCLE_HEAD_YIELD_PC 0x80a375u
+#define PALCYCLE_HEAD_TABLE 0x80a3c1u
+#define PALCYCLE_HEAD_ROWS 8
+#define PALCYCLE_HEAD_TICKS 0x000a
+#define PALCYCLE_HEAD_DP_CLEARED 0x02  // cleared as it begins, and not read
+#define PALCYCLE_HEAD_DP_ROW 0x06
+
 // The job every one of them asks for, `$80:A09E`, on queue A.
 #define PALCYCLE_JOB 0xa09eu
 #define PALCYCLE_JOB_BANK 0x0080u
@@ -141,5 +159,10 @@ void palcycle_figure_begin(Wram* w, uint16_t page);
 // Returns how many ticks the thread sleeps.
 uint16_t palcycle_figure(Wram* w, const Rom* rom, uint16_t page,
                          PalcycleLog* log);
+
+// The head's start, and a waking of it. `log->wrapped` is the row starting
+// over. Each sleeps `PALCYCLE_HEAD_TICKS`.
+void palcycle_head_begin(Wram* w, uint16_t page);
+void palcycle_head(Wram* w, const Rom* rom, uint16_t page, PalcycleLog* log);
 
 #endif

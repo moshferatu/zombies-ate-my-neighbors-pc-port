@@ -22,6 +22,8 @@
 // For `giant_spider_collide`, the giant spider's handler, which lives with its
 // thread because half of it is the thread's own `$83:AAE1`.
 #include "port/giant_spider.h"
+// ...and Dr. Tongue's head's, for the same reason: `$83:C4A9`.
+#include "port/dr_tongue.h"
 
 // `src/cheats.h`. Both false unless a frontend sets them.
 PortCheats port_cheats;
@@ -1585,6 +1587,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = spider_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == GIANT_SPIDER_COLLIDE_ENTRY) {
     served = giant_spider_collide(w, rom, dp, arg, &r, &work->pieces);
+  } else if (entry == DR_TONGUE_COLLIDE_ENTRY) {
+    served = dr_tongue_collide(w, rom, dp, arg, &r, &work->pieces);
+  } else if (entry == DR_TONGUE_SHOT_COLLIDE_ENTRY) {
+    served = dr_tongue_shot_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == ACTOR_84AC_COLLIDE_ENTRY) {
     served = actor_84ac_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == ENEMY_B95F_COLLIDE_ENTRY) {

@@ -48,6 +48,14 @@ movie reaches, by a `--poke`:
     fifth life, until it dies; blinking first with a player too far, its
     puffs with no room; and its lives and death poked on both levels, paid
     and not, with the wait for fewer than 18 records on level 48.
+  * Dr. Tongue and his head, after the giant spider on level 48
+    (`port/dr_tongue.h`), the spider killed by `--poke` as above: the head
+    licking a player below it, hurt enough to charge, and dying with a tongue
+    out; its lives and death poked, paid, and the door;
+    shot from below by each of thirteen weapons, in two sessions; at a side
+    of a player above it, licking and spitting across, first mirrored and
+    then not; touched by a player; and the doctor blinking and crying with
+    the player too far.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -293,6 +301,44 @@ def sessions():
                 ['--level', '36', '--poke', '1800+:1CB8=000A',
                  '--poke', '1800-2300:130=0118', '--poke', '1800-2300:132=0060',
                  '--poke', '1800+:1F52=0003', '--poke', '2301:132=00F0']))
+    # ...and, the same day, what comes after it: Dr. Tongue and his head
+    # (`$83:C687`). The spider is killed as `spider48_killed` kills it. Where
+    # he appears is where it died, so it differs by movie, and so does his
+    # thread's page: `$0700` under `level1.zmv` and `fire-up.zmv`, `$0300`
+    # under `hold-y.zmv`. `$14` is its life, `$16` its tongues out, `$4A`
+    # broken and `$52` what hit it.
+    kill48 = near48 + ['--poke', '2300:0552=FFFF', '--poke', '2400-2700:0006=000F',
+                       '--poke', '2500:0514=0000', '--poke', '2500:0552=FFFF',
+                       '--poke', '2700:0514=FFFE', '--poke', '2700:0552=FFFF',
+                       '--poke', '2700:055A=005C', '--poke', '2850-3000:0006=0012']
+    doctor = kill48 + ['--poke', '3500:130=0122', '--poke', '3500:132=0110']
+    out.append(('tongue48', 'level1.zmv', 9000,
+                doctor + ['--poke', '1800+:1F52=0003', '--poke', '6000:075C=0005',
+                          '--poke', '8000:0714=0003', '--poke', '8000:074A=FFFF']))
+    out.append(('tongue48_lives', 'level1.zmv', 9000,
+                doctor + ['--poke', '4400:0714=0002', '--poke', '6000:074A=FFFF',
+                          '--poke', '7000:074A=FFFF', '--poke', '7000:0752=005C']))
+    below = kill48 + ['--poke', '4000:130=0096', '--poke', '4000:132=014A',
+                      '--poke', '4400+:130=0096', '--poke', '4400+:132=0190',
+                      '--poke', '4400+:0716=0003']
+    for name, weapons in (('tongue48_shot', range(7)),
+                          ('tongue48_shot2', range(7, 13))):
+        armed = []
+        for j, i in enumerate(weapons):
+            frame = 4500 + 500 * j
+            armed += ['--poke', '%d+:1CBC=%04X' % (frame, i),
+                      '--poke', '%d+:%04X=0099' % (frame, 0x1CCC + 2 * i)]
+        out.append((name, 'fire-up.zmv', 8100, below + armed))
+    out.append(('tongue48_side', 'hold-y.zmv', 9000,
+                doctor + ['--poke', '1800+:1F52=0003', '--poke', '5000:0314=0002',
+                          '--poke', '6500+:130=01C2', '--poke', '6500+:132=0110',
+                          '--poke', '7500:035C=0005']))
+    out.append(('tongue48_touch', 'level1.zmv', 6000,
+                doctor + ['--poke', '4100-4300:130=0122',
+                          '--poke', '4100-4300:132=00C4']))
+    out.append(('tongue48_blink', 'fire-up.zmv', 4700,
+                kill48 + ['--poke', '1800+:1F52=0003', '--poke', '4300:130=0096',
+                          '--poke', '4300:132=014A']))
     return out
 
 

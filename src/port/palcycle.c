@@ -160,3 +160,38 @@ uint16_t palcycle_figure(Wram* w, const Rom* rom, uint16_t page,
   ask_for_upload(w, log);
   return ticks;
 }
+
+// --- $80:A36E  Dr. Tongue's head's colours -------------------------------------
+
+#define HEAD_SHOWN 0x00f0u  // colour 120, as a byte offset
+
+void palcycle_head_begin(Wram* w, uint16_t page) {
+  wram_w16(w, (uint16_t)(page + PALCYCLE_HEAD_DP_CLEARED), 0);
+  wram_w16(w, (uint16_t)(page + PALCYCLE_HEAD_DP_ROW), 0);
+}
+
+void palcycle_head(Wram* w, const Rom* rom, uint16_t page, PalcycleLog* log) {
+  PalcycleLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (PalcycleLog){0};
+
+  const uint16_t at = (uint16_t)(page + PALCYCLE_HEAD_DP_ROW);
+  uint16_t row = (uint16_t)(wram_r16(w, at) + 1);
+  if (row >= PALCYCLE_HEAD_ROWS) {
+    PORT_COVER(palcycle_head_restarted);
+    log->wrapped = true;
+    row = 0;
+  } else {
+    PORT_COVER(palcycle_head_stepped);
+  }
+  wram_w16(w, at, row);
+  // Colours 120, 121, 123 and 124: the third is skipped.
+  static const uint16_t shown[4] = {0, 2, 6, 8};
+  for (int i = 0; i < 4; i++) {
+    const uint16_t from =
+        rom_word(rom, PALCYCLE_HEAD_TABLE + row * 8u + 2u * (uint32_t)i);
+    wram_w16(w, PALETTE_SHOWN_AT + HEAD_SHOWN + shown[i],
+             wram_r16(w, (uint16_t)(PALETTE_AT + from)));
+  }
+  ask_for_upload(w, log);
+}

@@ -2009,6 +2009,136 @@
   X(spider_hit_died, "spider_collide", "...its health under nought") \
   X(spider_hit_no_damage, "spider_collide", "...a hit that cost nothing") \
   X(spider_hit_survived, "spider_collide", "...a hit, and into $81:8506") \
+  X(palcycle_head_stepped, "palcycle_head", "Dr. Tongue's head's colours: the next row") \
+  X(palcycle_head_restarted, "palcycle_head", "...and after the eighth, the first") \
+  X(dr_tongue_picture_plain, "dr_tongue", "a picture put up as it is") \
+  X(dr_tongue_picture_mirrored, "dr_tongue", "a picture put up mirrored") \
+  X(dr_tongue_unflash, "dr_tongue", "its flash over: its colours back") \
+  X(dr_tongue_flash, "dr_tongue", "hit: its colours white for two frames") \
+  X(dr_tongue_picture_ticks, "dr_tongue", "twelve frames since its picture changed") \
+  X(dr_tongue_picture_new, "dr_tongue", "another picture wanted, put up") \
+  X(dr_tongue_tongue_back, "dr_tongue", "a tongue coming back") \
+  X(dr_tongue_tongue_bites, "dr_tongue", "...each fourth frame it hurts about it") \
+  X(dr_tongue_tongue_goes, "dr_tongue", "a tongue going out") \
+  X(dr_tongue_tongue_side, "dr_tongue", "...across") \
+  X(dr_tongue_tongue_down, "dr_tongue", "...down") \
+  X(dr_tongue_tongue_turns, "dr_tongue", "a tongue at its end, or stopped: back") \
+  X(dr_tongue_tongue_gone, "dr_tongue", "a tongue in, its record freed") \
+  X(dr_tongue_tongue_out, "dr_tongue", "a tongue sent out") \
+  X(dr_tongue_nearest_near, "dr_tongue", "something near enough") \
+  X(dr_tongue_nearest_player, "dr_tongue", "...a player, or a decoy") \
+  X(dr_tongue_nearest_none, "dr_tongue", "...or nothing to go at") \
+  X(dr_tongue_probe_told, "dr_tongue", "each 32nd frame, what is at a probe told") \
+  X(dr_tongue_probe_open, "dr_tongue", "a probe not in a wall") \
+  X(dr_tongue_probe_on_map, "dr_tongue", "...and on the map") \
+  X(dr_tongue_moves, "dr_tongue", "it moves, its six records with it") \
+  X(dr_tongue_facing_none, "dr_tongue", "no way faced: the way down") \
+  X(dr_tongue_facing_plain, "dr_tongue", "its picture for a way faced") \
+  X(dr_tongue_facing_mirrored, "dr_tongue", "...a way to the left, mirrored") \
+  X(dr_tongue_broken, "dr_tongue", "its health gone under") \
+  X(dr_tongue_life_gone, "dr_tongue", "a life gone: three puffs and 35 health") \
+  X(dr_tongue_life_cry, "dr_tongue", "...a cry, with the sound set to 3") \
+  X(dr_tongue_player_counted, "dr_tongue", "a player counted") \
+  X(dr_tongue_player_above, "dr_tongue", "...above it") \
+  X(dr_tongue_player_left, "dr_tongue", "...to its left") \
+  X(dr_tongue_sweeps, "dr_tongue", "it sweeps from side to side above them") \
+  X(dr_tongue_sweep_player_above, "dr_tongue", "a player above it: it goes to a side") \
+  X(dr_tongue_sweep_stung, "dr_tongue", "hurt enough: it charges") \
+  X(dr_tongue_sweep_target, "dr_tongue", "a player to go at") \
+  X(dr_tongue_sweep_close, "dr_tongue", "within 12 across: it means to lick") \
+  X(dr_tongue_sweep_target_above, "dr_tongue", "the player above it") \
+  X(dr_tongue_sweep_left, "dr_tongue", "sweeping left") \
+  X(dr_tongue_sweep_far, "dr_tongue", "twenty or more above the player") \
+  X(dr_tongue_sweep_level, "dr_tongue", "between: neither") \
+  X(dr_tongue_sweep_up, "dr_tongue", "under 85 above: up") \
+  X(dr_tongue_sweep_down, "dr_tongue", "105 or more above: down") \
+  X(dr_tongue_sweep_turns, "dr_tongue", "stopped: it turns") \
+  X(dr_tongue_to_charge, "dr_tongue", "it charges") \
+  X(dr_tongue_to_side, "dr_tongue", "it goes to a side") \
+  X(dr_tongue_lick_above, "dr_tongue", "about to lick: the player above it") \
+  X(dr_tongue_lick_waits, "dr_tongue", "...it sweeps on") \
+  X(dr_tongue_lick_far, "dr_tongue", "40 or more across: it sweeps on") \
+  X(dr_tongue_lick_tongue, "dr_tongue", "a tongue down, on its first two lives") \
+  X(dr_tongue_lick_spits, "dr_tongue", "spitting, on its last two") \
+  X(dr_tongue_spit_pair, "dr_tongue", "two shots down") \
+  X(dr_tongue_lick_begins, "dr_tongue", "no tongue out: it licks") \
+  X(dr_tongue_licking_done, "dr_tongue", "its licking over") \
+  X(dr_tongue_licking_aim, "dr_tongue", "each fourth frame of it, aimed again") \
+  X(dr_tongue_licking_above, "dr_tongue", "...the player above it") \
+  X(dr_tongue_licking_tongue, "dr_tongue", "...a tongue down") \
+  X(dr_tongue_licking_spits, "dr_tongue", "...spitting") \
+  X(dr_tongue_licking_spit_pair, "dr_tongue", "...two shots down") \
+  X(dr_tongue_back_to_sweep, "dr_tongue", "back to sweeping") \
+  X(dr_tongue_sides, "dr_tongue", "it goes up and down at a side") \
+  X(dr_tongue_side_two_players, "dr_tongue", "two players") \
+  X(dr_tongue_side_split, "dr_tongue", "...on its two sides: it charges") \
+  X(dr_tongue_side_stung, "dr_tongue", "hurt enough: it charges") \
+  X(dr_tongue_side_target, "dr_tongue", "a player to go at") \
+  X(dr_tongue_side_level, "dr_tongue", "within 12 of the player: it means to lick") \
+  X(dr_tongue_side_player_left, "dr_tongue", "the player to its left") \
+  X(dr_tongue_side_rises, "dr_tongue", "going up") \
+  X(dr_tongue_side_far, "dr_tongue", "twenty or more across") \
+  X(dr_tongue_side_between, "dr_tongue", "between: neither") \
+  X(dr_tongue_side_away, "dr_tongue", "under 85 across: away") \
+  X(dr_tongue_side_closer, "dr_tongue", "105 or more across: closer") \
+  X(dr_tongue_side_turns, "dr_tongue", "stopped: it turns") \
+  X(dr_tongue_side_lick_waits, "dr_tongue", "about to lick across: it goes on") \
+  X(dr_tongue_side_lick_begins, "dr_tongue", "no tongue out: it licks") \
+  X(dr_tongue_side_lick_far, "dr_tongue", "80 or more off: it goes on") \
+  X(dr_tongue_side_lick_right, "dr_tongue", "to the right") \
+  X(dr_tongue_side_lick_tongue, "dr_tongue", "a tongue across, on its first two lives") \
+  X(dr_tongue_side_lick_spits, "dr_tongue", "spitting, on its last two") \
+  X(dr_tongue_side_spit_pair, "dr_tongue", "two shots across") \
+  X(dr_tongue_side_spit_right, "dr_tongue", "...to the right") \
+  X(dr_tongue_side_licking_done, "dr_tongue", "its licking over") \
+  X(dr_tongue_side_licking_aim, "dr_tongue", "each fourth frame of it, aimed again") \
+  X(dr_tongue_side_licking_tongue, "dr_tongue", "...a tongue across") \
+  X(dr_tongue_side_licking_spits, "dr_tongue", "...spitting") \
+  X(dr_tongue_side_licking_spit_pair, "dr_tongue", "...two shots across") \
+  X(dr_tongue_bounces, "dr_tongue", "it goes off a way at random") \
+  X(dr_tongue_charges, "dr_tongue", "it charges at the nearest player") \
+  X(dr_tongue_charge_wanders, "dr_tongue", "going its way") \
+  X(dr_tongue_charge_aims, "dr_tongue", "going at the player") \
+  X(dr_tongue_charge_steps, "dr_tongue", "a step") \
+  X(dr_tongue_charge_stops, "dr_tongue", "stopped, or its time up") \
+  X(dr_tongue_charge_done, "dr_tongue", "its way gone: back to sweeping") \
+  X(dr_tongue_charge_bounce, "dr_tongue", "its charge over: off at random") \
+  X(dr_tongue_tiles_sent, "dr_tongue", "the head's tiles are up") \
+  X(dr_tongue_colours_begun, "dr_tongue", "its colours' turning begun") \
+  X(dr_tongue_begins, "dr_tongue", "Dr. Tongue appears") \
+  X(dr_tongue_tongues_wait, "dr_tongue", "dead: a tongue still out") \
+  X(dr_tongue_dies, "dr_tongue", "its last life gone, its tongues in") \
+  X(dr_tongue_pays, "dr_tongue", "whoever hit it last is paid 20,000") \
+  X(dr_tongue_blinks, "dr_tongue", "no player within 65: he blinks") \
+  X(dr_tongue_blink_cry, "dr_tongue", "...and every 45 frames a cry") \
+  X(dr_tongue_drinks, "dr_tongue", "a player near: he drinks the potion") \
+  X(dr_tongue_cry, "dr_tongue", "a cry, with the sound set to 3") \
+  X(dr_tongue_death, "dr_tongue", "twelve puffs, its colours flashing") \
+  X(dr_tongue_death_flash, "dr_tongue", "the mosaic coarser, and a flash") \
+  X(dr_tongue_death_puff, "dr_tongue", "...or a puff") \
+  X(dr_tongue_door, "dr_tongue", "the map's block at (4, 2) put down again") \
+  X(dr_tongue_shot_begins, "dr_tongue_shot", "a shot") \
+  X(dr_tongue_shot_shown, "dr_tongue_shot", "half a second hidden: it flies") \
+  X(dr_tongue_shot_gone, "dr_tongue_shot", "gone: it pops") \
+  X(dr_tongue_shot_homes, "dr_tongue_shot", "each fourth frame, it turns to the nearest") \
+  X(dr_tongue_shot_turns_x, "dr_tongue_shot", "...faster across, to 3") \
+  X(dr_tongue_shot_turns_y, "dr_tongue_shot", "...faster down, to 3") \
+  X(dr_tongue_shot_flies, "dr_tongue_shot", "a step") \
+  X(dr_tongue_shot_ends, "dr_tongue_shot", "in a wall, or three seconds up") \
+  X(dr_tongue_shot_frame, "dr_tongue_shot", "its next picture") \
+  X(dr_tongue_hit_self, "dr_tongue_collide", "its handler: the record touched wears id 0 or 9") \
+  X(dr_tongue_hit_flashing, "dr_tongue_collide", "...it is flashing") \
+  X(dr_tongue_hit_ignore, "dr_tongue_collide", "...an id below a player's shot's") \
+  X(dr_tongue_hit_touched, "dr_tongue_collide", "...a player's touch: off at random") \
+  X(dr_tongue_hit_tossed, "dr_tongue_collide", "...$60 or $70, as $5D or $5C") \
+  X(dr_tongue_hit_6f, "dr_tongue_collide", "...$6F, as $5D, $63 or $5C") \
+  X(dr_tongue_hit_as_5c, "dr_tongue_collide", "...$61 or $67, as $5C") \
+  X(dr_tongue_hit_62, "dr_tongue_collide", "...$62, as $5C one tick in four") \
+  X(dr_tongue_hit_broken, "dr_tongue_collide", "...its health under nought") \
+  X(dr_tongue_hit_no_damage, "dr_tongue_collide", "...a hit that cost nothing") \
+  X(dr_tongue_hit_hurt, "dr_tongue_collide", "...a hit") \
+  X(dr_tongue_shot_hit_ignore, "dr_tongue_shot_collide", "its shot touched by an id below a player's shot's") \
+  X(dr_tongue_shot_hit, "dr_tongue_shot_collide", "...by a player, or a player's shot: gone") \
   X(level_end_lit, "level_end_fading_in", "the screen faded in") \
   X(level_end_saved_cut, "level_end_fading_in", "the two saved more than ten: one fewer each") \
   X(level_end_saved_shown, "level_end_ticked", "a neighbour saved shown") \

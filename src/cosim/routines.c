@@ -58,6 +58,7 @@
 #include "port/level_end.h"
 #include "port/cast.h"
 #include "port/giant_spider.h"
+#include "port/dr_tongue.h"
 #include "port/spray.h"
 #include "port/thrown.h"
 #include "port/neighbours.h"
@@ -2322,6 +2323,38 @@ static const CosimRun HANDLER_PIECE_COST[HANDLER_PIECE_COUNT] = {
     [HP_SPIDER_DIED] = {110, 4, 1},
     [HP_SPIDER_NO_DAMAGE] = {100, 6, 1},
     [HP_SPIDER_SURVIVED] = {92, 10, 2},
+    // `$83:C994`, Dr. Tongue's head's: the giant spider's to `$83:C9AF`, a
+    // player's touch and `$83:C4A9` with its two draws apart, or the ids it
+    // answers as others, and the damage and the way out of it. `$83:CC03`,
+    // its shot's.
+    [HP_DR_TONGUE_SELF_OFF] = {164, 13, 0},
+    [HP_DR_TONGUE_SELF_TONGUE] = {194, 18, 0},
+    [HP_DR_TONGUE_FLASHING] = {234, 22, 1},
+    [HP_DR_TONGUE_IGNORE] = {258, 27, 1},
+    [HP_DR_TONGUE_TOUCHED_5] = {2506, 209, 43},
+    [HP_DR_TONGUE_TOUCHED_6] = {2536, 214, 43},
+    [HP_DR_TONGUE_DRAW_ONCE] = {338, 31, 0},
+    [HP_DR_TONGUE_DRAW_TWICE] = {372, 34, 0},
+    [HP_DR_TONGUE_60_5D] = {452, 58, 2},
+    [HP_DR_TONGUE_60_5C] = {464, 60, 2},
+    [HP_DR_TONGUE_70_5D] = {488, 63, 2},
+    [HP_DR_TONGUE_70_5C] = {500, 65, 2},
+    [HP_DR_TONGUE_6F_5D] = {524, 68, 2},
+    [HP_DR_TONGUE_6F_63] = {588, 76, 2},
+    [HP_DR_TONGUE_6F_5C] = {600, 78, 2},
+    [HP_DR_TONGUE_61] = {508, 67, 2},
+    [HP_DR_TONGUE_62_5D] = {614, 81, 2},
+    [HP_DR_TONGUE_62_5C] = {626, 83, 2},
+    [HP_DR_TONGUE_67] = {568, 75, 2},
+    [HP_DR_TONGUE_OTHER] = {526, 70, 2},
+    [HP_DR_TONGUE_DIED] = {406, 34, 5},
+    [HP_DR_TONGUE_NO_DAMAGE] = {396, 36, 5},
+    [HP_DR_TONGUE_SURVIVED] = {436, 40, 6},
+    [HP_DR_TONGUE_SHOT_IGNORE] = {192, 25, 0},
+    [HP_DR_TONGUE_SHOT_1] = {226, 17, 2},
+    [HP_DR_TONGUE_SHOT_5] = {256, 22, 2},
+    [HP_DR_TONGUE_SHOT_6] = {286, 27, 2},
+    [HP_DR_TONGUE_SHOT_HIT] = {334, 35, 2},
 };
 
 // False when a piece is `HP_DEEP`, or there were none.
@@ -2799,6 +2832,25 @@ static void shim_giant_spider_collide(Wram* w, const Rom* rom, const CosimRegs* 
   cost_pieces(&pieces, in);
 }
 
+static void shim_dr_tongue_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  HandlerPieces pieces = {0};
+  dr_tongue_collide(w, rom, in->d, in->a, &r, &pieces);
+  handler_regs(&r, out);
+  cost_pieces(&pieces, in);
+}
+
+static void shim_dr_tongue_shot_collide(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  HandlerPieces pieces = {0};
+  dr_tongue_shot_collide(w, in->d, in->a, &r, &pieces);
+  handler_regs(&r, out);
+  cost_pieces(&pieces, in);
+}
+
 static void shim_frankenstein_collide(Wram* w, const Rom* rom,
                                  const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
@@ -3107,6 +3159,8 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     case FRANKENSTEIN_COLLIDE_ENTRY:
     case GIANT_SPIDER_COLLIDE_ENTRY:
     case SPIDER_COLLIDE_ENTRY:
+    case DR_TONGUE_COLLIDE_ENTRY:
+    case DR_TONGUE_SHOT_COLLIDE_ENTRY:
     case ACTOR_C8C3_COLLIDE_ENTRY:
     case ACTOR_84AC_COLLIDE_ENTRY:
     case VICTIM_COLLIDE_ENTRY:
@@ -22174,6 +22228,52 @@ static bool palcycle_figure_begin_ok(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == 0x80;
 }
 
+// Dr. Tongue's head's colours, `$80:A36E` and `$80:A379`, from
+// `tools/cycles816.py --db=80`.
+static const CosimRun PALCYCLE_RUN_H_BEGIN = {74, 7, 2};      // STZ : STZ : LDA
+static const CosimRun PALCYCLE_RUN_H_HEAD = {70, 8, 1};       // LDA INC CMP BCC
+static const CosimRun PALCYCLE_RUN_H_ROW0 = {18, 3, 0};       // LDA #0
+static const CosimRun PALCYCLE_RUN_H_COLOURS = {652, 67, 1};  // $A384-$A3BE
+static const CosimRun PALCYCLE_RUN_H_BRA = {12, 2, 0};
+static const CosimRun PALCYCLE_RUN_H_SLEEP = {18, 3, 0};      // LDA #$000A
+
+// Its table is read through the data bank.
+static bool palcycle_head_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x80;
+}
+
+static void shim_palcycle_head(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PalcycleLog log;
+  palcycle_head(w, rom, in->d, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_H_HEAD, 1);
+  run_add(&run, log.wrapped ? &PALCYCLE_RUN_H_ROW0 : &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_H_COLOURS, 1);
+  palcycle_ask_bill(&run, &log);
+  run_add(&run, &PALCYCLE_RUN_H_BRA, 1);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_H_SLEEP, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+  palcycle_exit(w, in, out, PALCYCLE_HEAD_YIELD_PC, PALCYCLE_HEAD_TICKS,
+                palcycle_queue_carry(w, &log), 0, false);
+}
+
+// Its start: two words cleared, and the first sleep.
+static void shim_palcycle_head_begin(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  palcycle_head_begin(w, in->d);
+  cosim_cost(cosim_run_cycles_dp(&PALCYCLE_RUN_H_BEGIN, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+  palcycle_exit(w, in, out, PALCYCLE_HEAD_YIELD_PC, PALCYCLE_HEAD_TICKS,
+                (in->p & PORT_P_C) != 0, 0, false);
+}
+
+static const uint32_t PALCYCLE_HEAD_EXITS[] = {PALCYCLE_HEAD_YIELD_PC};
+
 // ---------------------------------------------------------------------------
 // The demo's playback -- see `port/demo.h`
 // ---------------------------------------------------------------------------
@@ -26716,9 +26816,6 @@ static const CosimRun GIANT_SPIDER_RUN_COST[GIANT_SPIDER_RUN_COUNT] = {
     [GIANT_SPIDER_RUN_B080] = {36, 6, 0},  // LDA : LDY
     [GIANT_SPIDER_RUN_B08A] = {12, 2, 0},  // BEQ
     [GIANT_SPIDER_RUN_B08C] = {18, 3, 0},  // LDA
-    [GIANT_SPIDER_RUN_B093] = {54, 4, 0},  // JSL
-    [GIANT_SPIDER_RUN_8113] = {244, 30, 0},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : LDY
-    [GIANT_SPIDER_RUN_8135] = {42, 1, 0},  // RTL
     [GIANT_SPIDER_RUN_B097] = {98, 10, 0},  // LDA : STA : JSR
     [GIANT_SPIDER_RUN_B11F] = {64, 8, 0},  // LDA : CMP : BNE
     [GIANT_SPIDER_RUN_B127] = {36, 6, 0},  // LDX : LDY
@@ -26863,6 +26960,584 @@ static bool accepts_giant_spider(const Wram* w, const CosimRegs* in) {
 static const uint32_t GIANT_SPIDER_EXIT_PCS[] = {
 #define X(pc) pc,
     GIANT_SPIDER_EXITS(X)
+#undef X
+};
+
+// ---------------------------------------------------------------------------
+// The layer blanked -- `boss_bg_clear`, see `port/bossbg.h`
+// ---------------------------------------------------------------------------
+
+// `$82:8113` to its `JSL vbl_queue_a_add`, from `tools/cycles816.py`.
+static const CosimRun BOSS_BG_CLEAR_RUN = {244, 30, 0};
+
+static void shim_boss_bg_clear(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  BossBgRegs r;
+  boss_bg_clear(w, &r);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = r.a;
+  c.y = r.y;
+  set_nz16(&c, c.y);  // `LDY #$0082`
+  c.pc = BOSS_BG_CLEAR_EXIT;
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&BOSS_BG_CLEAR_RUN, fetch_fast(in)));
+}
+
+// Its four words are reached through the data bank.
+static bool accepts_boss_bg_clear(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static const uint32_t BOSS_BG_CLEAR_EXITS[] = {BOSS_BG_CLEAR_EXIT};
+
+// ---------------------------------------------------------------------------
+// Dr. Tongue, his head and its shot -- see `port/dr_tongue.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/price_runs.py`, branches not taken, and a taken
+// branch adds 6. The draws are priced as `rng_next` is everywhere, and the
+// wide test by `WIDE_COST`'s blocks.
+static const CosimRun DR_TONGUE_RUN_COST[DR_TONGUE_RUN_COUNT] = {
+    [DR_TONGUE_RUN_B9F5] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [DR_TONGUE_RUN_BA05] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BA06] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [DR_TONGUE_RUN_BA16] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BA17] = {252, 28, 1},  // ASL : ASL : TAX : LDA : STA : LDA : STA : LDA : BIT : BPL
+    [DR_TONGUE_RUN_BA2D] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_BA31] = {144, 15, 1},  // STA : LDA : STA : LDA : BNE
+    [DR_TONGUE_RUN_BA3E] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BA41] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_BA43] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BA46] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BAB7] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_BABB] = {62, 4, 1},  // DEC : BNE
+    [DR_TONGUE_RUN_BABF] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_BAC9] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BACA] = {40, 4, 1},  // BIT : BPL
+    [DR_TONGUE_RUN_BACE] = {110, 13, 2},  // STZ : LDA : STA : LDA : LDY
+    [DR_TONGUE_RUN_BADF] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BAE0] = {178, 14, 2},  // LDA : STA : LDA : STA : JSL
+    [DR_TONGUE_RUN_BAEE] = {12, 2, 0},  // BNE
+    [DR_TONGUE_RUN_BAF0] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_BAF4] = {142, 13, 4},  // LDA : STA : LDA : ORA : CMP : BEQ
+    [DR_TONGUE_RUN_BB01] = {86, 8, 1},  // STA : AND : JSR
+    [DR_TONGUE_RUN_BB09] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BB0A] = {360, 29, 0},  // LDA : CLC : ADC : SEC : SBC : STA : LDA : CLC : ADC : SEC : SBC : STA : RTS
+    [DR_TONGUE_RUN_BB27] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BB2A] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BB2D] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BB30] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BB31] = {64, 8, 1},  // STZ : LDX : LDY
+    [DR_TONGUE_RUN_BB39] = {100, 10, 1},  // STY : TXA : SEC : SBC : TAX : BPL
+    [DR_TONGUE_RUN_BB43] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BB44] = {46, 5, 1},  // LDX : STX
+    [DR_TONGUE_RUN_BB49] = {92, 9, 2},  // LDX : LDY : CPY : BEQ
+    [DR_TONGUE_RUN_BB52] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_BB55] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_BB5F] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BB60] = {74, 6, 2},  // LDX : LDA : BPL
+    [DR_TONGUE_RUN_BB66] = {58, 5, 1},  // INC : STA : BMI
+    [DR_TONGUE_RUN_BB6B] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_BB70] = {60, 9, 0},  // EOR : INC : BIT : BEQ
+    [DR_TONGUE_RUN_BB79] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_BB7C] = {244, 21, 0},  // LSR : TAX : LDA : STA : LDA : TAX : LDA : TAY : JSR
+    [DR_TONGUE_RUN_BB8F] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_BB92] = {58, 5, 1},  // DEC : STA : BMI
+    [DR_TONGUE_RUN_BB97] = {132, 10, 1},  // PHX : AND : LSR : PHA : LDA : BEQ
+    [DR_TONGUE_RUN_BBA1] = {82, 8, 0},  // PLX : LDA : BRA
+    [DR_TONGUE_RUN_BBA7] = {70, 6, 0},  // PLX : LDA
+    [DR_TONGUE_RUN_BBAB] = {400, 25, 2},  // STA : PLX : LDA : CLC : ADC : STA : PHA : LDA : CLC : ADC : STA : TAY : PLX
+    [DR_TONGUE_RUN_BBC8] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_BBCA] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_BBCC] = {230, 21, 3},  // LDX : LDY : LDA : STA : LDA : STA : LDA : STA
+    [DR_TONGUE_RUN_BBE1] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BBE2] = {114, 9, 3},  // LDX : LDY : LDA : STY
+    [DR_TONGUE_RUN_BBEF] = {90, 3, 1},  // DEC : RTS
+    [DR_TONGUE_RUN_BC0A] = {58, 7, 1},  // LDA : CMP : BCS
+    [DR_TONGUE_RUN_BC11] = {18, 3, 0},  // LDX
+    [DR_TONGUE_RUN_BC14] = {64, 7, 1},  // LDA : CMP : BEQ
+    [DR_TONGUE_RUN_BC1B] = {66, 8, 0},  // TXA : SEC : SBC : TAX : BPL
+    [DR_TONGUE_RUN_BC23] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BC24] = {78, 3, 1},  // INC : PHX
+    [DR_TONGUE_RUN_BC2B] = {1154, 94, 12},  // PLX : STA : PHA : LDA : STA : LDA : ASL : ASL : ASL : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : PLY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : ORA : STA : RTS
+    [DR_TONGUE_RUN_BCE8] = {28, 2, 1},  // STA
+    [DR_TONGUE_RUN_BCEE] = {40, 4, 1},  // CMP : BCS
+    [DR_TONGUE_RUN_BCF2] = {98, 10, 1},  // STA : LDY : CPY : BEQ
+    [DR_TONGUE_RUN_BCFC] = {30, 5, 0},  // CPY : BEQ
+    [DR_TONGUE_RUN_BD01] = {30, 5, 0},  // CPY : BEQ
+    [DR_TONGUE_RUN_BD06] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_BD08] = {160, 11, 0},  // LDY : LDA : PHX : TAX : JSR
+    [DR_TONGUE_RUN_BD13] = {102, 4, 1},  // PLX : LDY : RTS
+    [DR_TONGUE_RUN_BD17] = {82, 6, 0},  // LDA : TAX : TAY : RTS
+    [DR_TONGUE_RUN_BD1D] = {160, 16, 1},  // STX : STY : LDX : LDA : CMP : BEQ
+    [DR_TONGUE_RUN_BD2D] = {66, 7, 0},  // TXA : ADC : ASL : ASL : TAX
+    [DR_TONGUE_RUN_BD34] = {74, 7, 1},  // LDA : CMP : BEQ
+    [DR_TONGUE_RUN_BD3B] = {42, 5, 0},  // TXA : ADC : TAX
+    [DR_TONGUE_RUN_BD40] = {94, 10, 0},  // LDA : AND : RTS
+    [DR_TONGUE_RUN_BD55] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_BD5A] = {300, 30, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : AND : BNE
+    [DR_TONGUE_RUN_BD74] = {96, 7, 2},  // LDX : LDY : JSR
+    [DR_TONGUE_RUN_BD7B] = {96, 7, 2},  // LDX : LDY : JSR
+    [DR_TONGUE_RUN_BD82] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_BD84] = {56, 4, 2},  // LDX : LDY
+    [DR_TONGUE_RUN_BD8C] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_BD8E] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_BD98] = {158, 13, 5},  // LDA : STA : LDA : STA : LDA : STA
+    [DR_TONGUE_RUN_BDA5] = {422, 37, 6},  // LDX : LDY : TXA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : DEC : DEC : STA : BPL
+    [DR_TONGUE_RUN_BDC6] = {12, 1, 0},  // CLC
+    [DR_TONGUE_RUN_BDC7] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BEDD] = {332, 36, 0},  // TXA : SEC : SBC : STA : CLC : ADC : STA : TYA : SEC : SBC : STA : CLC : ADC : STA : LDA : STA
+    [DR_TONGUE_RUN_BF05] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BF06] = {40, 4, 1},  // LDY : BNE
+    [DR_TONGUE_RUN_BF0A] = {46, 5, 1},  // LDY : STY
+    [DR_TONGUE_RUN_BF0F] = {134, 15, 2},  // LDA : CLC : ADC : STA : CPY : BCS
+    [DR_TONGUE_RUN_BF1C] = {40, 4, 1},  // STZ : BRA
+    [DR_TONGUE_RUN_BF20] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_BF25] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BF38] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_BF3C] = {70, 8, 1},  // LDY : INY : CPY : BCS
+    [DR_TONGUE_RUN_BF44] = {132, 13, 3},  // STY : STZ : LDA : STA : LDA : TAY
+    [DR_TONGUE_RUN_BF55] = {64, 8, 0},  // LDA : CMP : BNE
+    [DR_TONGUE_RUN_BF5D] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_BF64] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_BF69] = {82, 6, 1},  // LDY : JSL
+    [DR_TONGUE_RUN_BF6F] = {176, 17, 2},  // AND : CLC : ADC : ADC : STA : JSL
+    [DR_TONGUE_RUN_BF7E] = {158, 19, 2},  // AND : CLC : ADC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_BF93] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_BF9A] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_BFA4] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_BFAE] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_BFBB] = {74, 7, 2},  // STZ : STZ : LDX
+    [DR_TONGUE_RUN_BFC2] = {52, 5, 0},  // LDY : BEQ
+    [DR_TONGUE_RUN_BFC7] = {80, 7, 1},  // LDA : CMP : BCS
+    [DR_TONGUE_RUN_BFCE] = {50, 2, 1},  // INC
+    [DR_TONGUE_RUN_BFD0] = {50, 2, 1},  // INC
+    [DR_TONGUE_RUN_BFD2] = {36, 4, 0},  // DEX : DEX : BPL
+    [DR_TONGUE_RUN_BFD6] = {96, 5, 2},  // LDA : LDY : RTS
+    [DR_TONGUE_RUN_BFDB] = {74, 7, 2},  // STZ : STZ : LDX
+    [DR_TONGUE_RUN_BFE2] = {52, 5, 0},  // LDY : BEQ
+    [DR_TONGUE_RUN_BFE7] = {80, 7, 1},  // LDA : CMP : BCS
+    [DR_TONGUE_RUN_BFEE] = {50, 2, 1},  // INC
+    [DR_TONGUE_RUN_BFF0] = {50, 2, 1},  // INC
+    [DR_TONGUE_RUN_BFF2] = {36, 4, 0},  // DEX : DEX : BPL
+    [DR_TONGUE_RUN_BFF6] = {96, 5, 2},  // LDA : LDY : RTS
+    [DR_TONGUE_RUN_BFFB] = {86, 6, 1},  // LDA : CMP : RTS
+    [DR_TONGUE_RUN_C001] = {74, 7, 2},  // STA : LDX : STX
+    [DR_TONGUE_RUN_C008] = {222, 17, 5},  // LDX : LDY : LDA : STA : LDA : DEC : DEC : STA : BPL
+    [DR_TONGUE_RUN_C019] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C01A] = {262, 22, 6},  // LDA : STA : STZ : LDA : STA : STZ : STZ : LDX : STX : RTS
+    [DR_TONGUE_RUN_C030] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C033] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C038] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C03B] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C03E] = {12, 2, 0},  // BCC
+    [DR_TONGUE_RUN_C040] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C043] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C04D] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C052] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C057] = {96, 7, 2},  // LDX : LDA : JSR
+    [DR_TONGUE_RUN_C05E] = {12, 2, 0},  // BCC
+    [DR_TONGUE_RUN_C060] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C063] = {92, 8, 1},  // LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C06B] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C06E] = {28, 2, 1},  // STA
+    [DR_TONGUE_RUN_C070] = {40, 4, 1},  // LDA : BMI
+    [DR_TONGUE_RUN_C074] = {52, 5, 1},  // CLC : ADC : BRA
+    [DR_TONGUE_RUN_C079] = {40, 3, 1},  // SEC : SBC
+    [DR_TONGUE_RUN_C07C] = {164, 12, 4},  // CLC : ADC : STA : LDA : STA : JSR
+    [DR_TONGUE_RUN_C088] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_C08A] = {58, 7, 1},  // LDA : CMP : BCC
+    [DR_TONGUE_RUN_C091] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C096] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_C09B] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C09D] = {62, 4, 1},  // DEC : BRA
+    [DR_TONGUE_RUN_C0A1] = {62, 4, 1},  // INC : BRA
+    [DR_TONGUE_RUN_C0A5] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C0A8] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C0AA] = {86, 8, 2},  // LDA : EOR : INC : STA
+    [DR_TONGUE_RUN_C0B2] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C0B3] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C0B6] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C0B9] = {92, 8, 1},  // LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C0C1] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C0C5] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_C0CA] = {52, 2, 0},  // SEC : RTS
+    [DR_TONGUE_RUN_C0CC] = {52, 2, 0},  // CLC : RTS
+    [DR_TONGUE_RUN_C0CE] = {86, 6, 1},  // LDA : STA : RTS
+    [DR_TONGUE_RUN_C0D4] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C0DE] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C0E3] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C0E8] = {248, 22, 4},  // LDX : LDA : ASL : TAY : LDA : ASL : STA : LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C0FC] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C0FE] = {82, 6, 1},  // STA : JSL
+    [DR_TONGUE_RUN_C104] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C109] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C10C] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_C110] = {92, 8, 1},  // LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C118] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C11C] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C121] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C124] = {58, 7, 1},  // LDA : CMP : BCS
+    [DR_TONGUE_RUN_C12B] = {166, 14, 3},  // LDA : LSR : LSR : STA : LDA : STA : JSR
+    [DR_TONGUE_RUN_C139] = {126, 11, 2},  // LDA : CLC : ADC : STA : JSR
+    [DR_TONGUE_RUN_C144] = {64, 8, 1},  // LDA : STA : JMP
+    [DR_TONGUE_RUN_C14C] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_C150] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C155] = {318, 33, 6},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : STA : LDA : LDY
+    [DR_TONGUE_RUN_C176] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_C180] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C185] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C188] = {212, 17, 4},  // LDA : STA : LDA : ASL : ASL : STA : LDA : STA : RTS
+    [DR_TONGUE_RUN_C199] = {52, 5, 1},  // LDA : DEC : BPL
+    [DR_TONGUE_RUN_C19E] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C1A1] = {58, 7, 1},  // STA : AND : BNE
+    [DR_TONGUE_RUN_C1A8] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C1B2] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C1B7] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C1BC] = {120, 10, 2},  // LDX : LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C1C6] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C1C9] = {156, 16, 3},  // LSR : LSR : STA : LDA : STA : LDA : CMP : BCS
+    [DR_TONGUE_RUN_C1D9] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C1DC] = {126, 11, 2},  // LDA : CLC : ADC : STA : JSR
+    [DR_TONGUE_RUN_C1E7] = {74, 7, 2},  // STZ : LDA : STA
+    [DR_TONGUE_RUN_C1EE] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C1F1] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_C1F5] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C1FA] = {318, 33, 6},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : STA : LDA : LDY
+    [DR_TONGUE_RUN_C21B] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_C225] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C22A] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C22C] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C22F] = {160, 15, 3},  // LDA : STA : LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C23E] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C243] = {96, 7, 3},  // STX : ASL : STA : STA
+    [DR_TONGUE_RUN_C24A] = {170, 12, 4},  // LDX : LDA : STZ : LDX : STX : RTS
+    [DR_TONGUE_RUN_C256] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C259] = {30, 5, 0},  // CPY : BCC
+    [DR_TONGUE_RUN_C25E] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C263] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C266] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C269] = {12, 2, 0},  // BCC
+    [DR_TONGUE_RUN_C26B] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C26E] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C278] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C27D] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C282] = {96, 7, 2},  // LDX : LDA : JSR
+    [DR_TONGUE_RUN_C289] = {12, 2, 0},  // BCC
+    [DR_TONGUE_RUN_C28B] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C28E] = {120, 10, 2},  // STZ : LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C298] = {76, 9, 1},  // EOR : INC : LDY : STY
+    [DR_TONGUE_RUN_C2A1] = {28, 2, 1},  // STA
+    [DR_TONGUE_RUN_C2A3] = {40, 4, 1},  // LDA : BMI
+    [DR_TONGUE_RUN_C2A7] = {52, 5, 1},  // CLC : ADC : BRA
+    [DR_TONGUE_RUN_C2AC] = {40, 3, 1},  // SEC : SBC
+    [DR_TONGUE_RUN_C2AF] = {164, 12, 4},  // CLC : ADC : STA : LDA : STA : JSR
+    [DR_TONGUE_RUN_C2BB] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_C2BD] = {58, 7, 1},  // LDA : CMP : BCC
+    [DR_TONGUE_RUN_C2C4] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C2C9] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_C2CE] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C2D0] = {40, 4, 1},  // LDA : BPL
+    [DR_TONGUE_RUN_C2D4] = {62, 4, 1},  // INC : BRA
+    [DR_TONGUE_RUN_C2D8] = {62, 4, 1},  // DEC : BRA
+    [DR_TONGUE_RUN_C2DC] = {40, 4, 1},  // LDA : BPL
+    [DR_TONGUE_RUN_C2E0] = {62, 4, 1},  // DEC : BRA
+    [DR_TONGUE_RUN_C2E4] = {62, 4, 1},  // INC : BRA
+    [DR_TONGUE_RUN_C2E8] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C2EB] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C2ED] = {86, 8, 2},  // LDA : EOR : INC : STA
+    [DR_TONGUE_RUN_C2F5] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C2F6] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C2FC] = {122, 12, 1},  // LDA : SEC : SBC : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C308] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C30C] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_C311] = {52, 2, 0},  // SEC : RTS
+    [DR_TONGUE_RUN_C313] = {52, 2, 0},  // CLC : RTS
+    [DR_TONGUE_RUN_C315] = {86, 6, 1},  // LDA : STA : RTS
+    [DR_TONGUE_RUN_C31B] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C325] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C32A] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C32F] = {248, 22, 4},  // LDX : LDA : ASL : TAY : LDA : ASL : STA : LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C343] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C347] = {82, 6, 1},  // STA : JSL
+    [DR_TONGUE_RUN_C34D] = {30, 5, 0},  // CMP : BCC
+    [DR_TONGUE_RUN_C352] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C355] = {40, 4, 1},  // LDA : BNE
+    [DR_TONGUE_RUN_C359] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C35C] = {92, 8, 1},  // LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C364] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C368] = {42, 6, 0},  // LSR : CMP : BCC
+    [DR_TONGUE_RUN_C36E] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C371] = {138, 13, 3},  // LDA : LSR : LSR : STA : LDX : LDA : BMI
+    [DR_TONGUE_RUN_C37E] = {18, 3, 0},  // LDX
+    [DR_TONGUE_RUN_C381] = {86, 9, 2},  // STX : LDA : CMP : BCS
+    [DR_TONGUE_RUN_C38A] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C38D] = {126, 11, 2},  // LDA : CLC : ADC : STA : JSR
+    [DR_TONGUE_RUN_C398] = {92, 10, 2},  // STZ : LDA : STA : JMP
+    [DR_TONGUE_RUN_C3A2] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_C3A6] = {76, 10, 1},  // LDX : LDY : LDA : BMI
+    [DR_TONGUE_RUN_C3B0] = {36, 6, 0},  // LDX : LDY
+    [DR_TONGUE_RUN_C3B6] = {272, 28, 5},  // STX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C3D2] = {122, 14, 2},  // LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C3E4] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C3E9] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C3EC] = {212, 17, 4},  // LDA : STA : LDA : ASL : ASL : STA : LDA : STA : RTS
+    [DR_TONGUE_RUN_C3FD] = {52, 5, 1},  // LDA : DEC : BPL
+    [DR_TONGUE_RUN_C402] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C405] = {58, 7, 1},  // STA : AND : BNE
+    [DR_TONGUE_RUN_C40C] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C416] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C41B] = {68, 5, 2},  // STX : ASL : STA
+    [DR_TONGUE_RUN_C420] = {120, 10, 2},  // LDX : LDA : SEC : SBC : BPL
+    [DR_TONGUE_RUN_C42A] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_C42E] = {110, 11, 2},  // LSR : LSR : STA : LDX : LDA : BMI
+    [DR_TONGUE_RUN_C439] = {18, 3, 0},  // LDX
+    [DR_TONGUE_RUN_C43C] = {86, 9, 2},  // STX : LDA : CMP : BCS
+    [DR_TONGUE_RUN_C445] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C448] = {126, 11, 2},  // LDA : CLC : ADC : STA : JSR
+    [DR_TONGUE_RUN_C453] = {74, 7, 2},  // STZ : LDA : STA
+    [DR_TONGUE_RUN_C45A] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C45D] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_C461] = {76, 10, 1},  // LDX : LDY : LDA : BMI
+    [DR_TONGUE_RUN_C46B] = {36, 6, 0},  // LDX : LDY
+    [DR_TONGUE_RUN_C471] = {272, 28, 5},  // STX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C48D] = {122, 14, 2},  // LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C49F] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C4A4] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C4A6] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C4A9] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C4AF] = {54, 4, 0},  // JSL
+    [DR_TONGUE_RUN_C4B3] = {308, 28, 5},  // AND : STA : LDA : LSR : DEC : CLC : ADC : ADC : AND : INC : ASL : STA : STA : JSL
+    [DR_TONGUE_RUN_C4CF] = {236, 22, 4},  // AND : CLC : ADC : STA : LDA : STA : STZ : LDA : STA : RTS
+    [DR_TONGUE_RUN_C4E5] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C4EB] = {114, 10, 2},  // LDA : LDX : LDY : JSR
+    [DR_TONGUE_RUN_C4F5] = {30, 5, 0},  // CPX : BEQ
+    [DR_TONGUE_RUN_C4FA] = {96, 7, 3},  // STX : ASL : STA : STA
+    [DR_TONGUE_RUN_C501] = {82, 6, 1},  // LDX : JSL
+    [DR_TONGUE_RUN_C507] = {190, 17, 3},  // AND : CLC : ADC : STA : STZ : LDA : STA : RTS
+    [DR_TONGUE_RUN_C518] = {104, 12, 2},  // LDA : STA : LDY : CPY : BNE
+    [DR_TONGUE_RUN_C524] = {68, 5, 1},  // LDA : JSR
+    [DR_TONGUE_RUN_C529] = {40, 4, 1},  // LDA : BRA
+    [DR_TONGUE_RUN_C52D] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C530] = {172, 13, 1},  // LDY : LDA : TAX : LDA : TAY : JSR
+    [DR_TONGUE_RUN_C53D] = {68, 5, 2},  // ASL : STA : STA
+    [DR_TONGUE_RUN_C542] = {272, 25, 4},  // ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [DR_TONGUE_RUN_C557] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_C559] = {62, 4, 1},  // DEC : BMI
+    [DR_TONGUE_RUN_C55D] = {90, 3, 1},  // DEC : RTS
+    [DR_TONGUE_RUN_C560] = {40, 4, 1},  // LDA : BNE
+    [DR_TONGUE_RUN_C564] = {58, 7, 1},  // LDA : CMP : BNE
+    [DR_TONGUE_RUN_C56B] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C571] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C574] = {18, 3, 0},  // JMP
+    [DR_TONGUE_RUN_C577] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C580] = {930, 85, 7},  // LDX : STA : TAX : LDA : ASL : TAY : LDA : CLC : ADC : STA : STZ : LDA : CLC : ADC : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : DEC : DEC : STA : BPL
+    [DR_TONGUE_RUN_C5CD] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C5E6] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C5F0] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C5FA] = {244, 30, 0},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : LDY
+    [DR_TONGUE_RUN_C61C] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C623] = {46, 5, 0},  // LDA : BNE
+    [DR_TONGUE_RUN_C628] = {620, 47, 17},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : STZ : RTS
+    [DR_TONGUE_RUN_C657] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C65A] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C65D] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C664] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C66E] = {12, 2, 0},  // BEQ
+    [DR_TONGUE_RUN_C670] = {64, 8, 1},  // LDA : STA : LDA
+    [DR_TONGUE_RUN_C67C] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C686] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C687] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
+    [DR_TONGUE_RUN_C694] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C69B] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C69E] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6A1] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6A4] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6A7] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6AA] = {170, 10, 2},  // STZ : PEA : LDA : DEC : PHA : RTS
+    [DR_TONGUE_RUN_C6B4] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6B7] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C6BE] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6C1] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6C4] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_C6C8] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_C6CC] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C6D3] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C6D5] = {58, 7, 1},  // LDX : LDA : BEQ
+    [DR_TONGUE_RUN_C6E0] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6E3] = {110, 12, 0},  // SEC : LDA : SBC : STA : BMI
+    [DR_TONGUE_RUN_C6EF] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C6F3] = {74, 7, 2},  // LDA : LDX : LDY
+    [DR_TONGUE_RUN_C6FE] = {24, 3, 0},  // TAX : BNE
+    [DR_TONGUE_RUN_C701] = {52, 5, 1},  // LDA : DEC : BPL
+    [DR_TONGUE_RUN_C706] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C709] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C70C] = {204, 21, 2},  // STA : AND : LSR : LSR : TAX : LDY : LDA : STA : LDA
+    [DR_TONGUE_RUN_C723] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C725] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C72C] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C733] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C739] = {164, 13, 2},  // LDA : STA : LDA : STA : JSR
+    [DR_TONGUE_RUN_C746] = {28, 2, 1},  // LDA
+    [DR_TONGUE_RUN_C74C] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C74F] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C752] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C759] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C75C] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C75F] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C766] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C76C] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C76F] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C776] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C779] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C77C] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C783] = {58, 6, 0},  // LDA : JSR
+    [DR_TONGUE_RUN_C789] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_C78C] = {68, 3, 1},  // STZ : RTS
+    [DR_TONGUE_RUN_C797] = {650, 59, 3},  // STA : TAX : LDA : STA : STZ : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : TAY
+    [DR_TONGUE_RUN_C7D6] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C7D7] = {64, 8, 0},  // LDA : CMP : BNE
+    [DR_TONGUE_RUN_C7DF] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C7E6] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C7E7] = {58, 7, 0},  // LDA : STA
+    [DR_TONGUE_RUN_C7EE] = {64, 7, 0},  // LDA : DEC : BMI
+    [DR_TONGUE_RUN_C7F5] = {76, 10, 0},  // STA : LDA : LDY
+    [DR_TONGUE_RUN_C803] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C80A] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C80C] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C80D] = {58, 7, 0},  // LDA : STA
+    [DR_TONGUE_RUN_C814] = {82, 10, 0},  // LDA : INC : CMP : BCS
+    [DR_TONGUE_RUN_C81E] = {76, 10, 0},  // STA : LDA : LDY
+    [DR_TONGUE_RUN_C82C] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C833] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C835] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C836] = {46, 5, 1},  // LDA : STA
+    [DR_TONGUE_RUN_C83B] = {272, 28, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C857] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C861] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C868] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C872] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C879] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [DR_TONGUE_RUN_C883] = {104, 12, 1},  // LDA : STA : LDA : STA
+    [DR_TONGUE_RUN_C88F] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C899] = {110, 12, 0},  // LDA : INC : STA : LDA
+    [DR_TONGUE_RUN_C8A9] = {58, 7, 1},  // LDA : BIT : BNE
+    [DR_TONGUE_RUN_C8B0] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C8BA] = {12, 2, 0},  // BRA
+    [DR_TONGUE_RUN_C8BC] = {308, 31, 5},  // LDA : ASL : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDY
+    [DR_TONGUE_RUN_C8DB] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C8E5] = {62, 4, 1},  // DEC : BNE
+    [DR_TONGUE_RUN_C8E9] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_C8F4] = {98, 10, 0},  // LDA : STA : JSR
+    [DR_TONGUE_RUN_C8FE] = {36, 6, 0},  // LDA : LDY
+    [DR_TONGUE_RUN_C908] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C966] = {46, 5, 1},  // LDX : STX
+    [DR_TONGUE_RUN_C96B] = {62, 4, 2},  // LDX : LDA
+    [DR_TONGUE_RUN_C973] = {92, 8, 2},  // LDA : DEC : DEC : STA : BPL
+    [DR_TONGUE_RUN_C97B] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_C97C] = {36, 6, 0},  // LDX : LDY
+    [DR_TONGUE_RUN_C986] = {54, 9, 0},  // LDA : LDX : LDY
+    [DR_TONGUE_RUN_C993] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_CA4A] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
+    [DR_TONGUE_RUN_CA57] = {184, 17, 2},  // STA : TAY : LDA : ORA : STA : LDA : STA
+    [DR_TONGUE_RUN_CA68] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_CA6F] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_CA72] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_CA76] = {126, 11, 1},  // LDY : LDA : AND : STA
+    [DR_TONGUE_RUN_CA81] = {18, 3, 0},  // LDA
+    [DR_TONGUE_RUN_CA88] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_CA8B] = {40, 3, 0},  // JSR
+    [DR_TONGUE_RUN_CA8E] = {40, 4, 1},  // LDA : BEQ
+    [DR_TONGUE_RUN_CA92] = {104, 11, 1},  // LDY : LDA : STA : LDA
+    [DR_TONGUE_RUN_CAA1] = {110, 12, 0},  // SEC : LDA : SBC : STA : BMI
+    [DR_TONGUE_RUN_CAAD] = {28, 2, 1},  // LDA
+    [DR_TONGUE_RUN_CAC6] = {64, 8, 0},  // LDA : AND : BNE
+    [DR_TONGUE_RUN_CACE] = {56, 4, 2},  // LDX : LDY
+    [DR_TONGUE_RUN_CAD6] = {40, 3, 1},  // TXY : LDX
+    [DR_TONGUE_RUN_CADD] = {136, 14, 1},  // ASL : ASL : TAX : LDA : CLC : ADC : TAY : BPL
+    [DR_TONGUE_RUN_CAE9] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_CAED] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_CAF2] = {28, 2, 1},  // STY
+    [DR_TONGUE_RUN_CAF4] = {100, 11, 1},  // LDA : CLC : ADC : TAY : BPL
+    [DR_TONGUE_RUN_CAFD] = {30, 4, 0},  // EOR : INC
+    [DR_TONGUE_RUN_CB01] = {30, 5, 0},  // CMP : BCS
+    [DR_TONGUE_RUN_CB06] = {28, 2, 1},  // STY
+    [DR_TONGUE_RUN_CB08] = {248, 18, 8},  // LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDX : LDY
+    [DR_TONGUE_RUN_CB1E] = {12, 2, 0},  // BCS
+    [DR_TONGUE_RUN_CB20] = {226, 16, 4},  // LDY : LDA : STA : LDA : STA : DEC : BMI
+    [DR_TONGUE_RUN_CB30] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_CB31] = {90, 3, 1},  // DEC : RTS
+    [DR_TONGUE_RUN_CB58] = {62, 4, 1},  // DEC : BPL
+    [DR_TONGUE_RUN_CB5C] = {260, 25, 4},  // LDA : STA : LDA : INC : STA : AND : ASL : TAX : LDY : LDA : STA
+    [DR_TONGUE_RUN_CB73] = {40, 1, 0},  // RTS
+    [DR_TONGUE_RUN_CB81] = {1010, 92, 12},  // PHA : TAY : LDA : STA : STA : LDA : STA : LDA : STA : STA : LDA : ASL : STA : TAX : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : STA : STZ : STZ : STZ : LDA : LDY
+    [DR_TONGUE_RUN_CBDD] = {74, 2, 0},  // PLA : RTS
+    [DR_TONGUE_RUN_80E0] = {76, 4, 0},  // LDA : RTL
+    [DR_TONGUE_RUN_TAKEN] = {6, 0, 0},
+    [DR_TONGUE_RUN_RNG_ONCE] = {338, 31, 0},
+    [DR_TONGUE_RUN_RNG_TWICE] = {372, 34, 0},
+};
+
+// The table with the wide test's blocks in, and the same with an idle more on
+// each direct-page instruction for a page off its boundary. The wide test
+// makes its own page zero, so it owes nothing for one.
+static const CosimRun* dr_tongue_costs(bool unaligned) {
+  static CosimRun aligned[DR_TONGUE_RUN_COUNT], skewed[DR_TONGUE_RUN_COUNT];
+  static bool made;
+  if (!made) {
+    for (int i = 0; i < DR_TONGUE_RUN_COUNT; i++) aligned[i] = DR_TONGUE_RUN_COST[i];
+    for (int i = 0; i < WIDE_BLOCK_COUNT; i++) {
+      aligned[DR_TONGUE_RUN_WIDE + i] = WIDE_COST[i];
+      aligned[DR_TONGUE_RUN_WIDE + i].dp = 0;
+    }
+    for (int i = 0; i < DR_TONGUE_RUN_COUNT; i++) {
+      skewed[i] = aligned[i];
+      skewed[i].cycles += 6 * aligned[i].dp;
+    }
+    made = true;
+  }
+  return unaligned ? skewed : aligned;
+}
+
+static void shim_dr_tongue(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  DrTongueWork k;
+  dr_tongue_work_init(&k);
+  cpu_from(in, &c);
+  dr_tongue_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (k.v_unknown) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+  cosim_hw(&k.trace, dr_tongue_costs((in->d & 0x00ffu) != 0), fetch_fast(in));
+}
+
+// A stretch that would go back to an address the thread does not know, or
+// to a state not one of the seven, or write where it should not, is turned
+// down, which only running it can tell.
+static bool guard_dr_tongue(Wram* scratch, const Rom* rom, const CosimRegs* in) {
+  PortCpu c;
+  DrTongueWork k;
+  dr_tongue_work_init(&k);
+  cpu_from(in, &c);
+  dr_tongue_run(scratch, rom, &c, &k);
+  return !k.lost && !k.trace.full;
+}
+
+// Its own data bank.
+static bool accepts_dr_tongue(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == DR_TONGUE_BANK;
+}
+
+static const uint32_t DR_TONGUE_EXIT_PCS[] = {
+#define X(pc) pc,
+    DR_TONGUE_EXITS(X)
 #undef X
 };
 
@@ -35402,6 +36077,10 @@ static const CosimRoutine ROUTINES[] = {
                    palcycle_figure_ok, PALCYCLE_FIGURE_EXITS),
     PALCYCLE_ENTRY(palcycle_figure_begin, "$80:A137", PALCYCLE_FIGURE_BEGIN_PC,
                    palcycle_figure_begin_ok, PALCYCLE_FIGURE_EXITS),
+    PALCYCLE_ENTRY(palcycle_head, "$80:A379", PALCYCLE_HEAD_PC,
+                   palcycle_head_ok, PALCYCLE_HEAD_EXITS),
+    PALCYCLE_ENTRY(palcycle_head_begin, "$80:A36E", PALCYCLE_HEAD_BEGIN_PC,
+                   palcycle_head_ok, PALCYCLE_HEAD_EXITS),
 #define PALCYCLE_BEGIN(n, sym, pc, shim, exits)                \
   {                                                           \
       .name = #n,                                             \
@@ -37552,6 +38231,106 @@ static const CosimRoutine ROUTINES[] = {
         .symbol = "$83:B100",
         .entry = GIANT_SPIDER_MOSAIC_OFF_JOB_PC,
         .ret_op = GIANT_SPIDER_MOSAIC_OFF_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_off_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 120,
+    },
+    // The layer blanked, as the giant spider and Dr. Tongue's head die. See
+    // `port/bossbg.h`.
+    {
+        .name = "boss_bg_clear",
+        .symbol = "$82:8113",
+        .entry = BOSS_BG_CLEAR_ENTRY,
+        .run = shim_boss_bg_clear,
+        .accepts = accepts_boss_bg_clear,
+        COSIM_EXITS(BOSS_BG_CLEAR_EXITS),
+        .cycles = 244,
+        .stack_bytes = 0,
+    },
+    // ...the calls to it, each where a sleep comes back, and the `RTL` after
+    // its job is asked for, which the Snakeoid's thread runs itself and
+    // these do not. See `CosimRoutine::link`.
+    {
+        .name = "boss_bg_cleared",
+        .symbol = "$82:8135",
+        .entry = 0x828135,
+        .uncalled = true,
+        .link = true,
+    },
+    {
+        .name = "giant_spider_blank",
+        .symbol = "$83:B093",
+        .entry = 0x83b093,
+        .uncalled = true,
+        .link = true,
+    },
+    {
+        .name = "dr_tongue_blank",
+        .symbol = "$83:C8F0",
+        .entry = 0x83c8f0,
+        .uncalled = true,
+        .link = true,
+    },
+    // Dr. Tongue and his head, and its shot. See `port/dr_tongue.h`.
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "dr_tongue_" #name_,                                         \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_dr_tongue,                                               \
+        .accepts = accepts_dr_tongue,                                        \
+        .supported = guard_dr_tongue,                                        \
+        COSIM_EXITS(DR_TONGUE_EXIT_PCS),                                     \
+        .uncalled = true,                                                    \
+        .hw = true,                                                          \
+        .cycles = 1200,                                                      \
+        /* Four `JSR`s deep and a `JSL`'s three bytes, or three and the */   \
+        /* wide test's two pushes. */                                        \
+        .stack_bytes = 12,                                                   \
+    },
+    DR_TONGUE_ENTRIES(X)
+#undef X
+    {
+        .name = "dr_tongue_collide",
+        .symbol = "$83:C994",
+        .entry = DR_TONGUE_COLLIDE_ENTRY,
+        .ret_op = 0x83c9ae,  // the refusals' `CLC : RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_dr_tongue_collide,
+        .cycles = 300,
+        .stack_bytes = 5,  // `JSR $C4A9`, and its `JSL rng_next`
+    },
+    {
+        .name = "dr_tongue_shot_collide",
+        .symbol = "$83:CC03",
+        .entry = DR_TONGUE_SHOT_COLLIDE_ENTRY,
+        .ret_op = 0x83cc1b,  // the refusal's `RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_dr_tongue_shot_collide,
+        .cycles = 250,
+        .stack_bytes = 0,
+    },
+    // Its mosaic, the saucer's jobs to the byte.
+    {
+        .name = "dr_tongue_mosaic_job",
+        .symbol = "$83:C949",
+        .entry = DR_TONGUE_MOSAIC_JOB_PC,
+        .ret_op = DR_TONGUE_MOSAIC_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 220,
+    },
+    {
+        .name = "dr_tongue_mosaic_off_job",
+        .symbol = "$83:C95D",
+        .entry = DR_TONGUE_MOSAIC_OFF_JOB_PC,
+        .ret_op = DR_TONGUE_MOSAIC_OFF_JOB_RTL_PC,
         .ret_kind = COSIM_RTL,
         .run = shim_mosaic_off_job,
         .accepts = accepts_vbl_job,

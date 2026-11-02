@@ -265,6 +265,34 @@ typedef enum {
   HP_SPIDER_DIED,            // ...health under nought
   HP_SPIDER_NO_DAMAGE,       // ...none taken
   HP_SPIDER_SURVIVED,        // ...or some, and to the `JML $81:8506`
+  HP_DR_TONGUE_SELF_OFF,     // $83:C994, its record wearing nothing
+  HP_DR_TONGUE_SELF_TONGUE,  // ...wearing id 9
+  HP_DR_TONGUE_FLASHING,     // ...flashing
+  HP_DR_TONGUE_IGNORE,       // ...an id below a shot's
+  HP_DR_TONGUE_TOUCHED_5,    // ...a player's touch, id 5, to $83:C4A9
+  HP_DR_TONGUE_TOUCHED_6,    // ...or 6
+  HP_DR_TONGUE_DRAW_ONCE,    // ...and each of its two draws, `rng_next` once
+  HP_DR_TONGUE_DRAW_TWICE,   // ...or twice
+  HP_DR_TONGUE_60_5D,        // ...$60, answered as $5D
+  HP_DR_TONGUE_60_5C,        // ...or as $5C, on the eighth tick
+  HP_DR_TONGUE_70_5D,        // ...$70, the same, on the sixteenth
+  HP_DR_TONGUE_70_5C,
+  HP_DR_TONGUE_6F_5D,        // ...$6F, as $5D
+  HP_DR_TONGUE_6F_63,        // ...or $63
+  HP_DR_TONGUE_6F_5C,        // ...or $5C
+  HP_DR_TONGUE_61,           // ...$61, as $5C
+  HP_DR_TONGUE_62_5D,        // ...$62, as $5D
+  HP_DR_TONGUE_62_5C,        // ...or $5C, one tick in four
+  HP_DR_TONGUE_67,           // ...$67, as $5C
+  HP_DR_TONGUE_OTHER,        // ...any other, as itself
+  HP_DR_TONGUE_DIED,         // $83:CA11, health under nought
+  HP_DR_TONGUE_NO_DAMAGE,    // ...none taken
+  HP_DR_TONGUE_SURVIVED,     // ...or some
+  HP_DR_TONGUE_SHOT_IGNORE,  // $83:CC03, an id below a shot's
+  HP_DR_TONGUE_SHOT_1,       // ...id 1, and it is gone
+  HP_DR_TONGUE_SHOT_5,       // ...id 5
+  HP_DR_TONGUE_SHOT_6,       // ...id 6
+  HP_DR_TONGUE_SHOT_HIT,     // ...a shot
   HP_DEEP,
   HANDLER_PIECE_COUNT,
 } HandlerPiece;

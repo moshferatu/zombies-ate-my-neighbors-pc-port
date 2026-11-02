@@ -1499,21 +1499,7 @@ static uint32_t block(GiantSpider* s, uint32_t pc) {
       ran(s, GIANT_SPIDER_RUN_B08C);
       return stop(AT(0xb08f));
 
-    // `JSL $82:8113`: the layer blanked, by `boss_bg_clear_job`.
-    case AT(0xb093):
-      ran(s, GIANT_SPIDER_RUN_B093);
-      jsl(s, 0xb093);
-      set_data(s, W_ONE_SRC, 0x8136);
-      set_data(s, W_ONE_BANK, 0x0082);
-      set_data(s, W_ONE_VRAM, 0x6800);
-      set_data(s, W_ONE_BYTES, 0x2000);
-      names(s, 0x82b5, 0x0082);
-      ran(s, GIANT_SPIDER_RUN_8113);
-      return stop(0x828131u);
-    case 0x828135u:
-      ran(s, GIANT_SPIDER_RUN_8135);
-      rtl(s);
-      return AT(0xb097);
+    // After `JSL $82:8113`, the layer blanked (`boss_bg_clear`).
     case AT(0xb097):
       lda(s, 0);
       set_w7e(s, W7E_SNAKEOID_UP, 0);

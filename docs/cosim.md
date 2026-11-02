@@ -19954,3 +19954,28 @@ near (`actor_nearest` only answers players), no web slot free with fewer
 than three out (the two cannot disagree), no room for the sparkle or for
 what comes after on 48, a hit of `$6F`, a probe stopped by the map's edge,
 the last picture not up, and a small spider surviving a hit.
+
+**Dr. Tongue.** `$83:C687` and its shot's thread, `$83:CA4A`, are ported as
+`port/dr_tongue.h`, one block machine for both. Its blocks, runs, entries and
+exits were generated from the listing by a script and written over by hand,
+and it is priced as the giant spider is: `price_runs.py`'s runs, `rng_next`
+at its two prices, `$82:80E0` as a run, and the wide test, which is the
+Snakeoid's again, by `WIDE_COST`. Its two handlers are pieces; the head's,
+on a player's touch, makes the thread's `$83:C4A9` itself, and its two draws
+are pieces of their own. Its colours' thread is two rows of
+`palcycle_head`. The layer's blanking, `$82:8113`, is now `boss_bg_clear`,
+called from both bosses, with three link rows: the giant spider's and Dr.
+Tongue's calls to it after a sleep, and its `RTL` at `$82:8135`, which the
+Snakeoid's row there declines for a data bank not its own. Over the seven
+`tongue48*` sessions and the six `spider*` again, every row is exact, the
+handlers and the colours to the refresh, and nothing diverges. The touch
+session finds `carried_begin` (`port/carried.h`), what the head's charge
+does to a player, short by 24 cycles on one call of three: a gap in that
+routine's model, not this one's, and not yet found. Untaken: two players
+(the split at a side), a way of nought faced, nobody to go at, a hit of
+`$60`, `$70` or `$6F`, a player's touch with the top bit set, the player
+moving above it as it means to lick or licks, 40 or more across as it
+means to, licking across with a tongue already out (and so its spits there,
+`dr_tongue_spit_side`), death with a tongue out, and a shot's pop played to
+its end (`dr_tongue_shot_popped`): every shot in the sessions ends by a
+player's touch, which parks its thread.

@@ -184,6 +184,7 @@ $80:C8F6  object_spawner_body  # a thread, spawned at $80:87C1 -- not a subrouti
 $82:8014  boss_bg_queue        # a stored 14x20 figure -> 20 bg_dma jobs, one per row
 $82:8069  boss_bg_queue_flip   # ...the same, staged through boss_bg_stage and mirrored
 $82:81C9  boss_bg_dma          # the vblank job both register: drains bg_dma into $2118
+$82:8113  boss_bg_clear        # the big figures' layer blanked: boss_bg_clear_job asked for
 $82:892E  boss_bg_frame        # picks one of four frames, and plain or flipped on $36
 $82:895E  boss_bg_frame_table  # 4 far pointers: $97:FD9D and three in bank $83
 $82:896E  boss_bg_frame_offset # 4 (dx,dy) pairs; dx negated when $36 is negative
@@ -408,6 +409,9 @@ $82:AB95  level_script         # 19 levels: reads its parameter through [$00]
 $82:9569  level_intro_9569     # 3 levels: adds #$0028 to $00DE, then a palette load
 $82:873C  level_intro_873c     # 2 levels: the same with #$0018 and $94:FFAB
 $83:AD33  giant_spider         # levels 36 and 48: near_wait, then port/giant_spider.h
+$83:C687  dr_tongue            # level 48 after the spider: he drinks the potion and is the head
+$83:CA4A  dr_tongue_shot       # its shot: homes in on the nearest player for three seconds
+$80:A36E  palcycle_head        # the head's colours, eight arrangements every ten ticks
 $81:F55E  thrown_thread        # weapons 7 to 11: a thing that flies at a height until it lands or hits
 $81:FAF5  spray_thread         # weapons 1 and 13: the extinguisher's foam and the flamethrower's flame
 $82:A8BB  snakeoid_thread      # 4 uses; falls into the same body as...

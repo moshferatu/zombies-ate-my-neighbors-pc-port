@@ -732,6 +732,26 @@ mosaic jobs are the saucer's to the byte. It took the registry past 2048,
 so `COSIM_MAX_ROUTINES` is 4096. The survey's six `spider*` sessions run it,
 from the player poked beside its point to its death on both levels.
 
+**Dr. Tongue, 2026-11-01.** `$83:C687` is ported: `port/dr_tongue.h`. It is
+what the giant spider begins as it dies on level 48, the last of the bosses:
+Dr. Tongue, who blinks until a player comes within 65, drinks his potion, and
+becomes his head on the big figures' layer in three pictures under the
+mosaic. The head is six records and seven states: it sweeps above the
+nearest player, licks down, goes up and down at a side, licks across, and
+charges. On its first two lives it licks with up to three tongues, and on its
+last two it spits shots (`$83:CA4A`) that home in on the nearest player. It
+has four lives of 35 health, puffs between them, and dies in puffs and
+flashes, paying 20,000 and putting down the map's block at (4, 2). Its
+handler, `$83:C994`, its shot's, `$83:CC03`, its two mosaic jobs and its
+colours' thread, `$80:A36E` (`palcycle_head`), are ported with it. It is
+written as the giant spider is, as blocks, but the blocks were generated
+from the listing by a script and named by hand, 475 runs of them. The
+layer's blanking, `$82:8113`, which the giant spider had folded into its own
+stretch, is now `boss_bg_clear` (`port/bossbg.h`), a row of its own that
+both call, with link rows for the call after a sleep and for the `RTL` after
+its job is asked for. With it level 48 plays through to the end with
+nothing for a 65816 to run. The survey's seven `tongue48*` sessions run it.
+
 ### Step 3. A machine with no console
 
 Small, by the survey.

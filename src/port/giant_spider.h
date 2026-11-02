@@ -75,7 +75,7 @@
 // about it; a third of a second. Then on level 36 a gold sparkle at its place
 // (`$83:B55E`), tried every tick until there is room, and on level 48, once
 // there are fewer than 18 records about, what comes after it, `$83:C687`,
-// which is not ported. Its layer is blanked (`$82:8113`), `$7E:6058` (a
+// which is `port/dr_tongue.h`. Its layer is blanked (`$82:8113`), `$7E:6058` (a
 // Snakeoid is up) is cleared, on level 36 the map's block at (6, 1) is put
 // down as the block after it (`blockmap_cell_ptr`, `tile_block_begin`), the
 // mosaic is ended, and the thread ends.
@@ -96,8 +96,8 @@
 // turns the stretch down. It makes three calls itself, whose cost is known:
 // the draws (`rng_next`), whether the last picture has gone up (`$82:80E0`),
 // and the wide test, `$83:A97C`, which is the Snakeoid's `$82:A214` to the
-// byte. It folds `$82:8113` in too: the layer's blanking, in bank `$82`,
-// stops on the job it asks for and comes back by its `RTL`.
+// byte. The layer's blanking, `$82:8113`, is a call the harness makes
+// (`boss_bg_clear`, `port/bossbg.h`), as it is for Dr. Tongue's head.
 //
 // The thread runs with data bank `$83`, its own.
 //
@@ -211,8 +211,7 @@
   X(sparkle_begun, "$83:B06B", 0x83b06bu) \
   X(after_waited, "$83:B07E", 0x83b07eu) \
   X(after_begun, "$83:B08A", 0x83b08au) \
-  X(last_waited, "$83:B093", 0x83b093u) \
-  X(blank_asked, "$82:8135", 0x828135u) \
+  X(blanked, "$83:B097", 0x83b097u) \
   X(tile_looked, "$83:B131", 0x83b131u) \
   X(tile_set, "$83:B13C", 0x83b13cu) \
   X(mosaic_ended, "$83:B0AB", 0x83b0abu) \
@@ -284,7 +283,7 @@
   X(0x83b07au) /* JSL thread_yield */ \
   X(0x83b086u) /* JSL thread_spawn */ \
   X(0x83b08fu) /* JSL thread_yield */ \
-  X(0x828131u) /* JSL vbl_queue_a_add, in `$82:8113` */ \
+  X(0x83b093u) /* JSL boss_bg_clear */ \
   X(0x83b12du) /* JSL blockmap_cell_ptr */ \
   X(0x83b138u) /* JSL tile_block_begin */ \
   X(0x83b0a7u) /* JSL vbl_queue_a_add */ \
@@ -519,9 +518,6 @@
   X(B080, 0x83b086u) \
   X(B08A, 0x83b08cu) \
   X(B08C, 0x83b08fu) \
-  X(B093, 0x83b097u) \
-  X(8113, 0x828131u) \
-  X(8135, 0x828136u) \
   X(B097, 0x83b0a1u) \
   X(B11F, 0x83b127u) \
   X(B127, 0x83b12du) \

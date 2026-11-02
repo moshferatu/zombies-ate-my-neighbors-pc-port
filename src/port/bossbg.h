@@ -86,6 +86,8 @@
 #define BOSS_BG_QUEUE_FLIP_ENTRY 0x828069u
 #define BOSS_BG_QUEUE_ONE_ENTRY 0x8280e8u
 #define BOSS_BG_QUEUE_ONE_RTL 0x828112u
+#define BOSS_BG_CLEAR_ENTRY 0x828113u
+#define BOSS_BG_CLEAR_EXIT 0x828131u   // its `JSL vbl_queue_a_add`
 
 // `boss_bg_queue_one`'s four words, in the order its callers set them.
 #define W_BOSS_BG_ONE_SRC 0x1e58u
@@ -171,5 +173,16 @@ void boss_bg_queue_flip(Wram* w, const Rom* rom, BossBgRegs* out);
 // the same vblank job asked for. It has no direct page of its own, so N and
 // Z are the queue's.
 void boss_bg_queue_one(Wram* w, BossBgRegs* out);
+
+// `$82:8113` -- the layer blanked: `boss_bg_queue_one`'s four words set to
+// `$2000` bytes of noughts from `$82:8136` to the tilemap, and A and Y left
+// naming `boss_bg_clear_job` (`$82:82B5`) for the `JSL vbl_queue_a_add` it
+// stops on. The `RTL` after that is the harness's to make. The giant spider
+// and Dr. Tongue's head call it as they die.
+#define BOSS_BG_CLEAR_SRC 0x8136u
+#define BOSS_BG_CLEAR_SRC_BANK 0x0082u
+#define BOSS_BG_CLEAR_BYTES 0x2000u
+#define BOSS_BG_CLEAR_JOB 0x82b5u
+void boss_bg_clear(Wram* w, BossBgRegs* out);
 
 #endif

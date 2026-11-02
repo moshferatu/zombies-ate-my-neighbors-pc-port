@@ -168,3 +168,12 @@ void boss_bg_queue_one(Wram* w, BossBgRegs* out) {
   wram_w16(w, W_BG_DMA_CURSOR, next);
   register_vbl_job(w, next, out);
 }
+
+void boss_bg_clear(Wram* w, BossBgRegs* out) {
+  wram_w16(w, W_BOSS_BG_ONE_SRC, BOSS_BG_CLEAR_SRC);
+  wram_w16(w, W_BOSS_BG_ONE_BANK, BOSS_BG_CLEAR_SRC_BANK);
+  wram_w16(w, W_BOSS_BG_ONE_VRAM, BOSS_BG_VRAM_BASE);
+  wram_w16(w, W_BOSS_BG_ONE_BYTES, BOSS_BG_CLEAR_BYTES);
+  out->a = BOSS_BG_CLEAR_JOB;
+  out->y = BOSS_BG_VBL_JOB_BANK;
+}
