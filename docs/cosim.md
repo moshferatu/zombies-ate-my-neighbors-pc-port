@@ -19969,9 +19969,12 @@ Tongue's calls to it after a sleep, and its `RTL` at `$82:8135`, which the
 Snakeoid's row there declines for a data bank not its own. Over the seven
 `tongue48*` sessions and the six `spider*` again, every row is exact, the
 handlers and the colours to the refresh, and nothing diverges. The touch
-session finds `carried_begin` (`port/carried.h`), what the head's charge
-does to a player, short by 24 cycles on one call of three: a gap in that
-routine's model, not this one's, and not yet found. Untaken: two players
+session was the first to reach `carried_begin` (`port/carried.h`), what the
+head's charge does to a player, and found it short by 24 cycles on one call
+of three: two of its probe's steps met the ground, and a step found blocked
+leaves by a taken `BCS` that no block priced, since each test's `BCS` is
+priced in the block after it when it is not taken. `CB_BLOCKED` now carries
+it, and the three calls are exact. Untaken: two players
 (the split at a side), a way of nought faced, nobody to go at, a hit of
 `$60`, `$70` or `$6F`, a player's touch with the top bit set, the player
 moving above it as it means to lick or licks, 40 or more across as it

@@ -23887,7 +23887,9 @@ static const CosimRun CB_COST[CB_BLOCK_COUNT] = {
     [CB_EDGE] = {122, 10, 2},
     [CB_COUNT] = {74, 6, 1},
     [CB_CLEAR] = {86, 3, 0},
-    [CB_BLOCKED] = {86, 3, 0},
+    // The `BCS` that found the step blocked, which each test's next block
+    // prices when it is not taken, and then `PLA : SEC : RTS`.
+    [CB_BLOCKED] = {12 + 86, 2 + 3, 0},
     [CB_TRIED] = {12, 2, 0},
     [CB_NEXT] = {92, 8, 1},
     [CB_WAY] = {786, 80, 12},
