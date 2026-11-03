@@ -10137,7 +10137,10 @@ static int thread_stretch_cycles(const ThreadStretchWork* k,
 // whatever thread was frozen: the giant spider's has bank `$83`.
 static bool thread_stretch_bank_ok(const CosimRegs* in) {
   const uint8_t bank = (uint8_t)(in->pc >> 16);
-  if (bank == 0x80 || in->pc == FREEZE_BEGIN_PC || in->pc == FREEZE_PASS_PC)
+  // `$82:DC57` reads only `$0038` through it, and the bazooka's shot calls
+  // it with bank `$81`.
+  if (bank == 0x80 || in->pc == FREEZE_BEGIN_PC || in->pc == FREEZE_PASS_PC ||
+      in->pc == FOURTH_DRAW_PC)
     return bank_sees_low_wram(in->db);
   return in->db == bank;
 }
@@ -28560,7 +28563,26 @@ static void shim_shot5_broken(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (c.d & 0xffu) != 0));
 }
 
+// `$81:ED06`, where `$82:DC57` comes back to the shot's page.
+static bool accepts_shot5_points(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == SHOT5_BANK && in->d >= 0x0100 &&
+         in->d < 0x1f00;
+}
+
+static void shim_shot5_points(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  shot5_points(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&S5_RUN_AWARD, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
 static const uint32_t SHOT5_DONE_EXITS[] = {SHOT5_END_PC};
+static const uint32_t SHOT5_POINTS_EXITS[] = {SHOT5_SCORE_CALL_PC};
 static const uint32_t SHOT5_BROKEN_EXITS[] = {SHOT5_HOLE_CALL_PC,
                                               SHOT5_SCORE_CALL_PC};
 
@@ -38721,6 +38743,16 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(SHOT5_BROKEN_EXITS),
         .uncalled = true,
         .cycles = 300,
+    },
+    {
+        .name = "shot5_points",
+        .symbol = "$81:ED06",
+        .entry = SHOT5_POINTS_PC,
+        .run = shim_shot5_points,
+        .accepts = accepts_shot5_points,
+        COSIM_EXITS(SHOT5_POINTS_EXITS),
+        .uncalled = true,
+        .cycles = 100,
     },
     // The swipe's thread, round its two calls.
     {

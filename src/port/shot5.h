@@ -24,12 +24,16 @@
 //   $81:ECE0  broken  ...the block counted, and fifty points to whoever
 //                     fired it
 //
+//   $81:ED06  points  ...after `$82:DC57` comes back, when broken called it
+//
 // The `RTS` the points come back to, `$81:ED12`, is a link of
 // `port/links.h`'s, and it returns to burst.
 //
 // The two calls not here are `$82:DC57`, after a broken tile with bit 5
 // when the shot was fired the way numbered two, and the end of the thread.
-// The corpus never breaks such a tile. I have not read `$82:DC57`.
+// `$82:DC57` is what the player's fourth tile leaves, a thing at random, and
+// is `port/thread_stretches.h`'s `fourth_draw`. No session breaks such a
+// tile; level 36 has them.
 //
 // **Where it starts depends on whose it is.** The thread is handed a side
 // in `$06`, 0 or 2 in `port/score.h`'s sense, and keeps it in `$48`. Its
@@ -110,6 +114,7 @@
 #define SHOT5_END_PC 0x81ec60u      // `shot_5_end`
 
 #define SHOT5_BROKEN_PC 0x81ece0u      // where the block's put comes back
+#define SHOT5_POINTS_PC 0x81ed06u      // where `$82:DC57` comes back
 #define SHOT5_HOLE_CALL_PC 0x81ed02u   // `JSL $82:DC57`
 #define SHOT5_SCORE_CALL_PC 0x81ed0eu  // `JSL score_add`
 #define SHOT5_HOLE_TILE 0x0020         // bit 5 of the tile struck
@@ -210,5 +215,8 @@ typedef enum {
   SHOT5_BROKEN_HOLE,   // with it, fired the way numbered two: `$82:DC57`
 } Shot5Broken;
 Shot5Broken shot5_broken(Wram* w, PortCpu* c);
+
+// `$81:ED06`, on the shot's page.
+void shot5_points(Wram* w, PortCpu* c);
 
 #endif

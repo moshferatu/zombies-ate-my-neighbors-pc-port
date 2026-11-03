@@ -360,12 +360,15 @@ Shot5Broken shot5_broken(Wram* w, PortCpu* c) {
   } else {
     PORT_COVER(shot5_broken_plain);
   }
+  shot5_points(w, c);
+  return how;
+}
 
-  // `$81:ED06`: the points, to the side in the top bit of A.
+void shot5_points(Wram* w, PortCpu* c) {
+  // The points, to the side in the top bit of A.
   c->x = SHOT5_BREAK_POINTS;
   set_nz16(c, c->x);
-  lda(c, field(w, page, SHOT5_DP_SIDE));
+  lda(c, field(w, c->d, SHOT5_DP_SIDE));
   lda(c, ror16(c, ror16(c, lsr16(c, c->a))));
   c->pc = SHOT5_SCORE_CALL_PC;
-  return how;
 }

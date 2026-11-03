@@ -19966,6 +19966,21 @@ the freeze reads through it, as the survivor's flash already did, and their
 2 and 120 calls are exact. The bubble's rows keep the narrower test: no
 handler on a thread of bank `$83` sends `$5E` to `$81:83C6`.
 
+**The bazooka's prize, 2026-11-02.** The game stopped on level 36 at
+`$82:DC57`. That is what a broken tile leaves, a thing at random, and it was
+ported only as the tail of `ts_fourth_prize`, which runs into it from the
+player's fourth tile at `$80:EA02`. The bazooka's shot calls it straight, by
+`JSL` at `$81:ED02`, when it breaks a tile with bit 5 fired up (the way
+numbered two), and then pays its fifty points from `$81:ED06`. Neither
+address had a row, and no session had broken such a tile. Level 36 has 44
+of them, attributes `$63`. Now `ts_fourth_draw` is `$82:DC57`'s row, shared
+by both callers, and takes any data bank that sees low WRAM, since it reads
+only `$0038` through it and the shot's bank is `$81`; `shot5_points` is
+`$81:ED06`'s. The survey's `bazooka36` session fires up into one: both rows
+exact, and the game runs it with the 65816 running nothing. The player has
+to be held there facing up, because by frame 4400 the game and the ROM have
+walked them different ways, and unheld the game fires down.
+
 **Dr. Tongue.** `$83:C687` and its shot's thread, `$83:CA4A`, are ported as
 `port/dr_tongue.h`, one block machine for both. Its blocks, runs, entries and
 exits were generated from the listing by a script and written over by hand,

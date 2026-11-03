@@ -137,6 +137,8 @@
 //             back in the level's list, `object_put_back`, at that place
 //
 // Each comes back to the `RTL` there, and the thread sleeps ten ticks.
+// `$82:DC57` has a row of its own too, for the bazooka's shot, which calls
+// it with X, Y and A of its own (`port/shot5.h`).
 //
 // ## The monster potion, `$80:D9A3`
 //
@@ -1590,6 +1592,7 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 // The fourth's tile, back from its block.
 #define FOURTH_PRIZE_PC 0x80ea02u
 #define FOURTH_PRIZE_RETURN 0xea15u      // what `JSL $82:DC57` pushes
+#define FOURTH_DRAW_PC 0x82dc57u         // the shot's way in, and the walk's
 #define FOURTH_PRIZE_DRAW_PC 0x82dc5bu   // `JSL rng_next`
 #define FOURTH_PRIZE_ITEM_PC 0x82dc72u   // `JSL object_put_back`
 #define FOURTH_PRIZE_THREAD_PC 0x82dc9bu // `JSL thread_spawn`
@@ -3147,6 +3150,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(saucer_queued, "$82:8786", SAUCER_QUEUED_PC, saucer_queued, SAUCER, TS_NEEDS_NOTHING) \
   X(saucer_aimed, "$82:84DD", SAUCER_AIMED_PC, saucer_aimed, SAUCER, TS_NEEDS_SAUCER_AIMED) \
   X(fourth_prize, "$80:EA02", FOURTH_PRIZE_PC, fourth_prize, FOURTH_PRIZE, TS_NEEDS_NOTHING) \
+  X(fourth_draw, "$82:DC57", FOURTH_DRAW_PC, fourth_draw, FOURTH_PRIZE, TS_NEEDS_NOTHING) \
   X(argument_80d9ac, "$80:D9AC", 0x80d9acu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(monster_pictured, "$80:D9B3", MONSTER_PICTURES_PC, monster_pictured, MONSTER, TS_NEEDS_NOTHING) \
   X(monster_begun, "$80:D9BC", MONSTER_BEGUN_PC, monster_begun, MONSTER, TS_NEEDS_NOTHING) \

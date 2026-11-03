@@ -6360,8 +6360,8 @@ void punch_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
 
 // --- the fourth's tile, broken open -----------------------------------------
 
-// `$80:EA02`, back from the block, and `$82:DC57`: what the tile leaves, by
-// a byte at random.
+// `$80:EA02`, back from the block: the place and the way, and on into
+// `$82:DC57`.
 void fourth_prize(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   set_c(c, false);
   ldx(c, adc16(c, page(w, c, WALK_DP_X), FOURTH_PRIZE_ACROSS));
@@ -6371,6 +6371,13 @@ void fourth_prize(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   push8(w, c, (uint8_t)(c->pc >> 16));
   push16(w, c, FOURTH_PRIZE_RETURN);
   ran(k, TS_FOURTH_BACK);
+  fourth_draw(w, rom, c, k);
+}
+
+// `$82:DC57`: what a broken tile leaves at X and Y, by a byte at random, for
+// one facing the way in A. The player's fourth tile calls it, and so does
+// the bazooka's shot (`port/shot5.h`).
+void fourth_draw(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   push16(w, c, c->x);
   wram_w16(w, W_FOURTH_FACING, c->a);
   c->pc = FOURTH_PRIZE_DRAW_PC;
