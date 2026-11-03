@@ -70,7 +70,7 @@ void screen_tiles_fill(Wram* w, PortCpu* c, ScreenTilesWork* k) {
   wram_w16(w, SCREEN_DP_ROW, row);
 
   TilemapAllocRegs buffer;
-  tilemap_buffer_alloc(w, SCREEN_TILES_BUFFER, &buffer);
+  tilemap_buffer_alloc(w, SCREEN_TILES_BUFFER, &buffer, NULL);
   wram_w16(w, SCREEN_DP_BUFFER, buffer.a);
   uint16_t to = buffer.a;
 

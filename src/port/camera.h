@@ -36,6 +36,79 @@
 #include "assets/rom.h"
 #include "port/wram.h"
 
+// --- What a call ran, for its price ------------------------------------------
+//
+// Every routine in the chain is straight-line code between a few exits, apart
+// from the copy loops, whose one branch is the priority rule. So a call's cost
+// is fixed once you know which straight runs of the ROM it went through and
+// how many times, and that is what a `CameraTally` counts. The port fills it as
+// it goes; `cosim/routines.c` holds what each run costs and adds them up.
+//
+// One tally serves the whole chain: a call to `camera_follow` counts its own
+// runs and every one of its callees', into the same struct. Every function
+// below takes one, and NULL means nobody is asking.
+//
+// The names say where each run starts. A run ends at the branch, `JSR` or
+// `RTL` after it, and the branch is priced as not taken: `CAM_RUN_TAKEN` is the
+// one idle cycle a taken branch adds.
+typedef enum {
+  CAM_RUN_TAKEN,
+  // $80:A93F camera_follow
+  CAM_RUN_FOLLOW_HEAD,     // $A93F PHD .. BIT $26 : BVS
+  CAM_RUN_FOLLOW_TEST,     // $A948/$A94C/$A953 LDA $D2/$D4 : Bxx
+  CAM_RUN_FOLLOW_BOTH,     // $A957 the midpoint, to its BRA
+  CAM_RUN_FOLLOW_A,        // $A971 player A alone, to its BRA
+  CAM_RUN_FOLLOW_B,        // $A983 player B alone
+  CAM_RUN_FOLLOW_AXIS,     // $A993/$A9AE the delta : TAX : BEQ
+  CAM_RUN_FOLLOW_SIGN,     // $A9A1/$A9BC ASL A : BCC
+  CAM_RUN_FOLLOW_BEHIND,   // $A9A4/$A9BF JSL : BRA
+  CAM_RUN_FOLLOW_AHEAD,    // $A9AA/$A9C5 JSL
+  CAM_RUN_FOLLOW_EXIT,     // $A950/$A9C9 PLD : SEC : RTL
+  // $80:A937 camera_scroll's thunks
+  CAM_RUN_SCROLL_JSL,      // $A937/$A93B JSL
+  // $80:A68B/$A70A/$A789/$A816 the four scroll routines
+  CAM_RUN_BACK_HEAD,       // $A68B/$A816 LDA : BEQ/BNE
+  CAM_RUN_BACK_STEP,       // $A690/$A81C DEC .. CMP #$0007 : BNE
+  CAM_RUN_FWD_HEAD,        // $A70A/$A789 LDA : CMP : BNE
+  CAM_RUN_FWD_STEP,        // $A712/$A791 INC .. AND #$0007 : BNE
+  CAM_RUN_X_STRIP_HEAD,    // $A69F/$A71E the cursor .. LDA $5E : BEQ
+  CAM_RUN_X_STRIP_SPLIT,   // $A6CC/$A74B JSR $A5E5, for the wrapped half
+  CAM_RUN_X_STRIP_TAIL,    // $A6CF/$A74E the other half, and the queue entry
+  CAM_RUN_Y_STRIP,         // $A79D/$A82B the cursor .. JSR $9E6D
+  CAM_RUN_SCROLL_RTL,      // the RTL every exit of all four ends on
+  // the leaves
+  CAM_RUN_ALLOC,           // $A401 tilemap_buffer_alloc, whole
+  CAM_RUN_WINDOW,          // $A54D camera_window_update, whole
+  CAM_RUN_SPLIT_Y,         // $A588 camera_split_y, whole
+  CAM_RUN_SPLIT_X_TEST,    // $A599 LDA $1B76 : CMP #$0020 : BCS
+  CAM_RUN_SPLIT_X_LEFT,    // $A5A1, to its RTS
+  CAM_RUN_SPLIT_X_RIGHT,   // $A5C1, to its RTS
+  CAM_RUN_COLUMN_HEAD,     // $A5E5 PHA .. LDY #$0000
+  CAM_RUN_COLUMN_TILE,     // $A5F7 and $A609, one tile less its priority
+  CAM_RUN_COLUMN_PRIORITY, // $A602 LDA #$2000 : ORA : STA
+  CAM_RUN_COLUMN_TAIL,     // $A615 PLA .. RTS
+  CAM_RUN_ROW_HEAD,        // $A61D JSL $80AD1C .. LDY #$0040
+  CAM_RUN_ROW_TILE,        // $A638 and $A64A, one tile less its priority
+  CAM_RUN_ROW_PRIORITY,    // $A643 LDA #$2000 : ORA : STA
+  CAM_RUN_RTS,             // $A64E, $9E7A: a bare RTS
+  CAM_RUN_TILE_ADDR,       // $80:AD1C tilemap_tile_addr, whole
+  CAM_RUN_REQUEST_TEST,    // $9E6D BIT $26 : BMI, $9E71 LDA $CE : BEQ
+  CAM_RUN_REQUEST_SET,     // $9E75 LDA #$8000 : STA $26
+  // How many of the runs above read a word of ROM through the data bank:
+  // `LDA $9D77,Y` and `LDA $9DF7,Y`. Not a run of its own; what one costs
+  // depends on the bank, so the price adds the difference.
+  CAM_RUN_TABLE_READS,
+  CAM_RUN_COUNT
+} CameraRun;
+
+typedef struct {
+  uint32_t runs[CAM_RUN_COUNT];
+} CameraTally;
+
+static inline void camera_tally(CameraTally* t, CameraRun run, uint32_t n) {
+  if (t) t->runs[run] += n;
+}
+
 // --- $80:A5E5  tilemap_copy_column — A = how many tiles ---------------------
 //
 // Copies `count` tile words down a column of the expanded map into the buffer
@@ -91,7 +164,7 @@ typedef struct {
 } TilemapCopyRegs;
 
 void tilemap_copy_column(Wram* w, uint16_t count, uint16_t col, uint16_t row,
-                         TilemapCopyRegs* out);
+                         TilemapCopyRegs* out, CameraTally* t);
 
 // --- $80:A401  tilemap_buffer_alloc — A = bytes; A = where they start ------
 //
@@ -132,7 +205,8 @@ typedef struct {
 // on. Never observed; see above.
 bool tilemap_buffer_alloc_supported(const Wram* w, uint16_t size);
 
-void tilemap_buffer_alloc(Wram* w, uint16_t size, TilemapAllocRegs* out);
+void tilemap_buffer_alloc(Wram* w, uint16_t size, TilemapAllocRegs* out,
+                          CameraTally* t);
 
 // --- $80:A61D  tilemap_copy_row — X = column, Y = row; no arguments else -----
 //
@@ -181,7 +255,7 @@ void tilemap_buffer_alloc(Wram* w, uint16_t size, TilemapAllocRegs* out);
 bool tilemap_copy_row_supported(const Wram* w);
 
 void tilemap_copy_row(Wram* w, uint16_t col, uint16_t row,
-                      TilemapCopyRegs* out);
+                      TilemapCopyRegs* out, CameraTally* t);
 
 // --- $80:A54D  camera_window_update — no arguments, no branches -------------
 //
@@ -211,7 +285,7 @@ typedef struct {
   bool n, z, c;
 } CameraWindowRegs;
 
-void camera_window_update(Wram* w, CameraWindowRegs* out);
+void camera_window_update(Wram* w, CameraWindowRegs* out, CameraTally* t);
 
 // --- $5C..$66, the six words the two splitters leave behind ------------------
 //
@@ -253,7 +327,7 @@ typedef struct {
   bool n, z, c;
 } CameraSplitRegs;
 
-void camera_split_y(Wram* w, CameraSplitRegs* out);
+void camera_split_y(Wram* w, CameraSplitRegs* out, CameraTally* t);
 
 // --- $80:A599  camera_split_x — the other axis, and four times the routine ---
 //
@@ -291,7 +365,7 @@ void camera_split_y(Wram* w, CameraSplitRegs* out);
 #define TILEMAP_SCREEN_MASK 0x001f   // ...within one of the two screens
 #define TILEMAP_SECOND_SCREEN 0x0400u  // word offset of the right-hand 32x32
 
-void camera_split_x(Wram* w, CameraSplitRegs* out);
+void camera_split_x(Wram* w, CameraSplitRegs* out, CameraTally* t);
 
 // --- $80:9E6D  vram_queue_request — seven bytes, three exits -----------------
 //
@@ -323,7 +397,8 @@ typedef struct {
   bool n, z;
 } VramRequestRegs;
 
-void vram_queue_request(Wram* w, uint16_t a, VramRequestRegs* out);
+void vram_queue_request(Wram* w, uint16_t a, VramRequestRegs* out,
+                        CameraTally* t);
 
 // --- $80:A68B / $A70A / $A789 / $A816 — the four scroll routines -------------
 //
@@ -424,13 +499,13 @@ bool camera_scroll_down_supported(const Wram* w);
 bool camera_scroll_up_supported(const Wram* w);
 
 void camera_scroll_left(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                        CameraScrollRegs* out);
+                        CameraScrollRegs* out, CameraTally* t);
 void camera_scroll_right(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                         CameraScrollRegs* out);
+                         CameraScrollRegs* out, CameraTally* t);
 void camera_scroll_down(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                        CameraScrollRegs* out);
+                        CameraScrollRegs* out, CameraTally* t);
 void camera_scroll_up(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                      CameraScrollRegs* out);
+                      CameraScrollRegs* out, CameraTally* t);
 
 // --- $80:A93F  camera_follow — the top of the chain --------------------------
 //
@@ -515,7 +590,7 @@ typedef struct {
 bool camera_follow_supported(const Wram* w);
 
 void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
-                   CameraFollowRegs* out);
+                   CameraFollowRegs* out, CameraTally* t);
 
 // --- $80:A937  camera_scroll — up to four pixels of following a frame --------
 //
@@ -533,6 +608,6 @@ bool camera_scroll_supported(Wram* scratch, const Rom* rom, uint16_t x,
                              uint16_t y);
 
 void camera_scroll(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
-                   CameraFollowRegs* out);
+                   CameraFollowRegs* out, CameraTally* t);
 
 #endif  // PORT_CAMERA_H

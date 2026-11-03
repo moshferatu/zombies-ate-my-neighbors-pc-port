@@ -1960,11 +1960,35 @@ static void shim_ant_deliver(Wram* w, const Rom* rom, const CosimRegs* in,
 // $80:BE0C, $80:BE41 — a display record's two ends
 // ---------------------------------------------------------------------------
 
+// `$80:BE0C` by its path. It installs bank `$7E` itself and uses no direct
+// page, so the only thing its cost depends on is how many taken slots it
+// stepped past, and X says: it counts down from 32 once a slot, and the scan
+// stops at the free one or at zero.
+static const CosimRun SLOT_ALLOC_RUN_HEAD = {116, 11, 0};  // PHB .. LDY #$1ACA
+static const CosimRun SLOT_ALLOC_RUN_PROBE = {64, 6, 0};   // LDA : LSR : BCC
+static const CosimRun SLOT_ALLOC_RUN_STEP = {66, 8, 0};    // TYA .. DEX : BNE
+static const CosimRun SLOT_ALLOC_RUN_TOOK = {272, 19, 0};  // $BE28 .. RTL
+static const CosimRun SLOT_ALLOC_RUN_FULL = {94, 3, 0};    // $BE25 PLB : PLB : RTL
+
+static int slot_alloc_cycles(const SlotAllocRegs* r, bool fast) {
+  bool full = r->c;
+  int stepped = ACTOR_SLOT_COUNT - r->x;
+  // Every step but the 32nd goes back round by a taken `BNE`, and a free slot
+  // is reached by a taken `BCC`.
+  int taken = full ? stepped - 1 : stepped + 1;
+  return cosim_run_cycles(&SLOT_ALLOC_RUN_HEAD, fast) +
+         (stepped + (full ? 0 : 1)) * cosim_run_cycles(&SLOT_ALLOC_RUN_PROBE, fast) +
+         stepped * cosim_run_cycles(&SLOT_ALLOC_RUN_STEP, fast) +
+         6 * taken +
+         cosim_run_cycles(full ? &SLOT_ALLOC_RUN_FULL : &SLOT_ALLOC_RUN_TOOK, fast);
+}
+
 static void shim_actor_slot_alloc(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   (void)rom;
   SlotAllocRegs r;
   actor_slot_alloc(w, in->db, &r);
+  cosim_cost(slot_alloc_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -2518,6 +2542,70 @@ static void shim_actor_845e_collide(Wram* w, const Rom* rom,
   handler_regs(&r, out);
 }
 
+// `$81:CDDE`, by `tools/cycles816.py`: `CMP #$005C : BCC`, then `STA $22 :
+// AND #$7FFF` and three `CMP #imm : BEQ`s. An id it ignores, or does not
+// know, ends `STZ $22 : CLC : RTL`; the two counted ids `INC $0A : CLC : RTL`;
+// `$5D` is `DEC $0C : BMI`, and under nought `LDX $24 : BNE`, which counts the
+// hit too or begins the reaction at `$81:CC0A` (418 over 37, six of them
+// direct-page). It was the one handler level 36 reached with no price, and
+// every `sprite_build_oam` pass that met it fell back to the flat mean.
+static const CosimRun CDDE_TEST = {30, 5, 0};    // CMP #imm : Bxx, not taken
+static const CosimRun CDDE_PARK = {76, 10, 1};   // STA $22 .. CMP #$5D : BEQ
+static const CosimRun CDDE_DROP = {82, 4, 1};    // STZ $22 : CLC : RTL
+static const CosimRun CDDE_COUNT = {104, 4, 1};  // INC $0A : CLC : RTL
+static const CosimRun CDDE_DAMAGE = {62, 4, 1};  // DEC $0C : BMI
+static const CosimRun CDDE_LIVES = {54, 2, 0};   // CLC : RTL
+static const CosimRun CDDE_TIMER = {40, 4, 1};   // LDX $24 : BNE
+static const CosimRun CDDE_REACT = {40 + 418 + 54, 3 + 37 + 2, 6};
+static const CosimRun CDDE_TAKEN = {6, 0, 0};
+
+static int cdde_cycles(CddeExit exit, bool fast, bool unaligned) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CDDE_TEST, 1);
+  if (exit == CDDE_EXIT_IGNORED) {
+    run_add(&run, &CDDE_TAKEN, 1);
+    run_add(&run, &CDDE_DROP, 1);
+    return cosim_run_cycles_dp(&run, fast, unaligned);
+  }
+  run_add(&run, &CDDE_PARK, 1);
+  switch (exit) {
+    case CDDE_EXIT_COUNTED_64:
+      run_add(&run, &CDDE_TEST, 1);
+      run_add(&run, &CDDE_TAKEN, 1);
+      run_add(&run, &CDDE_COUNT, 1);
+      break;
+    case CDDE_EXIT_COUNTED_6F:
+      run_add(&run, &CDDE_TEST, 2);
+      run_add(&run, &CDDE_TAKEN, 1);
+      run_add(&run, &CDDE_COUNT, 1);
+      break;
+    case CDDE_EXIT_UNMATCHED:
+      run_add(&run, &CDDE_TEST, 2);
+      run_add(&run, &CDDE_DROP, 1);
+      break;
+    default:  // `$5D`: the `BEQ` to `$81:CE03`
+      run_add(&run, &CDDE_TAKEN, 1);
+      run_add(&run, &CDDE_DAMAGE, 1);
+      if (exit == CDDE_EXIT_SURVIVED) {
+        run_add(&run, &CDDE_LIVES, 1);
+        break;
+      }
+      run_add(&run, &CDDE_TAKEN, 1);  // the `BMI`
+      run_add(&run, &CDDE_TIMER, 1);
+      if (exit == CDDE_EXIT_KILLED_REACTING) {
+        run_add(&run, &CDDE_TAKEN, 1);
+        run_add(&run, &CDDE_COUNT, 1);
+      } else {
+        run_add(&run, &CDDE_REACT, 1);
+      }
+      break;
+  }
+  return cosim_run_cycles_dp(&run, fast, unaligned);
+}
+
+// `$81:EDAA`: an `RTL`, and nothing else.
+static const CosimRun EDAA_RTL = {42, 1, 0};
+
 // ---------------------------------------------------------------------------
 // $81:EDAA  shot_edaa_collide — one byte
 // ---------------------------------------------------------------------------
@@ -2530,8 +2618,8 @@ static void shim_shot_edaa_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                    CosimRegs* out) {
   (void)w;
   (void)rom;
-  (void)in;
   shot_edaa_collide();
+  cosim_cost(cosim_run_cycles(&EDAA_RTL, in->fastrom));
   out->flags =
       COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
 }
@@ -2738,8 +2826,12 @@ static void shim_enemy_cdde_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;  // no table lookup: this one's damage is a decrement
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_cdde_collide(w, in->d, in->a, &r);
+  CddeExit exit;
+  enemy_cdde_collide(w, in->d, in->a, &r, &exit);
   handler_regs(&r, out);
+  // `LDA $0000,Y` in the reaction reaches the record through the data bank.
+  if (in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0))
+    cosim_cost(cdde_cycles(exit, in->fastrom, (in->d & 0xff) != 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -3153,6 +3245,12 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     }
     case ACTOR_F4EF_COLLIDE_ENTRY:
       cycles += f4ef_cycles(k, fast, dp_unaligned);
+      break;
+    case ENEMY_CDDE_COLLIDE_ENTRY:
+      cycles += cdde_cycles(k->cdde_exit, fast, dp_unaligned);
+      break;
+    case SHOT_EDAA_COLLIDE_ENTRY:
+      cycles += cosim_run_cycles(&EDAA_RTL, fast);
       break;
     case ENEMY_9B6B_COLLIDE_ENTRY:
     case ENEMY_B95F_COLLIDE_ENTRY:
@@ -4742,6 +4840,89 @@ static void shim_step_tether_blocked(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// What a call into the camera chain costs
+// ---------------------------------------------------------------------------
+//
+// Every routine from `$80:A93F` down prices itself from one table, because the
+// port counts every routine's runs into one `CameraTally` (see
+// `port/camera.h`). They used to be charged flat means, and the mean was the
+// trouble: `camera_follow` runs anywhere from 192 cycles to 27,816, and level
+// 36's first frame paid 7,970 cycles more for four calls of it, one of
+// `camera_scroll` and two of `actor_slot_alloc` than the ROM spent. That
+// pushed the frame past vblank, the game fell a frame behind the ROM, and the
+// rest of the movie's input landed a frame late.
+//
+// Each run is `tools/cycles816.py`'s price for that stretch of the listing,
+// with every branch in it not taken. The mirrored routines' runs cost the same
+// to the cycle, which is why the table has one row for each pair.
+static const CosimRun CAMERA_RUN_COST[CAM_RUN_COUNT] = {
+    [CAM_RUN_TAKEN] = {6, 0},
+    [CAM_RUN_FOLLOW_HEAD] = {98, 9},
+    [CAM_RUN_FOLLOW_TEST] = {40, 4},
+    [CAM_RUN_FOLLOW_BOTH] = {364, 26},
+    [CAM_RUN_FOLLOW_A] = {216, 18},
+    [CAM_RUN_FOLLOW_B] = {204, 16},
+    [CAM_RUN_FOLLOW_AXIS] = {134, 14},
+    [CAM_RUN_FOLLOW_SIGN] = {24, 3},
+    [CAM_RUN_FOLLOW_BEHIND] = {66, 6},
+    [CAM_RUN_FOLLOW_AHEAD] = {54, 4},
+    [CAM_RUN_FOLLOW_EXIT] = {88, 3},
+    [CAM_RUN_SCROLL_JSL] = {54, 4},
+    [CAM_RUN_BACK_HEAD] = {46, 5},
+    [CAM_RUN_BACK_STEP] = {150, 15},
+    [CAM_RUN_FWD_HEAD] = {74, 7},
+    [CAM_RUN_FWD_STEP] = {132, 12},
+    [CAM_RUN_X_STRIP_HEAD] = {498, 45},
+    [CAM_RUN_X_STRIP_SPLIT] = {40, 3},
+    [CAM_RUN_X_STRIP_TAIL] = {678, 60},
+    [CAM_RUN_Y_STRIP] = {1430, 124},
+    [CAM_RUN_SCROLL_RTL] = {42, 1},
+    [CAM_RUN_ALLOC] = {342, 21},
+    [CAM_RUN_WINDOW] = {608, 59},
+    [CAM_RUN_SPLIT_Y] = {206, 17},
+    [CAM_RUN_SPLIT_X_TEST] = {64, 8},
+    [CAM_RUN_SPLIT_X_LEFT] = {388, 32},
+    [CAM_RUN_SPLIT_X_RIGHT] = {412, 36},
+    [CAM_RUN_COLUMN_HEAD] = {220, 18},
+    [CAM_RUN_COLUMN_TILE] = {306, 23},
+    [CAM_RUN_COLUMN_PRIORITY] = {122, 7},
+    [CAM_RUN_COLUMN_TAIL] = {154, 8},
+    [CAM_RUN_ROW_HEAD] = {278, 27},
+    [CAM_RUN_ROW_TILE] = {198, 15},
+    [CAM_RUN_ROW_PRIORITY] = {122, 7},
+    [CAM_RUN_RTS] = {40, 1},
+    [CAM_RUN_TILE_ADDR] = {250, 15},
+    [CAM_RUN_REQUEST_TEST] = {40, 4},
+    [CAM_RUN_REQUEST_SET] = {46, 5},
+};
+
+// Report what `t` counted, when the table can speak for the call.
+//
+// The data bank matters to two reads, the strip tails' `LDA $9D77,Y` and
+// `LDA $9DF7,Y`. The table prices them through bank `$80`, as FastROM bytes;
+// through a bank under `$40` each of their two data bytes is 8 cycles whatever
+// `$420D` says, and through any other bank they would read WRAM, which the
+// port does not, so those calls keep the declared price.
+//
+// The direct page matters to everything below `camera_follow`, which works in
+// whatever page its caller left. `camera_follow` installs page zero itself, so
+// it and `camera_scroll` are priced whatever `D` was; the rest are priced only
+// on page zero, the one page the port reads them on.
+static void camera_cost(const CameraTally* t, const CosimRegs* in,
+                        bool sets_page) {
+  bool fast_bank = in->db >= 0x80 && in->db < 0xc0;
+  if (!fast_bank && in->db >= 0x40) return;
+  if (!sets_page && in->d != 0) return;
+  int cycles = 0;
+  for (int i = 0; i < CAM_RUN_COUNT; i++)
+    cycles += (int)t->runs[i] *
+              cosim_run_cycles(&CAMERA_RUN_COST[i], in->fastrom);
+  if (!fast_bank && in->fastrom)
+    cycles += 4 * (int)t->runs[CAM_RUN_TABLE_READS];
+  cosim_cost(cycles);
+}
+
+// ---------------------------------------------------------------------------
 // $80:A54D / $80:A588 / $80:9E6D -- the last three leaves under the camera
 // ---------------------------------------------------------------------------
 //
@@ -4758,7 +4939,9 @@ static void shim_camera_window_update(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   CameraWindowRegs r;
-  camera_window_update(w, &r);
+  CameraTally t = {0};
+  camera_window_update(w, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = in->x;  // neither index is mentioned in twenty-seven instructions
   out->y = in->y;
@@ -4772,7 +4955,9 @@ static void shim_camera_split_y(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   (void)rom;
   CameraSplitRegs r;
-  camera_split_y(w, &r);
+  CameraTally t = {0};
+  camera_split_y(w, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -4786,7 +4971,9 @@ static void shim_vram_queue_request(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   VramRequestRegs r;
-  vram_queue_request(w, in->a, &r);
+  CameraTally t = {0};
+  vram_queue_request(w, in->a, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -4823,7 +5010,9 @@ static void shim_tilemap_copy_row(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   (void)rom;
   TilemapCopyRegs r;
-  tilemap_copy_row(w, in->x, in->y, &r);
+  CameraTally t = {0};
+  tilemap_copy_row(w, in->x, in->y, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -4855,7 +5044,9 @@ static void shim_tilemap_buffer_alloc(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TilemapAllocRegs r;
-  tilemap_buffer_alloc(w, in->a, &r);
+  CameraTally t = {0};
+  tilemap_buffer_alloc(w, in->a, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -4882,7 +5073,9 @@ static void shim_tilemap_copy_column(Wram* w, const Rom* rom,
                                      const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TilemapCopyRegs r;
-  tilemap_copy_column(w, in->a, in->x, in->y, &r);
+  CameraTally t = {0};
+  tilemap_copy_column(w, in->a, in->x, in->y, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -5380,7 +5573,9 @@ static void shim_camera_split_x(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   (void)rom;
   CameraSplitRegs r;
-  camera_split_x(w, &r);
+  CameraTally t = {0};
+  camera_split_x(w, &r, &t);
+  camera_cost(&t, in, false);
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -5469,7 +5664,9 @@ static void shim_camera_scroll_left(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   CameraScrollIn args = {in->x, in->y, in->c};
   CameraScrollRegs r;
-  camera_scroll_left(w, rom, &args, &r);
+  CameraTally t = {0};
+  camera_scroll_left(w, rom, &args, &r, &t);
+  camera_cost(&t, in, false);
   publish_camera_scroll(&r, out);
 }
 
@@ -5477,7 +5674,9 @@ static void shim_camera_scroll_right(Wram* w, const Rom* rom,
                                      const CosimRegs* in, CosimRegs* out) {
   CameraScrollIn args = {in->x, in->y, in->c};
   CameraScrollRegs r;
-  camera_scroll_right(w, rom, &args, &r);
+  CameraTally t = {0};
+  camera_scroll_right(w, rom, &args, &r, &t);
+  camera_cost(&t, in, false);
   publish_camera_scroll(&r, out);
 }
 
@@ -5485,7 +5684,9 @@ static void shim_camera_scroll_down(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   CameraScrollIn args = {in->x, in->y, in->c};
   CameraScrollRegs r;
-  camera_scroll_down(w, rom, &args, &r);
+  CameraTally t = {0};
+  camera_scroll_down(w, rom, &args, &r, &t);
+  camera_cost(&t, in, false);
   publish_camera_scroll(&r, out);
 }
 
@@ -5493,7 +5694,9 @@ static void shim_camera_scroll_up(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   CameraScrollIn args = {in->x, in->y, in->c};
   CameraScrollRegs r;
-  camera_scroll_up(w, rom, &args, &r);
+  CameraTally t = {0};
+  camera_scroll_up(w, rom, &args, &r, &t);
+  camera_cost(&t, in, false);
   publish_camera_scroll(&r, out);
 }
 
@@ -5535,7 +5738,9 @@ static bool guard_camera_follow(Wram* scratch, const Rom* rom,
 static void shim_camera_follow(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   CameraFollowRegs r;
-  camera_follow(w, rom, in->x, in->y, &r);
+  CameraTally t = {0};
+  camera_follow(w, rom, in->x, in->y, &r, &t);
+  camera_cost(&t, in, true);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -8602,7 +8807,9 @@ static bool guard_camera_scroll(Wram* scratch, const Rom* rom,
 static void shim_camera_scroll(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   CameraFollowRegs r;
-  camera_scroll(w, rom, in->x, in->y, &r);
+  CameraTally t = {0};
+  camera_scroll(w, rom, in->x, in->y, &r, &t);
+  camera_cost(&t, in, true);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -33115,7 +33322,8 @@ static const CosimRoutine ROUTINES[] = {
         // 32, so the mean reads as **how full the board is**: 1,008 on
         // `level9-weapons` against 1,631 on `level25-lane`. It is the one
         // routine in this registry whose cost is a linear search nothing
-        // bounds but the array.
+        // bounds but the array. Every call prices itself now
+        // (`slot_alloc_cycles`), from how far the scan went.
         .cycles = 1277,
         .stack_bytes = 3,  // PHB, and the PEA that costs a byte more than it
                            // needs to
@@ -33772,6 +33980,8 @@ static const CosimRoutine ROUTINES[] = {
         // floor is the exit that finds both deltas already zero -- two thirds
         // of all calls -- and the ceiling is a two-player frame that scrolls on
         // both axes at once, which is four routines deep and buys two strips.
+        // Every call prices itself now (`camera_cost`), so this mean is only
+        // what a call under a data bank the table cannot speak for pays.
         .cycles = 1062,
         // The PHD is 2, the JSL into a scroll routine 3, and that routine's own
         // 9 under it. The X pair are the deep ones; a movie that only ever

@@ -303,13 +303,12 @@ def sessions():
                  '--poke', '1800+:1F52=0003', '--poke', '2301:132=00F0']))
     # ...and, 2026-11-02, the bazooka fired up into one of level 36's tiles
     # with bits 1 and 5 (attributes `$63`, a row of them at y `$78`), which
-    # calls `$82:DC57` for what it leaves. The player is held below it facing
-    # up: the game and the ROM have each walked them a different way by then.
+    # calls `$82:DC57` for what it leaves. The player is held below it, and
+    # the movie has them facing up there.
     out.append(('bazooka36', 'fire-up.zmv', 5600,
                 ['--level', '36', '--poke', '1600+:1CB8=000A',
                  '--poke', '1750+:1CBC=0005', '--poke', '1750+:1CD6=0099',
-                 '--poke', '4400-4800:130=00E0', '--poke', '4400-4800:132=00B0',
-                 '--poke', '4400-4800:126=0002']))
+                 '--poke', '4400-4800:130=00E0', '--poke', '4400-4800:132=00B0']))
     # ...and, the same day, what comes after it: Dr. Tongue and his head
     # (`$83:C687`). The spider is killed as `spider48_killed` kills it. Where
     # he appears is where it died, so it differs by movie, and so does his

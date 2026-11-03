@@ -20,8 +20,10 @@ static uint32_t wram_off(uint16_t bank, uint16_t addr) {
 }
 
 void tilemap_copy_column(Wram* w, uint16_t count, uint16_t col, uint16_t row,
-                         TilemapCopyRegs* out) {
+                         TilemapCopyRegs* out, CameraTally* t) {
   // `JSL $80AD1C : STA $50` — where the top tile of the strip lives.
+  camera_tally(t, CAM_RUN_COLUMN_HEAD, 1);
+  camera_tally(t, CAM_RUN_TILE_ADDR, 1);
   TilemapAddrRegs addr;
   tilemap_tile_addr(w, col, row, &addr);
   uint16_t src = addr.a;
@@ -36,23 +38,29 @@ void tilemap_copy_column(Wram* w, uint16_t count, uint16_t col, uint16_t row,
   // `DEX : BNE` — a do-while, so zero means 65,536. See the header.
   uint16_t x = count;
   uint16_t y = 0;
-  do {
+  for (;;) {
+    camera_tally(t, CAM_RUN_COLUMN_TILE, 1);
     uint16_t tile = wram_r16(w, wram_off(TILEMAP_SRC_BANK, src));
     uint32_t at = wram_off(dst_bank, (uint16_t)(dst + y));
     wram_w16(w, at, tile);
     if ((tile & TILEMAP_COPY_MASK) < threshold) {
       PORT_COVER(column_priority);
+      camera_tally(t, CAM_RUN_COLUMN_PRIORITY, 1);
       wram_w16(w, at, (uint16_t)(tile | TILEMAP_PRIORITY_BIT));
     } else {
       PORT_COVER(column_plain);
+      camera_tally(t, CAM_RUN_TAKEN, 1);  // the `BCS` past it
     }
     src = (uint16_t)(src + stride);
     wram_w16(w, CAM_DP_SRC, src);
     y = (uint16_t)(y + 2);
-  } while (--x != 0);
+    if (--x == 0) break;
+    camera_tally(t, CAM_RUN_TAKEN, 1);  // `BNE` back round
+  }
 
   // `PLA : ASL A : CLC : ADC $54 : STA $54` — the count back off the stack,
   // doubled into bytes, added to the destination. The flags are this add's.
+  camera_tally(t, CAM_RUN_COLUMN_TAIL, 1);
   uint32_t sum = (uint32_t)(uint16_t)(count << 1) + dst;
   wram_w16(w, CAM_DP_DST, (uint16_t)sum);
 
@@ -72,7 +80,9 @@ bool tilemap_buffer_alloc_supported(const Wram* w, uint16_t size) {
   return wram_r16(w, W_TILEMAP_ARENA_LEFT) >= size;
 }
 
-void tilemap_buffer_alloc(Wram* w, uint16_t size, TilemapAllocRegs* out) {
+void tilemap_buffer_alloc(Wram* w, uint16_t size, TilemapAllocRegs* out,
+                          CameraTally* t) {
+  camera_tally(t, CAM_RUN_ALLOC, 1);  // one run, since the guard rules out the spin
   uint16_t left = wram_r16(w, W_TILEMAP_ARENA_LEFT);
   wram_w16(w, W_TILEMAP_ARENA_LEFT, (uint16_t)(left - size));  // the guard
                                                                // proved this
@@ -101,7 +111,9 @@ bool tilemap_copy_row_supported(const Wram* w) {
 }
 
 void tilemap_copy_row(Wram* w, uint16_t col, uint16_t row,
-                      TilemapCopyRegs* out) {
+                      TilemapCopyRegs* out, CameraTally* t) {
+  camera_tally(t, CAM_RUN_ROW_HEAD, 1);
+  camera_tally(t, CAM_RUN_TILE_ADDR, 1);
   TilemapAddrRegs addr;
   tilemap_tile_addr(w, col, row, &addr);
   wram_w16(w, CAM_DP_SRC, addr.a);
@@ -110,7 +122,7 @@ void tilemap_copy_row(Wram* w, uint16_t col, uint16_t row,
   // `LDA #$0042 : JSR $A401 : STA $54` — it buys its own strip. The guard
   // above has already established this cannot be the call that spins.
   TilemapAllocRegs got;
-  tilemap_buffer_alloc(w, TILEMAP_ROW_ALLOC, &got);
+  tilemap_buffer_alloc(w, TILEMAP_ROW_ALLOC, &got, t);
   wram_w16(w, CAM_DP_DST, got.a);
   wram_w16(w, CAM_DP_DST_BANK, TILEMAP_DST_BANK);
 
@@ -123,19 +135,24 @@ void tilemap_copy_row(Wram* w, uint16_t col, uint16_t row,
   // same Y because a row is contiguous at both ends.
   uint16_t y = TILEMAP_ROW_FIRST_Y;
   for (;;) {
+    camera_tally(t, CAM_RUN_ROW_TILE, 1);
     tile = wram_r16(w, wram_off(TILEMAP_SRC_BANK, (uint16_t)(src + y)));
     uint32_t at = wram_off(TILEMAP_DST_BANK, (uint16_t)(got.a + y));
     wram_w16(w, at, tile);
     ge = (tile & TILEMAP_COPY_MASK) >= threshold;
     if (ge) {
       PORT_COVER(row_plain);
+      camera_tally(t, CAM_RUN_TAKEN, 1);  // the `BCS` past it
     } else {
       PORT_COVER(row_priority);
+      camera_tally(t, CAM_RUN_ROW_PRIORITY, 1);
       wram_w16(w, at, (uint16_t)(tile | TILEMAP_PRIORITY_BIT));
     }
     if (y == 0) break;
+    camera_tally(t, CAM_RUN_TAKEN, 1);  // `BPL` back round
     y = (uint16_t)(y - 2);
   }
+  camera_tally(t, CAM_RUN_RTS, 1);
 
   // A is the last tile the loop touched, after its `AND` and — on the priority
   // path — its `ORA`. Carry is that same tile's `CMP $DC`. Neither is a summary
@@ -157,7 +174,8 @@ void tilemap_copy_row(Wram* w, uint16_t col, uint16_t row,
 
 // --- $80:A54D  camera_window_update ----------------------------------------
 
-void camera_window_update(Wram* w, CameraWindowRegs* out) {
+void camera_window_update(Wram* w, CameraWindowRegs* out, CameraTally* t) {
+  camera_tally(t, CAM_RUN_WINDOW, 1);
   uint16_t tx = (uint16_t)(wram_r16(w, W_CAMERA_X) >> 3);
   wram_w16(w, W_CAMERA_TILE_X, tx);
   wram_w16(w, W_CAMERA_TILE_X_END, (uint16_t)(tx + CAMERA_WINDOW_TILES_X));
@@ -186,7 +204,8 @@ void camera_window_update(Wram* w, CameraWindowRegs* out) {
 
 // --- $80:A588  camera_split_y ----------------------------------------------
 
-void camera_split_y(Wram* w, CameraSplitRegs* out) {
+void camera_split_y(Wram* w, CameraSplitRegs* out, CameraTally* t) {
+  camera_tally(t, CAM_RUN_SPLIT_Y, 1);
   uint16_t below =
       (uint16_t)(wram_r16(w, W_TILEMAP_CURSOR_Y) & TILEMAP_CURSOR_MASK_Y);
   wram_w16(w, CAM_DP_RUN_A_DST, below);
@@ -204,13 +223,15 @@ void camera_split_y(Wram* w, CameraSplitRegs* out) {
 
 // --- $80:A599  camera_split_x ----------------------------------------------
 
-void camera_split_x(Wram* w, CameraSplitRegs* out) {
+void camera_split_x(Wram* w, CameraSplitRegs* out, CameraTally* t) {
+  camera_tally(t, CAM_RUN_SPLIT_X_TEST, 1);
   uint16_t cx = wram_r16(w, W_TILEMAP_CURSOR_X);
   uint16_t measured;
   if (cx < CAMERA_SPLIT_COLUMNS) {
     // The cursor is in the left screen, so the run that starts at it is the one
     // whose length has to be worked out and the overflow lands at word `$400`.
     PORT_COVER(split_x_left);
+    camera_tally(t, CAM_RUN_SPLIT_X_LEFT, 1);
     measured = (uint16_t)((CAMERA_SPLIT_COLUMNS - cx) << 1);
     wram_w16(w, CAM_DP_RUN_A_SRC, 0);
     wram_w16(w, CAM_DP_RUN_A_DST, cx);
@@ -223,6 +244,8 @@ void camera_split_x(Wram* w, CameraSplitRegs* out) {
     // ...and here it is in the right screen, so the same two runs come out in
     // the other order: B starts at the cursor and A picks up the wrap at 0.
     PORT_COVER(split_x_right);
+    camera_tally(t, CAM_RUN_TAKEN, 1);
+    camera_tally(t, CAM_RUN_SPLIT_X_RIGHT, 1);
     measured = (uint16_t)((TILEMAP_COLUMNS - cx) << 1);
     wram_w16(w, CAM_DP_RUN_B_SRC, 0);
     wram_w16(w, CAM_DP_RUN_B_DST,
@@ -245,19 +268,27 @@ void camera_split_x(Wram* w, CameraSplitRegs* out) {
 
 // --- $80:9E6D  vram_queue_request ------------------------------------------
 
-void vram_queue_request(Wram* w, uint16_t a, VramRequestRegs* out) {
+void vram_queue_request(Wram* w, uint16_t a, VramRequestRegs* out,
+                        CameraTally* t) {
+  // Every exit is the same `RTS`, and the two early ones reach it by a taken
+  // branch.
+  camera_tally(t, CAM_RUN_REQUEST_TEST, 1);
+  camera_tally(t, CAM_RUN_RTS, 1);
   uint16_t flags = wram_r16(w, W_RENDER_FLAGS);
   if (flags & RENDER_FLAG_TRANSFER) {
     // `BIT $26 : BMI`. N is bit 15 of *memory*; Z is `A & memory`, so what this
     // exit returns in Z is a fact about the caller's accumulator.
     PORT_COVER(request_pending);
+    camera_tally(t, CAM_RUN_TAKEN, 1);
     out->a = a;
     out->n = true;
     out->z = (a & flags) == 0;
     return;
   }
+  camera_tally(t, CAM_RUN_REQUEST_TEST, 1);
   uint16_t queued = wram_r16(w, W_VRAM_QUEUE_COUNT);
   if (queued == 0) {
+    camera_tally(t, CAM_RUN_TAKEN, 1);
     // No coverage site, and that is a decision rather than an oversight. All
     // four call sites store a *nonzero* `$CE` in the instruction immediately
     // before the `JSR` -- `$80:A540` an `ADC #$0004`, the other three an
@@ -272,6 +303,7 @@ void vram_queue_request(Wram* w, uint16_t a, VramRequestRegs* out) {
     return;
   }
   PORT_COVER(request_made);
+  camera_tally(t, CAM_RUN_REQUEST_SET, 1);
   wram_w16(w, W_RENDER_FLAGS, RENDER_FLAG_TRANSFER);
   out->a = RENDER_FLAG_TRANSFER;
   out->n = true;
@@ -290,10 +322,15 @@ typedef struct {
   uint16_t cursor_mask;
   uint16_t edge_at;     // the tile-window word the new strip is read from
   uint16_t dest_at;     // the cursor word its VRAM address is looked up with
+  // A seventh difference, and one only the clock sees: `$80:A68B` leaves by
+  // `BEQ` when it is pinned and `$A816` by not taking its `BNE`, so the taken
+  // branch is on opposite paths of the two.
+  bool pinned_branches;
 } CameraScrollAxis;
 
 static const CameraScrollAxis SCROLL_LEFT = {
     .forward = false,
+    .pinned_branches = true,
     .camera_at = W_CAMERA_X,
     .sub_at = W_CAMERA_SUB_X,
     .cursor_at = W_TILEMAP_CURSOR_X,
@@ -355,7 +392,7 @@ typedef enum {
 
 // Parts 1 and 2, and the cursor step that opens part 3. Fills `out` completely
 // on the two exits that end here.
-static ScrollStep camera_scroll_step(Wram* w, const CameraScrollAxis* ax,
+static ScrollStep camera_scroll_move(Wram* w, const CameraScrollAxis* ax,
                                      const CameraScrollIn* in,
                                      CameraScrollRegs* out) {
   uint16_t cam = wram_r16(w, ax->camera_at);
@@ -426,24 +463,46 @@ static ScrollStep camera_scroll_step(Wram* w, const CameraScrollAxis* ax,
   return SCROLL_STRIP;
 }
 
+// ...and the same, with the runs it went through counted.
+static ScrollStep camera_scroll_step(Wram* w, const CameraScrollAxis* ax,
+                                     const CameraScrollIn* in,
+                                     CameraScrollRegs* out, CameraTally* t) {
+  ScrollStep step = camera_scroll_move(w, ax, in, out);
+  camera_tally(t, ax->forward ? CAM_RUN_FWD_HEAD : CAM_RUN_BACK_HEAD, 1);
+  if (step == SCROLL_PINNED) {
+    camera_tally(t, CAM_RUN_TAKEN, ax->pinned_branches ? 1 : 0);
+    camera_tally(t, CAM_RUN_SCROLL_RTL, 1);
+    return step;
+  }
+  camera_tally(t, CAM_RUN_TAKEN, ax->pinned_branches ? 0 : 1);
+  camera_tally(t, ax->forward ? CAM_RUN_FWD_STEP : CAM_RUN_BACK_STEP, 1);
+  if (step == SCROLL_MID_TILE) {
+    camera_tally(t, CAM_RUN_TAKEN, 1);  // the `BNE` to the `RTL`
+    camera_tally(t, CAM_RUN_SCROLL_RTL, 1);
+  }
+  return step;
+}
+
 static void camera_scroll_x(Wram* w, const Rom* rom,
                             const CameraScrollAxis* ax,
-                            const CameraScrollIn* in, CameraScrollRegs* out) {
-  if (camera_scroll_step(w, ax, in, out) != SCROLL_STRIP) return;
+                            const CameraScrollIn* in, CameraScrollRegs* out,
+                            CameraTally* t) {
+  if (camera_scroll_step(w, ax, in, out, t) != SCROLL_STRIP) return;
+  camera_tally(t, CAM_RUN_X_STRIP_HEAD, 1);
 
   // `LDA #$0040 : JSR $A401 : STA $60 : STA $54` — one column of the tilemap,
   // bought before anything is read. `$60` keeps the address; `$54` is the
   // cursor `$80:A5E5` advances as it fills.
   TilemapAllocRegs got;
-  tilemap_buffer_alloc(w, TILEMAP_COLUMN_ALLOC, &got);
+  tilemap_buffer_alloc(w, TILEMAP_COLUMN_ALLOC, &got, t);
   wram_w16(w, CAM_DP_RUN_A_LEN, got.a);
   wram_w16(w, CAM_DP_DST, got.a);
   wram_w16(w, CAM_DP_DST_BANK, TILEMAP_DST_BANK);
 
   CameraWindowRegs win;
-  camera_window_update(w, &win);
+  camera_window_update(w, &win, t);
   CameraSplitRegs split;
-  camera_split_y(w, &split);
+  camera_split_y(w, &split, t);
 
   uint16_t col = wram_r16(w, ax->edge_at);
   uint16_t row = wram_r16(w, W_CAMERA_TILE_Y);
@@ -455,13 +514,18 @@ static void camera_scroll_x(Wram* w, const Rom* rom,
     // The column wraps somewhere inside the tilemap, so its two halves come
     // out of two different places in the map.
     PORT_COVER(scroll_x_split);
-    tilemap_copy_column(w, below, col, (uint16_t)(row + above), &copy);
+    camera_tally(t, CAM_RUN_X_STRIP_SPLIT, 1);
+    tilemap_copy_column(w, below, col, (uint16_t)(row + above), &copy, t);
   } else {
     PORT_COVER(scroll_x_whole);
+    camera_tally(t, CAM_RUN_TAKEN, 1);
   }
   // `32 - (cursor & 31)` is 1..32, never 0, so this one needs no `BEQ` in front
   // of it and the ROM does not have one.
-  tilemap_copy_column(w, above, col, row, &copy);
+  tilemap_copy_column(w, above, col, row, &copy, t);
+  camera_tally(t, CAM_RUN_X_STRIP_TAIL, 1);
+  camera_tally(t, CAM_RUN_TABLE_READS, 1);
+  camera_tally(t, CAM_RUN_SCROLL_RTL, 1);
 
   uint16_t at = wram_r16(w, W_VRAM_QUEUE_COUNT);
   wram_w16(w, (uint32_t)W_VRAM_QUEUE_SRC + at, wram_r16(w, CAM_DP_RUN_A_LEN));
@@ -478,7 +542,7 @@ static void camera_scroll_x(Wram* w, const Rom* rom,
   // A is still the `LDA #$0040` two stores ago when the request is made, which
   // is what decides the Z it comes back with on the already-pending path.
   VramRequestRegs req;
-  vram_queue_request(w, TILEMAP_COLUMN_ALLOC, &req);
+  vram_queue_request(w, TILEMAP_COLUMN_ALLOC, &req, t);
 
   out->a = req.a;
   out->x = at;
@@ -490,19 +554,23 @@ static void camera_scroll_x(Wram* w, const Rom* rom,
 
 static void camera_scroll_y(Wram* w, const Rom* rom,
                             const CameraScrollAxis* ax,
-                            const CameraScrollIn* in, CameraScrollRegs* out) {
-  if (camera_scroll_step(w, ax, in, out) != SCROLL_STRIP) return;
+                            const CameraScrollIn* in, CameraScrollRegs* out,
+                            CameraTally* t) {
+  if (camera_scroll_step(w, ax, in, out, t) != SCROLL_STRIP) return;
+  camera_tally(t, CAM_RUN_Y_STRIP, 1);
+  camera_tally(t, CAM_RUN_TABLE_READS, 2);
+  camera_tally(t, CAM_RUN_SCROLL_RTL, 1);
 
   CameraWindowRegs win;
-  camera_window_update(w, &win);
+  camera_window_update(w, &win, t);
   CameraSplitRegs split;
-  camera_split_x(w, &split);
+  camera_split_x(w, &split, t);
 
   // `LDX $1B6E : LDY $1B74 : JSR $A61D` — no allocation here, because the row
   // copier buys its own strip and leaves the address in `$54`.
   TilemapCopyRegs copy;
   tilemap_copy_row(w, wram_r16(w, W_CAMERA_TILE_X), wram_r16(w, ax->edge_at),
-                   &copy);
+                   &copy, t);
   uint16_t strip = wram_r16(w, CAM_DP_DST);
 
   uint16_t index = (uint16_t)(wram_r16(w, ax->dest_at) << 1);
@@ -535,7 +603,7 @@ static void camera_scroll_y(Wram* w, const Rom* rom,
   wram_w16(w, W_VRAM_QUEUE_COUNT, at);
 
   VramRequestRegs req;
-  vram_queue_request(w, length, &req);
+  vram_queue_request(w, length, &req, t);
 
   out->a = req.a;
   out->x = at;
@@ -565,23 +633,23 @@ bool camera_scroll_up_supported(const Wram* w) {
 }
 
 void camera_scroll_left(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                        CameraScrollRegs* out) {
-  camera_scroll_x(w, rom, &SCROLL_LEFT, in, out);
+                        CameraScrollRegs* out, CameraTally* t) {
+  camera_scroll_x(w, rom, &SCROLL_LEFT, in, out, t);
 }
 
 void camera_scroll_right(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                         CameraScrollRegs* out) {
-  camera_scroll_x(w, rom, &SCROLL_RIGHT, in, out);
+                         CameraScrollRegs* out, CameraTally* t) {
+  camera_scroll_x(w, rom, &SCROLL_RIGHT, in, out, t);
 }
 
 void camera_scroll_down(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                        CameraScrollRegs* out) {
-  camera_scroll_y(w, rom, &SCROLL_DOWN, in, out);
+                        CameraScrollRegs* out, CameraTally* t) {
+  camera_scroll_y(w, rom, &SCROLL_DOWN, in, out, t);
 }
 
 void camera_scroll_up(Wram* w, const Rom* rom, const CameraScrollIn* in,
-                      CameraScrollRegs* out) {
-  camera_scroll_y(w, rom, &SCROLL_UP, in, out);
+                      CameraScrollRegs* out, CameraTally* t) {
+  camera_scroll_y(w, rom, &SCROLL_UP, in, out, t);
 }
 
 // --- $80:A93F  camera_follow -------------------------------------------------
@@ -590,18 +658,25 @@ void camera_scroll_up(Wram* w, const Rom* rom, const CameraScrollIn* in,
 // centre it on. Shared by the routine and its guard, which have to agree about
 // which scroll routines a call would reach.
 static bool camera_follow_target(const Wram* w, uint16_t* tx, uint16_t* ty,
-                                 bool cover) {
+                                 bool cover, CameraTally* t) {
+  camera_tally(t, CAM_RUN_FOLLOW_HEAD, 1);
   if (wram_r16(w, W_RENDER_FLAGS) & RENDER_FLAG_CAMERA_HELD) {
     if (cover) PORT_COVER(follow_held);
+    camera_tally(t, CAM_RUN_TAKEN, 1);
+    camera_tally(t, CAM_RUN_FOLLOW_EXIT, 1);
     return false;
   }
   uint16_t a = wram_r16(w, W_PLAYER_A_RECORD);
   uint16_t b = wram_r16(w, W_PLAYER_B_RECORD);
 
+  // `LDA $D2 : BNE`, and on either side of it an `LDA $D4` and a branch.
+  camera_tally(t, CAM_RUN_FOLLOW_TEST, 2);
   if (a != 0 && b != 0) {
     // `LDA ($D2),Y : CLC : ADC ($D4),Y : LSR A` — and the `LSR` is of A alone,
     // so a sum over `$FFFF` loses its carry rather than shifting it back in.
     if (cover) PORT_COVER(follow_midpoint);
+    camera_tally(t, CAM_RUN_TAKEN, 2);  // the `BNE`, and the `BRA` out
+    camera_tally(t, CAM_RUN_FOLLOW_BOTH, 1);
     *tx = (uint16_t)((uint16_t)(wram_r16(w, (uint32_t)a + ACTOR_X) +
                                 wram_r16(w, (uint32_t)b + ACTOR_X)) >> 1);
     *ty = (uint16_t)((uint16_t)(wram_r16(w, (uint32_t)a + ACTOR_Y) +
@@ -610,17 +685,22 @@ static bool camera_follow_target(const Wram* w, uint16_t* tx, uint16_t* ty,
   }
   if (a != 0) {
     if (cover) PORT_COVER(follow_player_a);
+    camera_tally(t, CAM_RUN_TAKEN, 3);  // `BNE`, `BEQ`, and the `BRA` out
+    camera_tally(t, CAM_RUN_FOLLOW_A, 1);
     *tx = wram_r16(w, (uint32_t)a + ACTOR_X);
     *ty = wram_r16(w, (uint32_t)a + ACTOR_Y);
     return true;
   }
   if (b != 0) {
     if (cover) PORT_COVER(follow_player_b);
+    camera_tally(t, CAM_RUN_TAKEN, 1);
+    camera_tally(t, CAM_RUN_FOLLOW_B, 1);
     *tx = wram_r16(w, (uint32_t)b + ACTOR_X);
     *ty = wram_r16(w, (uint32_t)b + ACTOR_Y);
     return true;
   }
   if (cover) PORT_COVER(follow_no_players);
+  camera_tally(t, CAM_RUN_FOLLOW_EXIT, 1);
   return false;
 }
 
@@ -634,7 +714,7 @@ static uint16_t camera_delta(const Wram* w, uint16_t target, uint16_t centre,
 
 bool camera_follow_supported(const Wram* w) {
   uint16_t tx = 0, ty = 0;
-  if (!camera_follow_target(w, &tx, &ty, false)) return true;
+  if (!camera_follow_target(w, &tx, &ty, false, NULL)) return true;
 
   // Up to two strips in one call, and the second is bought out of what the
   // first left, so the arena has to answer for both at once.
@@ -652,10 +732,24 @@ bool camera_follow_supported(const Wram* w) {
   return need == 0 || tilemap_buffer_alloc_supported(w, need);
 }
 
+// One axis's `TAX : BEQ`, and the `ASL A : BCC` and `JSL` past it if the
+// delta is not zero. The scroll routine's own runs are its to count.
+static void follow_axis_tally(CameraTally* t, uint16_t delta) {
+  camera_tally(t, CAM_RUN_FOLLOW_AXIS, 1);
+  if (delta == 0) {
+    camera_tally(t, CAM_RUN_TAKEN, 1);
+    return;
+  }
+  camera_tally(t, CAM_RUN_FOLLOW_SIGN, 1);
+  camera_tally(t, CAM_RUN_TAKEN, 1);  // the `BRA` past the other, or the `BCC`
+  camera_tally(t, (delta & 0x8000u) ? CAM_RUN_FOLLOW_BEHIND : CAM_RUN_FOLLOW_AHEAD,
+               1);
+}
+
 void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
-                   CameraFollowRegs* out) {
+                   CameraFollowRegs* out, CameraTally* t) {
   uint16_t tx = 0, ty = 0;
-  if (!camera_follow_target(w, &tx, &ty, true)) {
+  if (!camera_follow_target(w, &tx, &ty, true, t)) {
     // Both exits leave A at zero: one is the `LDA #$0000` that set the direct
     // page and never got touched again, the other the `LDA $D4` that has just
     // read a zero. Neither index is mentioned on either path.
@@ -675,6 +769,7 @@ void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
   uint16_t dx = camera_delta(w, tx, CAMERA_CENTRE_X, W_CAMERA_X);
   uint16_t acc = dx;
   uint16_t rx = dx;  // `TAX`, and the `BEQ` under it is testing A
+  follow_axis_tally(t, dx);
   if (dx != 0) {
     // `ASL A : BCC` — the shift is only ever read for its carry, which is bit
     // 15. One pixel, whatever the distance.
@@ -683,10 +778,10 @@ void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
     CameraScrollRegs r;
     if (behind) {
       PORT_COVER(follow_left);
-      camera_scroll_left(w, rom, &args, &r);
+      camera_scroll_left(w, rom, &args, &r, t);
     } else {
       PORT_COVER(follow_right);
-      camera_scroll_right(w, rom, &args, &r);
+      camera_scroll_right(w, rom, &args, &r, t);
     }
     acc = r.a;
     rx = r.x;
@@ -698,16 +793,17 @@ void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
   uint16_t dy = camera_delta(w, ty, CAMERA_CENTRE_Y, W_CAMERA_Y);
   acc = dy;
   rx = dy;
+  follow_axis_tally(t, dy);
   if (dy != 0) {
     bool behind = (dy & 0x8000u) != 0;
     CameraScrollIn args = {rx, ry, behind};
     CameraScrollRegs r;
     if (behind) {
       PORT_COVER(follow_up);
-      camera_scroll_up(w, rom, &args, &r);
+      camera_scroll_up(w, rom, &args, &r, t);
     } else {
       PORT_COVER(follow_down);
-      camera_scroll_down(w, rom, &args, &r);
+      camera_scroll_down(w, rom, &args, &r, t);
     }
     acc = r.a;
     rx = r.x;
@@ -716,6 +812,7 @@ void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
     PORT_COVER(follow_y_still);
   }
 
+  camera_tally(t, CAM_RUN_FOLLOW_EXIT, 1);
   out->a = acc;
   out->x = rx;
   out->y = ry;
@@ -730,15 +827,17 @@ bool camera_scroll_supported(Wram* scratch, const Rom* rom, uint16_t x,
   CameraFollowRegs r = {0, x, y};
   for (int i = 0; i < CAMERA_SCROLL_CALLS; i++) {
     if (!camera_follow_supported(scratch)) return false;
-    camera_follow(scratch, rom, r.x, r.y, &r);
+    camera_follow(scratch, rom, r.x, r.y, &r, NULL);
   }
   return true;
 }
 
 void camera_scroll(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
-                   CameraFollowRegs* out) {
+                   CameraFollowRegs* out, CameraTally* t) {
+  // Three `JSL`s between the four calls: `$A937`'s, and `$A93B`'s twice.
+  camera_tally(t, CAM_RUN_SCROLL_JSL, CAMERA_SCROLL_CALLS - 1);
   out->x = x;
   out->y = y;
   for (int i = 0; i < CAMERA_SCROLL_CALLS; i++)
-    camera_follow(w, rom, out->x, out->y, out);
+    camera_follow(w, rom, out->x, out->y, out, t);
 }

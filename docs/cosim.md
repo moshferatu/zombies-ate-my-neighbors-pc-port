@@ -19977,9 +19977,37 @@ of them, attributes `$63`. Now `ts_fourth_draw` is `$82:DC57`'s row, shared
 by both callers, and takes any data bank that sees low WRAM, since it reads
 only `$0038` through it and the shot's bank is `$81`; `shot5_points` is
 `$81:ED06`'s. The survey's `bazooka36` session fires up into one: both rows
-exact, and the game runs it with the 65816 running nothing. The player has
-to be held there facing up, because by frame 4400 the game and the ROM have
-walked them different ways, and unheld the game fires down.
+exact, and the game runs it with the 65816 running nothing. It first needed
+the player held facing up as well, because by frame 4400 the game and the ROM
+had walked them different ways; the next paragraph is why, and the hold is
+gone.
+
+**A frame behind from level 36's first frame, 2026-11-03.** Hashing WRAM
+once a frame in both drivers showed the game and the ROM agreeing up to
+frame 1714 and the game one frame behind from 1715 on, with WRAM otherwise
+the same. Nothing returned a wrong answer. Frame 1714 is level 36's first,
+and the game paid 7,970 cycles more for it than the ROM spent, which took it
+past vblank: the movie's input then landed a frame late for the rest of the
+run. Nearly all of it was flat prices. `camera_follow` charged 1,062 a call where
+that frame's four calls cost 266 each, `camera_scroll` 4,410 for one that
+cost 1,266, and `actor_slot_alloc` 1,277 for two that cost 526. Setting
+those three to that frame's real costs kept the game in step through frame
+2600, which is what said the diagnosis was right.
+
+The fix is prices per call. Every routine of the camera chain, from
+`$80:A93F` down to the copy loops, now counts the straight runs of ROM it
+went through into one `CameraTally` (`port/camera.h`), and `camera_cost` in
+`cosim/routines.c` sums them from one table of `tools/cycles816.py` figures:
+54 runs, the mirrored scrollers' identical to the cycle. `actor_slot_alloc`
+is priced from X, which already says how many taken slots its scan stepped
+past. That left `sprite_build_oam` and `actor_overlap_pass` short by about
+40,000 cycles on each pass that met a collision handler with no table, and on
+this movie there were two: `$81:CDDE`, whose seven exits are now priced
+through a `CddeExit` the port reports, and `$81:EDAA`, a bare `RTL`. On
+`bazooka36` every call of all of these is priced and refresh-exact, the drift
+table's total went from -37.18 frames over the movie to -0.03, and the game
+matches the ROM on every frame from 1688 to 5600; the short partings before
+that are in the boot and close again.
 
 **Dr. Tongue.** `$83:C687` and its shot's thread, `$83:CA4A`, are ported as
 `port/dr_tongue.h`, one block machine for both. Its blocks, runs, entries and

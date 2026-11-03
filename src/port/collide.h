@@ -1487,11 +1487,23 @@ bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // `ant_survived_react` writes, alongside the same `ACTOR_ATTR_SET` bit.
 #define CDDE_REACT_ATTR 0x0c00
 
+// Which of its exits a call left by, for its price. The two counted ids reach
+// the same instructions by different numbers of comparisons, so they are two.
+typedef enum {
+  CDDE_EXIT_IGNORED,          // under `$5C`
+  CDDE_EXIT_COUNTED_64,       // `$64`
+  CDDE_EXIT_COUNTED_6F,       // `$6F`
+  CDDE_EXIT_UNMATCHED,        // any other id
+  CDDE_EXIT_SURVIVED,         // `$5D`, and the countdown not yet under
+  CDDE_EXIT_KILLED_REACTING,  // ...under, while already reacting
+  CDDE_EXIT_REACTS,           // ...under, and `$81:CC0A` begins the reaction
+} CddeExit;
+
 // The handler. Always true: every one of its ids is answered here, and the one
 // routine it calls is `$81:CC0A`, which is ported below it. It is the first
-// collision handler in the project with nothing to decline.
+// collision handler in the project with nothing to decline. `exit` may be NULL.
 bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r);
+                        ActorHandlerRegs* r, CddeExit* exit);
 
 // `$81:CC0A`, split out for the reason the other two reactions are: it has a
 // coverage site of its own and it is a mechanism worth naming.
@@ -2734,6 +2746,8 @@ typedef struct {
   uint16_t f4ef_hit_by;
   // `$80:DB96`'s, the wanderer's: which way it left.
   uint8_t wanderer_exit;
+  // `$81:CDDE`'s: which way it left.
+  CddeExit cdde_exit;
 } ThreadCallWork;
 
 // `$80:DB96`, the handler of a player the random potion made a wanderer.

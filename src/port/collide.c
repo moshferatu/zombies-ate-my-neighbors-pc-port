@@ -1533,7 +1533,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == ENEMY_B41C_COLLIDE_ENTRY) {
     served = enemy_b41c_collide_counted(w, rom, dp, arg, &r, NULL, &work->b41c);
   } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
-    served = enemy_cdde_collide(w, dp, arg, &r);
+    served = enemy_cdde_collide(w, dp, arg, &r, &work->cdde_exit);
   } else if (entry == ENEMY_B592_COLLIDE_ENTRY) {
     const bool hit = arg == B592_HIT_A || arg == B592_HIT_B;
     work->b592_hit_by = hit ? arg : 0;
@@ -2185,8 +2185,13 @@ void enemy_cdde_react_begin(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 // $81:CDDE  enemy_cdde_collide
 // ---------------------------------------------------------------------------
 
+static bool cdde_left(CddeExit* exit, CddeExit how) {
+  if (exit) *exit = how;
+  return true;
+}
+
 bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r) {
+                        ActorHandlerRegs* r, CddeExit* exit) {
   r->c = false;  // every one of the four exits is a `CLC : RTL`
 
   if (arg < COLLIDE_ID_PLAYER) {
@@ -2210,7 +2215,7 @@ bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
     r->z = false;
-    return true;
+    return cdde_left(exit, CDDE_EXIT_IGNORED);
   }
 
   // `$81:CDE3  STA $22 : AND #$7FFF`, and from here A is the masked id — the
@@ -2226,7 +2231,8 @@ bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
     wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A, n);
     r->n = (n & 0x8000) != 0;
     r->z = n == 0;
-    return true;
+    return cdde_left(exit, id == CDDE_HIT_COUNTED_A ? CDDE_EXIT_COUNTED_64
+                                                    : CDDE_EXIT_COUNTED_6F);
   }
 
   if (id != CDDE_HIT_DAMAGE) {
@@ -2239,7 +2245,7 @@ bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
     wram_w16(w, (uint32_t)dp + CDDE_DP_HIT_ID, 0);
     r->n = (diff & 0x8000) != 0;
     r->z = false;  // `id == $6F` went to the counted branch above
-    return true;
+    return cdde_left(exit, CDDE_EXIT_UNMATCHED);
   }
 
   // `$81:CE03  DEC $0C : BMI`. One hit is one decrement — there is no damage
@@ -2250,7 +2256,7 @@ bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
     PORT_COVER(cdde_survived);
     r->n = false;
     r->z = left == 0;
-    return true;
+    return cdde_left(exit, CDDE_EXIT_SURVIVED);
   }
 
   // `$81:CE09  LDX $24 : BNE $CE12`. The countdown has gone under, and what
@@ -2267,12 +2273,12 @@ bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
     wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A, n);
     r->n = (n & 0x8000) != 0;
     r->z = n == 0;
-    return true;
+    return cdde_left(exit, CDDE_EXIT_KILLED_REACTING);
   }
 
   // `$81:CE0D  JSR $CC0A`, then `CLC : RTL`. X is the zero the `LDX` just read.
   enemy_cdde_react_begin(w, dp, r);
-  return true;
+  return cdde_left(exit, CDDE_EXIT_REACTS);
 }
 
 // ---------------------------------------------------------------------------
