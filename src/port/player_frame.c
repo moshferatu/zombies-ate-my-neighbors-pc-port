@@ -456,6 +456,12 @@ void player_wall_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
   log->unported = true;
   log->walk_kind = WALK_OF_MONSTER;
   if (!monster_walk_resume(w, rom, page, axis, c, v, &log->walk)) return;
+  if (log->walk.stopped) {
+    // At the next wall's pictures: the frame goes no further.
+    if (!log->walk.wall_stopped) return;
+    log->unported = false;
+    return;
+  }
   log->walked = true;
   log->c_set = true;
   log->c = log->walk.last_yes;

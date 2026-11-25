@@ -181,6 +181,7 @@
   X(83823a, "$83:823A", 0x83823au) /* JSL $80:9F9D */ \
   X(83a1d4, "$83:A1D4", 0x83a1d4u) /* RTS */ \
   X(83b277, "$83:B277", 0x83b277u) /* JSL $80:9D5B */ \
+  X(83b8f8, "$83:B8F8", 0x83b8f8u) /* JSL $80:BE0C: the hoverer's drop */ \
   X(82afff, "$82:AFFF", 0x82afffu) /* RTL */ \
   X(82b231, "$82:B231", 0x82b231u) /* RTS */ \
   X(82b2e7, "$82:B2E7", 0x82b2e7u) /* JSR $82:B396 */ \

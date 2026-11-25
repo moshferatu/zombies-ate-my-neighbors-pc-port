@@ -10,8 +10,9 @@
 // This is a turn of that loop, from the return of its sleep at `$81:F16D` to
 // the next sleep, or to `$81:F1DB` where the ROM ends it.
 //
-// A tile with bit 3 moves it two pixels, the way the tile says. No movie
-// has that, and a turn on such a tile is the ROM's.
+// A tile with bit 3 moves it two pixels, the way the tile says: `$0108` up,
+// `$0408` down, `$0208` left and `$0028` right. The weapon-12 discovery
+// session on level 10 was the first to put one on such a tile.
 //
 // Collide id `$38` is one of the four `actor_nearest` looks for, with the
 // two players' and the neighbours': it is something monsters make for. By
@@ -46,6 +47,11 @@
 #define DECOY_SFX 0x0002
 #define DECOY_TILE_ENDS 0x0400u
 #define DECOY_TILE_MOVES 0x0008u
+#define DECOY_TILE_UP 0x0108u
+#define DECOY_TILE_DOWN 0x0408u
+#define DECOY_TILE_LEFT 0x0208u
+#define DECOY_TILE_RIGHT 0x0028u
+#define DECOY_MOVE_TESTS 4
 
 #define DECOY_DP_X 0x00
 #define DECOY_DP_Y 0x02
@@ -62,7 +68,9 @@ typedef enum {
 } DecoyEnd;
 
 typedef struct {
-  bool declined;  // a tile that moves it
+  // A tile that moves it: which of the four `CMP`s matched, 0..3, or
+  // `DECOY_MOVE_TESTS` for none of them; -1 for a tile without bit 3.
+  int moved;
   DecoyEnd end;
   bool played;    // the four came round, and the sound with them
 } DecoyWork;

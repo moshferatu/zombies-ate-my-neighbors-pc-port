@@ -1091,6 +1091,42 @@ bool enemy_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 }
 
 // ---------------------------------------------------------------------------
+// $81:BB05  ant_freeze
+// ---------------------------------------------------------------------------
+
+bool ant_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // `INC $7E : LDA $7E : CMP #$0005 : BCS : BRA <CLC : RTL>`.
+  uint16_t hits = (uint16_t)(wram_r16(w, (uint32_t)dp + ANT_DP_SCRATCH_7E) + 1);
+  wram_w16(w, (uint32_t)dp + ANT_DP_SCRATCH_7E, hits);
+  r->a = hits;
+  if (hits < FREEZE_HITS_NEEDED) {
+    PORT_COVER(ant_freeze_counting);
+    r->n = ((uint16_t)(hits - FREEZE_HITS_NEEDED) & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:BB10  LDY $08 : LDA $0010,Y : BNE <CLC : RTL>`.
+  uint16_t record = wram_r16(w, (uint32_t)dp + ANT_DP_RECORD);
+  uint16_t attr = wram_r16(w, (uint32_t)(uint16_t)(record + ACTOR_ATTR));
+  r->y = record;
+  if (attr != 0) {
+    PORT_COVER(ant_freeze_already);
+    r->a = attr;
+    r->n = (attr & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:BB17` onwards is the splice, with Y the record as at `$81:84A2`.
+  PORT_COVER(ant_freeze_took);
+  enemy_react_splice(w, record, ANT_FREEZE_REACT_RETURN, r);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // $81:FE0E  shot_collide
 // ---------------------------------------------------------------------------
 
@@ -1585,6 +1621,8 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = frankenstein_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == SPIDER_COLLIDE_ENTRY) {
     served = spider_collide(w, rom, dp, arg, &r, &work->pieces);
+  } else if (entry == HOVER_COLLIDE_ENTRY) {
+    served = hover_collide(w, rom, dp, arg, &r);
   } else if (entry == GIANT_SPIDER_COLLIDE_ENTRY) {
     served = giant_spider_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == DR_TONGUE_COLLIDE_ENTRY) {
@@ -1864,8 +1902,8 @@ static bool ant_collide_body(Wram* w, const Rom* rom, uint16_t dp,
       return enemy_freeze(w, dp, r);
     }
     PORT_COVER(ant_special);
-    if (unported) *unported = copy->special_entry;
-    return false;
+    (void)unported;
+    return ant_freeze(w, dp, r);
   }
 
   uint16_t health = wram_r16(w, (uint32_t)dp + ANT_DP_HEALTH);
@@ -3871,6 +3909,76 @@ bool spider_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   piece(pieces, HP_SPIDER_SURVIVED);
   wram_w16(w, (uint32_t)dp + SPIDER_DP_HEALTH, left);
   return survived_in_pieces(w, dp, r, pieces);
+}
+
+// ---------------------------------------------------------------------------
+// $83:B883  hover_collide
+// ---------------------------------------------------------------------------
+
+bool hover_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                   ActorHandlerRegs* r) {
+  r->a = arg;
+  if (arg < COLLIDE_ID_PLAYER) {
+    PORT_COVER(hover_hit_ignore);
+    r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$83:B88A  STA $1C : AND #$7FFF : CMP #$005D : BEQ <JML $81:847E>`.
+  wram_w16(w, (uint32_t)dp + HOVER_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(hover_hit_freeze);
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `LDA $0020`, the low word of the tick, through its own bank: low WRAM.
+  const uint16_t tick = wram_r16(w, W_SCHED_TICK);
+  if (id == 0x0062) {
+    id = (tick & 1) ? 0x005d : 0x005c;
+  } else if (id == 0x0070) {
+    id = (tick & 3) ? 0x005d : 0x005c;
+  } else if (id == 0x0061) {
+    id = 0x0060;
+  } else if (id == 0x006f) {
+    id = 0x0063;
+  }
+
+  // `SEC : SBC #$005C : ASL : TAX`, then `SEC : LDA $0C : SBC $818561,X`.
+  const uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  r->x = index;
+  const uint16_t health = wram_r16(w, (uint32_t)dp + HOVER_DP_HEALTH_WORD);
+  const uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->a = left;
+  if (left & 0x8000) {
+    // `DEC $0A : STA $0C : STZ $7E : SEC : RTL`.
+    PORT_COVER(hover_hit_died);
+    const uint16_t fate =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + HOVER_DP_FATE_WORD) - 1);
+    wram_w16(w, (uint32_t)dp + HOVER_DP_FATE_WORD, fate);
+    wram_w16(w, (uint32_t)dp + HOVER_DP_HEALTH_WORD, left);
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_FREEZE_HITS, 0);
+    r->n = (fate & 0x8000) != 0;
+    r->z = fate == 0;
+    r->c = true;
+    return true;
+  }
+  if (left == health) {
+    // `CMP $0C : BEQ $B8F6  CLC : RTL`.
+    PORT_COVER(hover_hit_no_damage);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+  // `STA $0C : JML $81:8506`.
+  PORT_COVER(hover_hit_survived);
+  wram_w16(w, (uint32_t)dp + HOVER_DP_HEALTH_WORD, left);
+  return enemy_survived_react(w, dp, r);
 }
 
 // ---------------------------------------------------------------------------

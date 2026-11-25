@@ -405,14 +405,17 @@ void oam_buffer_clear(Wram* w);
 
 // --- $80:BD1F ---------------------------------------------------------------
 
-// The four-byte table at `$80:BDE6`, indexed by the low two bits of the word at
-// `$20` **on the caller's direct page**. All four entries are $80.
+// The four-byte table at `$BDE6`, indexed by the low two bits of the word at
+// `$20` **on the caller's direct page**, and read through the **caller's data
+// bank**. In bank `$80` all four entries are $80; in bank `$82`, the bystander
+// threads' bank, they are `$22,$F2,$BD,$80`. Only the offset is used.
 #define SPRITE_PASS_PHASE_TABLE 0x80bde6u
 
 // The tail's `$80:BDD2  LDA $20` is a direct-page read, and the `$80:BDD0  PLD`
 // two instructions earlier has already put the *caller's* page back. So the word
 // it indexes the table with is `dp + $20`, which is `W_SCHED_TICK` only when the
-// caller's page is zero — see the note on `sprite_build_oam`.
+// caller's page is zero — see the note on `sprite_build_oam`. `db` is the
+// caller's data bank, for the same tail's `LDA $BDE6,X`.
 #define SPRITE_PASS_PHASE_DP 0x20
 
 // The whole per-frame sprite pass: the routine `scheduler_idle` calls once a
@@ -450,7 +453,7 @@ void oam_buffer_clear(Wram* w);
 // the pass it declines on comes last. A false therefore means "throw `w` away",
 // which is exactly what the harness does: it runs this on a private copy first
 // and only keeps the result if it comes back true.
-bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
+bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp, uint8_t db);
 
 // Which record each OAM entry came from, and where that record was drawn.
 //
@@ -556,7 +559,7 @@ typedef struct {
   SpriteTileWork tile;
 } SpriteBuildWork;
 
-bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
+bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp, uint8_t db,
                               SpriteBuildWork* work);
 
 // --- $80:B123 ---------------------------------------------------------------

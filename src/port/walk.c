@@ -770,7 +770,16 @@ bool monster_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
     log->overflow = v;
   }
   if (axis == 0) step_up_down(&k);
-  return !k.met_reaction && !k.stopped;
+  // Back from a wall across, it may break another going up or down, and
+  // stop at that one's pictures.
+  if (log && k.stopped) {
+    PORT_COVER(monster_wall_again);
+    log->stopped = true;
+    log->stop_axis = k.stop_axis;
+    log->stop = k.stop;
+    log->stop_return = k.stop_return;
+  }
+  return !k.met_reaction && (!k.stopped || log != NULL);
 }
 
 // The ordinary walk, twice with the double step. A door that stops the

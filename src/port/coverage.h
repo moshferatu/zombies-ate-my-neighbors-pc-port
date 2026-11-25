@@ -703,6 +703,8 @@
   X(lunge_off_the_level,"lunge_frame",      "the level's edge") \
   X(lunge_met_a_thing,"lunge_frame",        "a thing in the way") \
   X(decoy_stood,      "decoy_frame",        "another ten frames of it") \
+  X(monster_wall_again,"player_wall_woken", "back from a wall across, another wall going up or down") \
+  X(decoy_moved,      "decoy_frame",        "a tile with bit 3, which moves it") \
   X(decoy_sounded,    "decoy_frame",        "its four pictures came round: the sound") \
   X(decoy_hit,        "decoy_frame",        "its word has gone negative: the ROM ends it") \
   X(decoy_ran_out,    "decoy_frame",        "its hundredth turn") \
@@ -794,6 +796,7 @@
   X(vampire_place_bad_ground,"vampire_frame", "hidden: the ground at the place drawn will not do") \
   X(vampire_place_off_level,"vampire_frame",  "...or the place is off the level") \
   X(vampire_came_back, "vampire_frame",       "...or it will do, and it comes back there") \
+  X(vampire_place_nobody,"vampire_frame",     "...or nobody is in reach, and it comes back where it is") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -1134,7 +1137,15 @@
   X(ant_latched,      "ant_collide",         "...refused, because something already happened to this one") \
   X(ant_latch_alt,"ant_collide",             "...latching $46 rather than $42, on the one value that redirects") \
   X(ant_hit,          "ant_collide",         "a weapon shot, which is the only id it takes damage from") \
-  X(ant_special,      "ant_collide",         "id $5D, which has a routine of its own — declined") \
+  X(ant_special,      "ant_collide",         "id $5D, which goes to $81:BB05, the ant's own freeze") \
+  X(hover_hit_ignore, "hover_collide",       "an id below $5C, ignored") \
+  X(hover_hit_freeze, "hover_collide",       "id $5D, to enemy_freeze") \
+  X(hover_hit_died,   "hover_collide",       "a hit that killed it") \
+  X(hover_hit_no_damage,"hover_collide",     "a hit that took nothing") \
+  X(hover_hit_survived,"hover_collide",      "a hit it survived, through $81:8506") \
+  X(ant_freeze_counting,"ant_collide",       "...a hit short of the fifth, which only bumps the counter") \
+  X(ant_freeze_already,"ant_collide",        "...the fifth or later, refused because its record's attribute word is set") \
+  X(ant_freeze_took,  "ant_collide",         "...a hit that froze the ant") \
   X(ant_died,         "ant_collide",         "a hit that took its last health") \
   X(ant_fatal_id, "ant_collide",             "...id $5E, which skips the subtraction and dies outright") \
   X(ant_no_damage,"ant_collide",             "a hit whose damage-table entry is zero — no shot can carry one here") \
@@ -2264,6 +2275,20 @@
   X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
   X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \
   X(chainsaw_ended, "ts_chainsaw_ended", "...its weight given back, and its record freed") \
+  X(hover_begun, "ts_hover_enter", "the hoverer begun, with its weight") \
+  X(hover_made, "ts_hover_made", "...its record and handler, and its first sleep") \
+  X(hover_found, "ts_hover_ranged", "a player within range, which it steers by") \
+  X(hover_drops, "ts_hover_ranged", "...close across under it, on a draw: it drops something") \
+  X(hover_stopped, "ts_hover_ground_x", "the ground or something in the way stopped it, and it turns about") \
+  X(hover_turned, "ts_hover_ground_x", "...or its count ran out, and it turns about") \
+  X(hover_died, "ts_hover_ground_x", "its fate set: it leaves the loop") \
+  X(hover_ended, "ts_hover_ended", "its weight given back, and its record freed") \
+  X(drop_made, "ts_drop_made", "the thing dropped, under the hoverer") \
+  X(drop_stopped, "ts_drop_woke", "...told to stop, and freed at once") \
+  X(drop_landed, "ts_drop_ground", "...it reached the ground: its pictures") \
+  X(drop_spent, "ts_drop_ground", "...or fell its 45 ticks without, and the same") \
+  X(prize_blast_begun, "ts_prize_blast", "the fourth's blast begun beside the player") \
+  X(prize_blast_ended, "ts_prize_blast_shown", "...its pictures over: its weight given back, and its record freed") \
   X(chainsaw_second_freed, "ts_chainsaw_freed", "...and the second record it had") \
   X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
   X(clone_freed, "ts_clone_freed", "...or the hunting clone's") \
@@ -2555,6 +2580,7 @@
   X(fishman_leap_too_short, "fishman_leap_wake", "the spot is under 32 across: no leap after all") \
   X(fishman_leap_began, "fishman_leap_wake", "the leap set up, and a splash left behind it") \
   X(fishman_dive_straight, "fishman_dive_wake", "the water is straight above or below: no dive") \
+  X(fishman_dive_again,"fishman_dive_wake",   "the rest of the pass found water past the ground again, and dives again") \
   X(fishman_dive_set, "fishman_dive_wake", "the dive set up, from its next pass") \
   X(fishman_sweep_began, "fishman_sweep_begin", "its second record, at the first place in the ring") \
   X(fishman_wants_water, "fishman_sweep_after", "the sweep over: the one that keeps to its pool wants water") \
@@ -2609,6 +2635,8 @@
   X(bystander_stepped_last, "ts_bystander_step", "...or the first is eight, and its words are asked for") \
   X(freeze_held, "ts_freeze_pass", "a frozen creature stays frozen ten ticks more") \
   X(freeze_over, "ts_freeze_pass", "...or its count is spent, and it is put back") \
+  X(ant_freeze_held, "ts_ant_freeze_pass", "a frozen ant stays frozen ten ticks more") \
+  X(ant_freeze_over, "ts_ant_freeze_pass", "...or its count is spent, and it is put back") \
   X(cut_heard, "ts_cut_heard", "the level's sample set is the first: the saw is heard") \
   X(cut_unheard, "ts_cut_heard", "...or it is not, and the game leaves it out") \
   X(cut_in_the_way, "ts_cut_placed_across", "somebody is at the place drawn: another draw") \

@@ -277,6 +277,7 @@ enum {
   SF_PLACE_X,       // $EBFA-$EC0D
   SF_PLACE_Y,       // $EC12-$EC21
   SF_PLACE_MAP,     // $EC22-$EC2B
+  SF_PLACE_FAR,     // $EBDE-$EBE7
   SF_CIRCLE_MAP,    // $E955-$E95E
   SF_CIRCLE_GROUND, // $E95F-$E968
   SF_CIRCLE_LEAVE,  // JMP $EA0C, and $EA0C-$EA33

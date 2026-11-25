@@ -831,6 +831,23 @@ bool enemy_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 // True always: there is no branch of it that is not here.
 bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
+// --- $83:B883  hover_collide ------------------------------------------------
+//
+// The hoverer's handler (`port/thread_stretches.h`). The family's shape: ids
+// below `$5C` ignored, `$5D` to `enemy_freeze`, the damage table at `$81:8561`,
+// a death that sets its fate, and a survivor through `$81:8506`. Four ids are
+// read as others first: `$62` as `$5C` on even ticks and `$5D` on odd, `$70`
+// as `$5C` one tick in four and `$5D` the rest, `$61` as `$60` and `$6F` as
+// `$63`. A hit that takes nothing is `CLC : RTL`, unlike the spider's `SEC`.
+#define HOVER_COLLIDE_ENTRY 0x83b883u
+#define HOVER_DP_FATE_WORD 0x0a
+#define HOVER_DP_HEALTH_WORD 0x0c
+#define HOVER_DP_HIT_ID 0x1c
+
+// Always true: everything it reaches is ported.
+bool hover_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                   ActorHandlerRegs* r);
+
 // --- $81:FE0E ---------------------------------------------------------------
 
 #define SHOT_COLLIDE_ENTRY 0x81fe0eu
@@ -1050,16 +1067,29 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
 #define ANT_OBJECT_ID_FIRST 0x000c
 #define ANT_OBJECT_ID_END 0x0033
 
-// The two ids with routines of their own, both `JML`s, neither ported: `$5D`
-// goes to `$81:BB05` and `$5E` shares the death tail. Note the asymmetry with
-// `enemy_collide`, where *both* are separate routines.
+// The two ids with routines of their own, both `JML`s: `$5D` goes to
+// `$81:BB05`, `ant_freeze`, and `$5E` shares the death tail. Note the
+// asymmetry with `enemy_collide`, where *both* are separate routines.
 #define ANT_HIT_SPECIAL 0x005d
 #define ANT_HIT_FATAL 0x005e
 
 // Where a survivor goes, and where `$5D` goes. Both are stack splices in the
-// `$81:8506` family. The first is ported below; the second declines by name.
+// `$81:8506` family.
 #define ANT_SURVIVE_ENTRY 0x81bab3u
 #define ANT_SPECIAL_ENTRY 0x81bb05u
+
+// --- $81:BB05  ant_freeze ---------------------------------------------------
+//
+// The ant's `enemy_freeze`, by the ice weapon. Five hits, counted at `$7E` on
+// its page as there, and the fifth splices its thread to `$81:BB4B`. It
+// differs in two ways: the guard is the record's `ACTOR_ATTR` word being
+// zero rather than `ACTOR_ATTR_SET` being clear, and nothing is counted
+// toward the end-of-level bonus. What the thread then runs is in
+// `port/thread_stretches.h`.
+#define ANT_FREEZE_REACT_RETURN 0xbb4a  // `$81:BB4B` less the one an `RTL` adds
+
+// Always true: it calls nothing the port does not have.
+bool ant_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
 // --- $81:BAB3 ---------------------------------------------------------------
 

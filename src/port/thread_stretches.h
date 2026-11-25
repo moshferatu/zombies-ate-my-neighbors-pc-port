@@ -971,6 +971,136 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define FREEZE_DP_RECORD 0x08
 #define FREEZE_DP_HITS 0x7e            // `ACTOR_DP_FREEZE_HITS`
 
+// --- the hoverer, `$83:B7F6` -------------------------------------------------
+//
+// A creature one level places, at the end of its list at `$9F:FB22`. It keeps
+// 50 to 70 pixels above whoever `player_in_range` finds within `$D0`, drifts
+// three pixels a tick sideways toward them, and turns about when the ground or
+// something in the way stops it or a count it draws runs out. With a player
+// within eight pixels across under it, one draw in ten or so, it shows another
+// picture, begins the thread at `$83:B8F8` eight pixels below itself, and
+// waits six ticks. Fifty of health, `$83:B883` for a handler, and when that
+// has killed it, the points, a sound and its last pictures.
+//
+// Its loop calls its one state through `$16` (`PEA : LDA $16 : DEC : PHA :
+// RTS`), which is only ever `$B780`. Every call it makes is the harness's,
+// so each stretch below runs from one call's return to the next call, with
+// the `JSR`s it is inside of on the stack.
+#define HOVER_PC 0x83b7f6u
+#define HOVER_MARK_CALL_PC 0x83b802u      // `JSL victim_mark_gone`
+#define HOVER_MARKED_PC 0x83b806u
+#define HOVER_ALLOC_PC 0x83b797u          // `JSL actor_slot_alloc`, in `JSR $B797`
+#define HOVER_MADE_PC 0x83b79bu
+#define HOVER_MADE_RETURN 0xb808u         // what `JSR $B797` pushes
+#define HOVER_YIELD_PC 0x83b811u          // `JSL thread_yield`, two ticks
+#define HOVER_WOKE_PC 0x83b815u
+#define HOVER_LOOP_RETURN 0xb81cu         // what its `PEA` leaves for the state
+#define HOVER_STATE 0xb780u               // the one state `$16` ever names
+#define HOVER_LOOK_RETURN 0xb782u         // `JSR $B6CE`'s
+#define HOVER_RANGE_CALL_PC 0x83b6d5u     // `JSL player_in_range`
+#define HOVER_RANGED_PC 0x83b6d9u
+#define HOVER_AIM_RETURN 0xb785u          // `JSR $B71B`'s
+#define HOVER_DROP_CALL_PC 0x83b751u      // `JSL thread_spawn`
+#define HOVER_DROPPED_PC 0x83b755u
+#define HOVER_DROP_YIELD_PC 0x83b758u     // `JSL thread_yield`, six ticks
+#define HOVER_DROP_WOKE_PC 0x83b75cu
+#define HOVER_MOVE_RETURN 0xb78fu         // `JSR $B699`'s
+#define HOVER_GROUND_Y_CALL_PC 0x83b69du  // `JSL terrain_blocked_enemy`
+#define HOVER_GROUND_Y_PC 0x83b6a1u
+#define HOVER_THING_Y_CALL_PC 0x83b6a9u   // `JSL actor_at_point`
+#define HOVER_THING_Y_PC 0x83b6adu
+#define HOVER_GROUND_X_CALL_PC 0x83b6b7u  // `JSL terrain_blocked_enemy`
+#define HOVER_GROUND_X_PC 0x83b6bbu
+#define HOVER_THING_X_CALL_PC 0x83b6c3u   // `JSL actor_at_point`
+#define HOVER_THING_X_PC 0x83b6c7u
+#define HOVER_SCORE_CALL_PC 0x83b82bu     // `JSL score_add`
+#define HOVER_SCORED_PC 0x83b82fu
+#define HOVER_SOUND_CALL_PC 0x83b840u     // `JSL apu_play_sfx`
+#define HOVER_SOUNDED_PC 0x83b844u
+#define HOVER_PICTURES_CALL_PC 0x83b847u  // `JSL pictures_play`
+#define HOVER_ENDED_PC 0x83b84bu
+#define HOVER_FREE_PC 0x83b859u           // `JML actor_slot_free`
+#define HOVER_LOAD 0x0010
+#define HOVER_PICTURE 0xf4dcu
+#define HOVER_DROP_PICTURE 0xf50du
+#define HOVER_PICTURE_BANK 0x008fu
+#define HOVER_COLLIDE_ID 0x0003
+#define HOVER_ATTR 0x0c00u
+#define HOVER_HEALTH 0x0032
+#define HOVER_SPEED 0x0003
+#define HOVER_HANDLER 0xb883u
+#define HOVER_BANK 0x0083u
+#define HOVER_TICKS 0x0002
+#define HOVER_DROP_TICKS 0x0006
+#define HOVER_RANGE 0x00d0                // how far `player_in_range` looks
+#define HOVER_FAR 0x0050                  // ...and from here it turns toward them
+#define HOVER_LOW 0x0032                  // the band above them it keeps to
+#define HOVER_HIGH 0x0046
+#define HOVER_RISE 0x0003                 // a tick up or down
+#define HOVER_DROP_ODDS 0x0019            // a draw below this...
+#define HOVER_DROP_ACROSS 0x0008          // ...with them this near across
+#define HOVER_DROP_BELOW 0x0008           // where the drop begins
+#define HOVER_WANDER_MASK 0x003f          // ticks it keeps its way: 8..71
+#define HOVER_WANDER_LEAST 0x0008
+#define HOVER_WORTH 0x0010                // `LDX #$0010` for `score_add`
+#define HOVER_DEATH_SFX 0x0021
+#define HOVER_LAST_PICTURES 0xb85eu
+#define HOVER_DP_SPAWN_X 0x00
+#define HOVER_DP_SPAWN_Y 0x02
+#define HOVER_DP_MARK 0x06                // what `victim_mark_gone` is given
+#define HOVER_DP_RECORD 0x08
+#define HOVER_DP_FATE 0x0a                // zero while alive
+#define HOVER_DP_HEALTH 0x0c
+#define HOVER_DP_X 0x0e
+#define HOVER_DP_Y 0x10
+#define HOVER_DP_NEXT_X 0x12
+#define HOVER_DP_NEXT_Y 0x14
+#define HOVER_DP_STATE 0x16
+#define HOVER_DP_SPEED 0x18               // +3 or -3 across
+#define HOVER_DP_TICKS_LEFT 0x1a
+#define HOVER_DP_HIT_BY 0x1c              // the id that hit it this tick
+#define HOVER_DP_TARGET 0x1e              // the player last found
+#define HOVER_DP_FREEZE_HITS 0x7e
+
+// The thing it drops, `$83:B8F8`: a record eight pixels under it, falling four
+// a tick for at most 45 ticks, until `terrain_point_bit2` stops it; then its
+// pictures, and it is freed. A word at `$14` on its page that is not zero
+// frees it at once. Its first instruction is a `JSL actor_slot_alloc`, which
+// `port/links.h` has.
+#define DROP_PC 0x83b8f8u
+#define DROP_MADE_PC 0x83b8fcu
+#define DROP_YIELD_PC 0x83b93eu           // `JSL thread_yield`, a tick
+#define DROP_WOKE_PC 0x83b942u
+#define DROP_GROUND_CALL_PC 0x83b952u     // `JSL terrain_point_bit2`
+#define DROP_GROUND_PC 0x83b956u
+#define DROP_PICTURES_CALL_PC 0x83b96eu   // `JSL pictures_play`
+#define DROP_SHOWN_PC 0x83b972u
+#define DROP_FREE_PC 0x83b974u            // `JML actor_slot_free`
+#define DROP_PICTURE 0xa510u
+#define DROP_PICTURE_BANK 0x0090u
+#define DROP_COLLIDE_ID 0x0003
+#define DROP_FLAGS 0x8004u
+#define DROP_TICKS_MOST 0x002d
+#define DROP_FALL 0x0004
+#define DROP_PICTURES 0xb979u
+#define DROP_DP_RECORD 0x08
+#define DROP_DP_X 0x0e
+#define DROP_DP_Y 0x10
+#define DROP_DP_TICKS_LEFT 0x12
+#define DROP_DP_STOP 0x14
+
+// --- a frozen ant ------------------------------------------------------------
+//
+// The ant's own freeze, which `ant_freeze` in `port/collide.h` splices its
+// thread into: `$0C00` in its record's `ACTOR_ATTR` word rather than
+// `ACTOR_ATTR_SET` in its flags, and back to zero when it is over. Otherwise
+// the frozen creature's.
+#define ANT_FREEZE_BEGIN_PC 0x81bb4bu
+#define ANT_FREEZE_PASS_PC 0x81bb64u   // where its sleep comes back
+#define ANT_FREEZE_YIELD_PC 0x81bb60u  // `JSL thread_yield`, ten ticks in A
+#define ANT_FREEZE_OVER_PC 0x81bb74u   // the `RTL` back to where it was
+#define ANT_FROZEN_ATTR 0x0c00u
+
 // --- the chainsaw maniac's cut -----------------------------------------------
 
 #define CUT_PC 0x8192d6u
@@ -1605,6 +1735,32 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define W_FOURTH_FACING 0x0038u          // the way faced, kept on page zero
 #define FOURTH_FACING_LOW 0x0006u        // up to here, or...
 #define FOURTH_FACING_HIGH 0x000eu       // ...from here
+// The thread at `$82:DCA0`: a blast beside the player, ten pixels left and
+// twenty up of the tile. Five of the level's weight; a record drawn there,
+// with id 3 and no handler; everything with an id in a box round it told,
+// by `actor_notify_box` with id 3; its pictures; and its weight given back
+// and its record freed, which ends it.
+#define PRIZE_BLAST_PC 0x82dca0u
+#define PRIZE_BLAST_ALLOC_PC 0x82dcaau     // `JSL actor_slot_alloc`
+#define PRIZE_BLAST_MADE_PC 0x82dcaeu
+#define PRIZE_BLAST_TELL_PC 0x82dd0fu      // `JSL actor_notify_box`
+#define PRIZE_BLAST_TOLD_PC 0x82dd13u
+#define PRIZE_BLAST_PICTURES_CALL_PC 0x82dd16u  // `JSL pictures_play`
+#define PRIZE_BLAST_SHOWN_PC 0x82dd1au
+#define PRIZE_BLAST_FREE_PC 0x82dd28u      // `JML actor_slot_free`
+#define PRIZE_BLAST_LOAD 0x0005
+#define PRIZE_BLAST_PICTURE 0xe8c2u
+#define PRIZE_BLAST_PICTURE_BANK 0x008fu
+#define PRIZE_BLAST_ID 0x0003
+#define PRIZE_BLAST_FLAGS 0x8008u          // drawn, and bit 3
+#define PRIZE_BLAST_PICTURES 0xdd2cu       // of bank $82
+#define PRIZE_BLAST_DP_X 0x00              // given: where it is
+#define PRIZE_BLAST_DP_Y 0x02
+#define PRIZE_BLAST_DP_RECORD 0x08
+#define PRIZE_BLAST_BOX_LEFT 0x0011        // the box: left of it by this,
+#define PRIZE_BLAST_BOX_WIDE 0x0022        // ...this wide,
+#define PRIZE_BLAST_BOX_DOWN 0x0010        // ...below it by this,
+#define PRIZE_BLAST_BOX_TALL 0x0020        // ...and this tall
 #define FOURTH_BESIDE_LEFT 0x000au       // the thread's place, from X and Y
 #define FOURTH_BESIDE_UP 0x0014u
 #define FOURTH_BESIDE_THREAD 0xdca0u
@@ -2473,6 +2629,8 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_FREEZE_BEGIN, 0x8184d6, 0x8184ea, 0) \
   X(TS_FREEZE_COUNT, 0x8184f2, 0x8184f5, 0)  /* DEC $7E : BPL */ \
   X(TS_FREEZE_END, 0x8184f6, 0x818504, 0)    /* to the RTL */ \
+  X(TS_ANT_FREEZE_BEGIN, 0x81bb4b, 0x81bb5d, 0) \
+  X(TS_ANT_FREEZE_END, 0x81bb68, 0x81bb74, 0)  /* to the RTL */ \
   X(TS_CUT_HEARD, 0x8193d3, 0x8193da, 0)     /* LDA abs : CMP # : BNE */ \
   X(TS_CUT_AIM, 0x8193e2, 0x8193e8, 0)       /* to the JSR (abs,X) */ \
   X(TS_CUT_DRAWN, 0x819326, 0x81933f, 0)     /* and $81:9362-$937B */ \
@@ -2505,6 +2663,49 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */ \
   X(TS_SPIDER_ENTER, 0x83b280, 0x83b28d, 0)  /* the JSR too */ \
   X(TS_SPIDER_MADE, 0x83b34a, 0x83b3a1, 0)   /* the JSL too */ \
+  X(TS_HOVER_ENTER, 0x83b7f6, 0x83b802, 0)   /* to the JSL */ \
+  X(TS_HOVER_MADE, 0x83b79b, 0x83b7f5, 0)    /* the JSL too */ \
+  X(TS_HOVER_WANDER_A, 0x83b765, 0x83b76e, 0)  /* the JSL too */ \
+  X(TS_HOVER_WANDER_B, 0x83b76e, 0x83b780, 0)  /* the RTS too */ \
+  X(TS_HOVER_LOOP, 0x83b80c, 0x83b811, 0)    /* to the JSL */ \
+  X(TS_HOVER_WOKE, 0x83b815, 0x83b81d, 0)    /* to its state */ \
+  X(TS_HOVER_LOOK, 0x83b6ce, 0x83b6d5, 0)    /* to the JSL */ \
+  X(TS_HOVER_FOUND, 0x83b6d9, 0x83b6dc, 0) \
+  X(TS_HOVER_NEAR_X, 0x83b6dc, 0x83b6e3, 0) \
+  X(TS_HOVER_AIM, 0x83b6e3, 0x83b6ed, 0) \
+  X(TS_HOVER_AIM_LEFT, 0x83b6ed, 0x83b6f0, 0) \
+  X(TS_HOVER_SPEED, 0x83b6f0, 0x83b6f2, 0) \
+  X(TS_HOVER_HEIGHT, 0x83b6f2, 0x83b6fa, 0) \
+  X(TS_HOVER_ABOVE, 0x83b6fa, 0x83b6fc, 1)   /* BRA */ \
+  X(TS_HOVER_LOW, 0x83b6fc, 0x83b701, 0) \
+  X(TS_HOVER_HIGH, 0x83b701, 0x83b706, 0) \
+  X(TS_HOVER_UP, 0x83b707, 0x83b711, 1)      /* its BRA */ \
+  X(TS_HOVER_DOWN, 0x83b711, 0x83b71b, 1)    /* its BRA */ \
+  X(TS_HOVER_DRAW_CALL, 0x83b71b, 0x83b71f, 0) \
+  X(TS_HOVER_DRAWN, 0x83b71f, 0x83b724, 0) \
+  X(TS_HOVER_UNDER, 0x83b724, 0x83b72e, 0) \
+  X(TS_HOVER_NEGATE, 0x83b72e, 0x83b732, 0) \
+  X(TS_HOVER_CLOSE, 0x83b732, 0x83b737, 0) \
+  X(TS_HOVER_DROP, 0x83b737, 0x83b751, 0)    /* to the JSL */ \
+  X(TS_HOVER_DROP_WOKE, 0x83b75c, 0x83b765, 0)  /* the RTS too */ \
+  X(TS_HOVER_STEP, 0x83b786, 0x83b78d, 0) \
+  X(TS_HOVER_GROUND_Y, 0x83b699, 0x83b69d, 0)   /* to the JSL */ \
+  X(TS_HOVER_THING_Y_ASK, 0x83b6a3, 0x83b6a9, 0)  /* to the JSL */ \
+  X(TS_HOVER_RISE, 0x83b6af, 0x83b6b3, 0) \
+  X(TS_HOVER_GROUND_X, 0x83b6b3, 0x83b6b7, 0)   /* to the JSL */ \
+  X(TS_HOVER_THING_X_ASK, 0x83b6bd, 0x83b6c3, 0)  /* to the JSL */ \
+  X(TS_HOVER_STEP_X, 0x83b6c9, 0x83b6cd, 0) \
+  X(TS_HOVER_COUNT, 0x83b792, 0x83b796, 0) \
+  X(TS_HOVER_PLACE, 0x83b876, 0x83b883, 0)   /* the RTS too */ \
+  X(TS_HOVER_FATE, 0x83b820, 0x83b824, 0) \
+  X(TS_HOVER_DEAD, 0x83b824, 0x83b82b, 0)    /* to the JSL */ \
+  X(TS_HOVER_SCORED, 0x83b82f, 0x83b840, 0)  /* to the JSL */ \
+  X(TS_HOVER_ENDED, 0x83b84b, 0x83b859, 0)   /* to the JML */ \
+  X(TS_DROP_MADE, 0x83b8fc, 0x83b93e, 0)     /* to the JSL */ \
+  X(TS_DROP_WOKE, 0x83b942, 0x83b946, 0) \
+  X(TS_DROP_FALL, 0x83b946, 0x83b952, 0)     /* to the JSL */ \
+  X(TS_DROP_PUT, 0x83b958, 0x83b963, 0) \
+  X(TS_DROP_LAND, 0x83b963, 0x83b96e, 0)     /* to the JSL */ \
   X(TS_SPIDER_DRAW, 0x83b457, 0x83b45b, 0)   /* JSL rng_next */ \
   X(TS_SPIDER_WAY, 0x83b45b, 0x83b46b, 0)    /* and $83:B465, the RTS too */ \
   X(TS_SPIDER_FIRST, 0x83b290, 0x83b295, 0) \
@@ -2634,6 +2835,10 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_MONSTER_BEGUN, 0x80d9bc, 0x80d9e3, 0) \
   X(TS_FOURTH_BACK, 0x80ea02, 0x80ea16, 0)      /* the JSL too */ \
   X(TS_FOURTH_DRAW, 0x82dc57, 0x82dc5f, 0)      /* JSL rng_next */ \
+  X(TS_PRIZE_BLAST_ENTER, 0x82dca0, 0x82dcaa, 0)  /* to the JSL */ \
+  X(TS_PRIZE_BLAST_MADE, 0x82dcae, 0x82dce9, 0)   /* the JSL too */ \
+  X(TS_PRIZE_BLAST_BOX, 0x82dce9, 0x82dd0f, 0)    /* to the JSL */ \
+  X(TS_PRIZE_BLAST_ENDED, 0x82dd1a, 0x82dd28, 0)  /* to the JML */ \
   X(TS_FOURTH_PRIZE, 0x82dc5f, 0x82dc6d, 0)     /* to the first BEQ */ \
   X(TS_FOURTH_NOT_NONE, 0x82dc6d, 0x82dc72, 0) \
   X(TS_FOURTH_FACING, 0x82dc78, 0x82dc80, 0) \
@@ -2796,6 +3001,16 @@ typedef enum {
                            // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
   TS_NEEDS_CHAINSAW_SHOWN, // ...and the start's other `JSR`
+  TS_NEEDS_Y_RECORD,       // a record in Y, in low WRAM
+  TS_NEEDS_HOVER_MADE,     // a record in A, and `JSR $B797` to return to
+  TS_NEEDS_HOVER_WOKE,     // its record, and its one state
+  TS_NEEDS_HOVER_RANGED,   // ...and its look's `JSR` and the loop's to return
+                           //    to, and whoever it reads in low WRAM
+  TS_NEEDS_HOVER_AIMED,    // its record, its aim's `JSR` and the loop's
+  TS_NEEDS_HOVER_MOVED,    // its record, its move's `JSR` and the loop's,
+                           //    and its weight in the load, for its end
+  TS_NEEDS_HOVER_ENDED,    // its weight not more than the level's load
+  TS_NEEDS_PRIZE_BLAST_ENDED,  // its weight not more than the level's load
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -2898,6 +3113,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(stagger_over, "$81:96BE", STAGGER_OVER_PC, stagger_over, STAGGER, TS_NEEDS_RECORD) \
   X(freeze_begin, "$81:84D6", FREEZE_BEGIN_PC, freeze_begin, FREEZE, TS_NEEDS_RECORD) \
   X(freeze_pass, "$81:84F2", FREEZE_PASS_PC, freeze_pass, FREEZE, TS_NEEDS_RECORD) \
+  X(ant_freeze_begin, "$81:BB4B", ANT_FREEZE_BEGIN_PC, ant_freeze_begin, ANT_FREEZE, TS_NEEDS_RECORD) \
+  X(ant_freeze_pass, "$81:BB64", ANT_FREEZE_PASS_PC, ant_freeze_pass, ANT_FREEZE, TS_NEEDS_RECORD) \
   X(cut_enter, "$81:92D6", CUT_PC, cut_enter, CUT, TS_NEEDS_NOTHING) \
   X(cut_heard, "$81:93D3", CUT_HEARD_PC, cut_heard, CUT, TS_NEEDS_CUT) \
   X(cut_aim, "$81:93E2", CUT_AIM_PC, cut_aim, CUT, TS_NEEDS_CUT) \
@@ -3151,6 +3368,28 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(saucer_aimed, "$82:84DD", SAUCER_AIMED_PC, saucer_aimed, SAUCER, TS_NEEDS_SAUCER_AIMED) \
   X(fourth_prize, "$80:EA02", FOURTH_PRIZE_PC, fourth_prize, FOURTH_PRIZE, TS_NEEDS_NOTHING) \
   X(fourth_draw, "$82:DC57", FOURTH_DRAW_PC, fourth_draw, FOURTH_PRIZE, TS_NEEDS_NOTHING) \
+  X(hover_enter, "$83:B7F6", HOVER_PC, hover_enter, HOVER, TS_NEEDS_NOTHING) \
+  X(hover_marked, "$83:B806", HOVER_MARKED_PC, hover_marked, HOVER, TS_NEEDS_NOTHING) \
+  X(hover_made, "$83:B79B", HOVER_MADE_PC, hover_made, HOVER, TS_NEEDS_HOVER_MADE) \
+  X(hover_woke, "$83:B815", HOVER_WOKE_PC, hover_woke, HOVER, TS_NEEDS_HOVER_WOKE) \
+  X(hover_ranged, "$83:B6D9", HOVER_RANGED_PC, hover_ranged, HOVER, TS_NEEDS_HOVER_RANGED) \
+  X(hover_dropped, "$83:B755", HOVER_DROPPED_PC, hover_dropped, HOVER, TS_NEEDS_HOVER_AIMED) \
+  X(hover_drop_woke, "$83:B75C", HOVER_DROP_WOKE_PC, hover_drop_woke, HOVER, TS_NEEDS_HOVER_AIMED) \
+  X(hover_ground_y, "$83:B6A1", HOVER_GROUND_Y_PC, hover_ground_y, HOVER, TS_NEEDS_HOVER_MOVED) \
+  X(hover_thing_y, "$83:B6AD", HOVER_THING_Y_PC, hover_thing_y, HOVER, TS_NEEDS_HOVER_MOVED) \
+  X(hover_ground_x, "$83:B6BB", HOVER_GROUND_X_PC, hover_ground_x, HOVER, TS_NEEDS_HOVER_MOVED) \
+  X(hover_thing_x, "$83:B6C7", HOVER_THING_X_PC, hover_thing_x, HOVER, TS_NEEDS_HOVER_MOVED) \
+  X(hover_scored, "$83:B82F", HOVER_SCORED_PC, hover_scored, HOVER, TS_NEEDS_RECORD) \
+  X(hover_sounded, "$83:B844", HOVER_SOUNDED_PC, hover_sounded, HOVER, TS_NEEDS_NOTHING) \
+  X(hover_ended, "$83:B84B", HOVER_ENDED_PC, hover_ended, HOVER, TS_NEEDS_HOVER_ENDED) \
+  X(drop_made, "$83:B8FC", DROP_MADE_PC, drop_made, DROP, TS_NEEDS_A) \
+  X(drop_woke, "$83:B942", DROP_WOKE_PC, drop_woke, DROP, TS_NEEDS_RECORD) \
+  X(drop_ground, "$83:B956", DROP_GROUND_PC, drop_ground, DROP, TS_NEEDS_RECORD) \
+  X(drop_shown, "$83:B972", DROP_SHOWN_PC, drop_shown, DROP, TS_NEEDS_NOTHING) \
+  X(prize_blast, "$82:DCA0", PRIZE_BLAST_PC, prize_blast, PRIZE_BLAST, TS_NEEDS_NOTHING) \
+  X(prize_blast_made, "$82:DCAE", PRIZE_BLAST_MADE_PC, prize_blast_made, PRIZE_BLAST, TS_NEEDS_Y_RECORD) \
+  X(prize_blast_told, "$82:DD13", PRIZE_BLAST_TOLD_PC, prize_blast_told, PRIZE_BLAST, TS_NEEDS_NOTHING) \
+  X(prize_blast_shown, "$82:DD1A", PRIZE_BLAST_SHOWN_PC, prize_blast_shown, PRIZE_BLAST, TS_NEEDS_PRIZE_BLAST_ENDED) \
   X(argument_80d9ac, "$80:D9AC", 0x80d9acu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(monster_pictured, "$80:D9B3", MONSTER_PICTURES_PC, monster_pictured, MONSTER, TS_NEEDS_NOTHING) \
   X(monster_begun, "$80:D9BC", MONSTER_BEGUN_PC, monster_begun, MONSTER, TS_NEEDS_NOTHING) \

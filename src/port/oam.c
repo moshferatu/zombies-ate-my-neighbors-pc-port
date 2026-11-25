@@ -546,7 +546,7 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d,
 SpriteOamOwners sprite_oam_owners;
 SpriteOamPass sprite_oam_history[SPRITE_OAM_HISTORY];
 
-bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
+bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp, uint8_t db,
                               SpriteBuildWork* work) {
   memset(work, 0, sizeof *work);
   // Built here and published at the end, only if the pass completes -- see
@@ -681,16 +681,20 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
   if (!actor_overlap_pass_counted(w, rom, &work->overlap)) return false;
 
   // `$80:BDD2`. Four bytes indexed by the low two bits of a word, and all four
-  // are $80 in the shipped ROM — so this is a constant with a table's shape.
-  // Read rather than assumed: a ROM hack that varies it by frame phase would
-  // still work, and it costs one lookup a frame.
+  // are $80 in bank `$80`.
   //
   // The word is `$20` on the **caller's** page, not `W_SCHED_TICK`: `$80:BDD0
   // PLD` runs first. They are the same thing for the scheduler, whose page is
   // zero, and different for `$82:DE03`/`$82:DE4B` — see the header.
+  //
+  // And `$80:BDD5 LDA $BDE6,X` is an absolute read, so it goes through the
+  // **caller's** data bank, which `$80:BDCF PLB` has just put back. That is
+  // `$80` for the scheduler and `$82` for the bystander threads, whose
+  // `$82:BDE6` is `$22,$F2,$BD,$80`: with weapon 12 on level 49 a phase of 1
+  // stores `$F2`, not `$80`.
   uint16_t phase = wram_r16(w, (uint32_t)((dp + SPRITE_PASS_PHASE_DP) & 0xffff));
-  wram_w16(w, W_SPRITE_PASS_PHASE,
-           (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
+  uint32_t table = (uint32_t)db << 16 | (SPRITE_PASS_PHASE_TABLE & 0xffff);
+  wram_w16(w, W_SPRITE_PASS_PHASE, bus_r8(w, rom, table + (phase & 3)));
   owners.serial = sprite_oam_owners.serial + 1;
   sprite_oam_owners = owners;
   SpriteOamPass* pass = &sprite_oam_history[owners.serial % SPRITE_OAM_HISTORY];
@@ -700,9 +704,9 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
   return true;
 }
 
-bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
+bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp, uint8_t db) {
   SpriteBuildWork work;
-  return sprite_build_oam_counted(w, rom, dp, &work);
+  return sprite_build_oam_counted(w, rom, dp, db, &work);
 }
 
 // ---------------------------------------------------------------------------

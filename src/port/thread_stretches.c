@@ -310,6 +310,41 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return page(w, c, FISHMAN_DP_RECORD) < 0x1f00 &&
              (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
              wram_r16(w, W_SPAWN_LOAD) >= FISHMAN_LOAD;
+    case TS_NEEDS_Y_RECORD:
+      return c->y < 0x1f00;
+    case TS_NEEDS_HOVER_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == HOVER_MADE_RETURN;
+    case TS_NEEDS_HOVER_WOKE:
+      return page(w, c, HOVER_DP_RECORD) < 0x1f00 &&
+             page(w, c, HOVER_DP_STATE) == HOVER_STATE;
+    case TS_NEEDS_HOVER_RANGED: {
+      // Whoever it found is read at once, and whoever it last found is read
+      // by its aim when it finds nobody.
+      const uint16_t whom = c->a != 0 ? c->a : page(w, c, HOVER_DP_TARGET);
+      return page(w, c, HOVER_DP_RECORD) < 0x1f00 && whom < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == HOVER_LOOK_RETURN &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == HOVER_LOOP_RETURN;
+    }
+    case TS_NEEDS_HOVER_AIMED:
+      return page(w, c, HOVER_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == HOVER_AIM_RETURN &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == HOVER_LOOP_RETURN;
+    case TS_NEEDS_HOVER_MOVED:
+      // The pass may end in its death, which gives its weight back with a
+      // `BMI` to itself should the load go below nothing: the ROM's.
+      return page(w, c, HOVER_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == HOVER_MOVE_RETURN &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == HOVER_LOOP_RETURN &&
+             (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= HOVER_LOAD;
+    case TS_NEEDS_HOVER_ENDED:
+      return (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= HOVER_LOAD;
+    case TS_NEEDS_PRIZE_BLAST_ENDED:
+      // Below nothing, its `BMI` spins on itself, which is the ROM's.
+      return (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= PRIZE_BLAST_LOAD;
     case TS_NEEDS_CHAINSAW_ENDED:
       return page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
              (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
@@ -1671,6 +1706,660 @@ void freeze_pass(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
   ran(k, TS_FREEZE_END);
   c->pc = FREEZE_OVER_PC;
+}
+
+// --- the hoverer -------------------------------------------------------------
+
+static void draw(Wram* w, PortCpu* c, ThreadStretchWork* k);
+
+// `$83:B7F6`: its weight, and its mark asked to be cleared.
+void hover_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(hover_begun);
+  load_up(w, c, HOVER_LOAD);
+  lda(c, page(w, c, HOVER_DP_MARK));
+  ran(k, TS_HOVER_ENTER);
+  c->pc = HOVER_MARK_CALL_PC;
+}
+
+// `$83:B806`: `JSR $B797`, which asks for its record first thing.
+void hover_marked(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, HOVER_MADE_RETURN);
+  ran(k, TS_JSR);
+  c->pc = HOVER_ALLOC_PC;
+}
+
+// `$83:B765`: its one state again, and a count of ticks drawn, and the other
+// way across. Returns to whatever `JSR` or branch came here, by `RTS`.
+static void hover_wander(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, HOVER_STATE);
+  set_page(w, c, HOVER_DP_STATE, c->a);
+  ran(k, TS_HOVER_WANDER_A);
+  draw(w, c, k);
+  lda(c, (uint16_t)(c->a & HOVER_WANDER_MASK));
+  set_c(c, false);
+  lda(c, adc16(c, c->a, HOVER_WANDER_LEAST));
+  set_page(w, c, HOVER_DP_TICKS_LEFT, c->a);
+  lda(c, (uint16_t)~page(w, c, HOVER_DP_SPEED));
+  lda(c, (uint16_t)(c->a + 1));
+  set_page(w, c, HOVER_DP_SPEED, c->a);
+  pull16(w, c);
+  ran(k, TS_HOVER_WANDER_B);
+}
+
+// `$83:B80C`: nobody has hit it yet this tick, and it sleeps two.
+static void hover_sleep(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, HOVER_DP_HIT_BY, 0);
+  lda(c, HOVER_TICKS);
+  ran(k, TS_HOVER_LOOP);
+  c->pc = HOVER_YIELD_PC;
+}
+
+// `$83:B7EF`'s part of `$83:B79B`: the record, where it was begun, drawn,
+// the thread's own, id 3 and the palette word; fifty of health, alive, still,
+// three across; and its handler.
+void hover_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(hover_made);
+  set_page(w, c, HOVER_DP_RECORD, c->a);
+  ldy(c, c->a);
+  const uint16_t record = c->y;
+  lda(c, page(w, c, HOVER_DP_SPAWN_X));
+  set_page(w, c, HOVER_DP_X, c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  lda(c, page(w, c, HOVER_DP_SPAWN_Y));
+  set_page(w, c, HOVER_DP_Y, c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), HOVER_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), HOVER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), HOVER_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), HOVER_ATTR);
+  set_page(w, c, HOVER_DP_HEALTH, HOVER_HEALTH);
+  set_page(w, c, HOVER_DP_HIT_BY, 0);
+  set_page(w, c, HOVER_DP_FREEZE_HITS, 0);
+  set_page(w, c, HOVER_DP_FATE, 0);
+  set_page(w, c, HOVER_DP_TICKS_LEFT, 0);
+  set_page(w, c, HOVER_DP_SPEED, HOVER_SPEED);
+  c->a = HOVER_HANDLER;
+  ldy(c, HOVER_BANK);
+  ran(k, TS_HOVER_MADE);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  pull16(w, c);  // its `RTS`, to `$B809`
+  ran(k, TS_RTS);
+  push16(w, c, (uint16_t)(HOVER_MADE_RETURN + 3));  // `JSR $B765`
+  ran(k, TS_JSR);
+  hover_wander(w, c, k);
+  hover_sleep(w, c, k);
+}
+
+// `$83:B876`, its record where it is, and `$83:B820`: alive, it sleeps; if
+// not, its points if somebody's shot killed it, or straight to its end.
+static void hover_tail(Wram* w, PortCpu* c, ThreadStretchWork* k);
+
+// `$83:B699`'s `RTS` and `$83:B790`: stopped, it turns about; or a tick of
+// its count, which turns it about when that runs out; and back to the loop.
+static void hover_moved(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  pull16(w, c);  // `$B6CD  RTS`
+  ran(k, TS_RTS);
+  ran(k, TS_BRANCH);  // `BCS $B765`
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(hover_stopped);
+    ran(k, TS_TAKEN);
+    hover_wander(w, c, k);
+    hover_tail(w, c, k);
+    return;
+  }
+  const uint16_t left = (uint16_t)(page(w, c, HOVER_DP_TICKS_LEFT) - 1);
+  set_page(w, c, HOVER_DP_TICKS_LEFT, left);
+  set_nz16(c, left);
+  ran(k, TS_HOVER_COUNT);
+  if (left & 0x8000u) {
+    PORT_COVER(hover_turned);
+    ran(k, TS_TAKEN);
+    hover_wander(w, c, k);
+    hover_tail(w, c, k);
+    return;
+  }
+  pull16(w, c);
+  ran(k, TS_RTS);
+  hover_tail(w, c, k);
+}
+
+static void hover_tail(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  // `$B81D  JSR $B876`.
+  push16(w, c, 0xb81fu);
+  ran(k, TS_JSR);
+  ldy(c, page(w, c, HOVER_DP_RECORD));
+  lda(c, page(w, c, HOVER_DP_X));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_X), c->a);
+  lda(c, page(w, c, HOVER_DP_Y));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Y), c->a);
+  pull16(w, c);
+  ran(k, TS_HOVER_PLACE);
+  lda(c, page(w, c, HOVER_DP_FATE));
+  ran(k, TS_HOVER_FATE);
+  if (c->a == 0) {
+    ran(k, TS_TAKEN);
+    hover_sleep(w, c, k);
+    return;
+  }
+  PORT_COVER(hover_died);
+  ldx(c, HOVER_WORTH);
+  lda(c, page(w, c, HOVER_DP_HIT_BY));
+  ran(k, TS_HOVER_DEAD);
+  if (c->a != 0) {
+    c->pc = HOVER_SCORE_CALL_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  // `$83:B84B`, reached by the branch rather than from the pictures. Its
+  // `BMI` cannot be taken: the stretch was not taken on without the weight.
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), HOVER_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, HOVER_DP_RECORD));
+  ran(k, TS_HOVER_ENDED);
+  c->pc = HOVER_FREE_PC;
+}
+
+// `$83:B815`: its state called with the loop's return under it, which is
+// `$B780`: `JSR $B6CE`, and `player_in_range` asked who is within `$D0`.
+void hover_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, HOVER_LOOP_RETURN);
+  lda(c, page(w, c, HOVER_DP_STATE));
+  lda(c, (uint16_t)(c->a - 1));
+  push16(w, c, c->a);
+  pull16(w, c);
+  ran(k, TS_HOVER_WOKE);
+  push16(w, c, HOVER_LOOK_RETURN);
+  ran(k, TS_JSR);
+  lda(c, HOVER_RANGE);
+  ldx(c, page(w, c, HOVER_DP_X));
+  ldy(c, page(w, c, HOVER_DP_Y));
+  ran(k, TS_HOVER_LOOK);
+  c->pc = HOVER_RANGE_CALL_PC;
+}
+
+// `$83:B786`: the place across it means to go, and `JSR $B699`, which asks
+// the ground at the height it means to go first.
+static void hover_step(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, HOVER_DP_X));
+  set_c(c, false);
+  lda(c, adc16(c, c->a, page(w, c, HOVER_DP_SPEED)));
+  set_page(w, c, HOVER_DP_NEXT_X, c->a);
+  ran(k, TS_HOVER_STEP);
+  push16(w, c, HOVER_MOVE_RETURN);
+  ran(k, TS_JSR);
+  ldx(c, page(w, c, HOVER_DP_X));
+  ldy(c, page(w, c, HOVER_DP_NEXT_Y));
+  ran(k, TS_HOVER_GROUND_Y);
+  c->pc = HOVER_GROUND_Y_CALL_PC;
+}
+
+// `$83:B6D9`: whoever is in range. Its way across toward them when they are
+// `$50` or further, and its height to keep 50 to 70 above them. Then
+// `JSR $B71B`: a draw, and with them close across under it, the drop.
+void hover_ranged(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  ldy(c, c->a);
+  ran(k, TS_HOVER_FOUND);
+  if (c->y == 0) {
+    ran(k, TS_TAKEN);
+  } else {
+    PORT_COVER(hover_found);
+    set_page(w, c, HOVER_DP_TARGET, c->y);
+    cmp16(c, c->x, HOVER_FAR);
+    ran(k, TS_HOVER_NEAR_X);
+    if (c->x < HOVER_FAR) {
+      ran(k, TS_TAKEN);
+    } else {
+      ldx(c, HOVER_SPEED);
+      lda(c, wram_r16(w, (uint16_t)(c->y + ACTOR_X)));
+      cmp16(c, c->a, page(w, c, HOVER_DP_X));
+      ran(k, TS_HOVER_AIM);
+      if (flag(c, PORT_P_C)) {
+        ran(k, TS_TAKEN);
+      } else {
+        ldx(c, (uint16_t)(0 - HOVER_SPEED));
+        ran(k, TS_HOVER_AIM_LEFT);
+      }
+      set_page(w, c, HOVER_DP_SPEED, c->x);
+      ran(k, TS_HOVER_SPEED);
+    }
+    lda(c, wram_r16(w, (uint16_t)(c->y + ACTOR_Y)));
+    set_c(c, true);
+    lda(c, sbc16(c, c->a, page(w, c, HOVER_DP_Y)));
+    ran(k, TS_HOVER_HEIGHT);
+    int way = 0;  // -1 up, +1 down
+    if (c->a & 0x8000u) {
+      ran(k, TS_HOVER_ABOVE);
+      way = -1;
+    } else {
+      ran(k, TS_TAKEN);
+      cmp16(c, c->a, HOVER_LOW);
+      ran(k, TS_HOVER_LOW);
+      if (!flag(c, PORT_P_C)) {
+        ran(k, TS_TAKEN);
+        way = -1;
+      } else {
+        cmp16(c, c->a, HOVER_HIGH);
+        ran(k, TS_HOVER_HIGH);
+        if (flag(c, PORT_P_C)) {
+          ran(k, TS_TAKEN);
+          way = 1;
+        }
+      }
+    }
+    if (way != 0) {
+      lda(c, page(w, c, HOVER_DP_Y));
+      set_c(c, way > 0 ? false : true);
+      lda(c, way > 0 ? adc16(c, c->a, HOVER_RISE) : sbc16(c, c->a, HOVER_RISE));
+      set_page(w, c, HOVER_DP_NEXT_Y, c->a);
+      ran(k, way > 0 ? TS_HOVER_DOWN : TS_HOVER_UP);
+    }
+  }
+  pull16(w, c);  // `$B706  RTS`
+  ran(k, TS_RTS);
+
+  // `$B783  JSR $B71B`.
+  push16(w, c, HOVER_AIM_RETURN);
+  ran(k, TS_JSR);
+  ran(k, TS_HOVER_DRAW_CALL);
+  draw(w, c, k);
+  cmp16(c, c->a, HOVER_DROP_ODDS);
+  ran(k, TS_HOVER_DRAWN);
+  bool drops = false;
+  if (!flag(c, PORT_P_C)) {
+    ldy(c, page(w, c, HOVER_DP_TARGET));
+    lda(c, bus_r16(w, rom, (uint32_t)HOVER_BANK << 16 |
+                               (uint16_t)(c->y + ACTOR_X)));
+    set_c(c, true);
+    lda(c, sbc16(c, c->a, page(w, c, HOVER_DP_X)));
+    ran(k, TS_HOVER_UNDER);
+    if (c->a & 0x8000u) {
+      lda(c, (uint16_t)~c->a);
+      lda(c, (uint16_t)(c->a + 1));
+      ran(k, TS_HOVER_NEGATE);
+    } else {
+      ran(k, TS_TAKEN);
+    }
+    cmp16(c, c->a, HOVER_DROP_ACROSS);
+    ran(k, TS_HOVER_CLOSE);
+    drops = !flag(c, PORT_P_C);
+  }
+  if (!drops) {
+    ran(k, TS_TAKEN);
+    pull16(w, c);  // `$B764  RTS`
+    ran(k, TS_RTS);
+    hover_step(w, c, k);
+    return;
+  }
+  PORT_COVER(hover_drops);
+  ldy(c, page(w, c, HOVER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), HOVER_DROP_PICTURE);
+  lda(c, page(w, c, HOVER_DP_X));
+  set_page(w, c, HOVER_DP_SPAWN_X, c->a);
+  lda(c, page(w, c, HOVER_DP_Y));
+  set_c(c, false);
+  lda(c, adc16(c, c->a, HOVER_DROP_BELOW));
+  set_page(w, c, HOVER_DP_SPAWN_Y, c->a);
+  c->a = (uint16_t)DROP_PC;
+  ldy(c, HOVER_BANK);
+  ran(k, TS_HOVER_DROP);
+  c->pc = HOVER_DROP_CALL_PC;
+}
+
+// `$83:B755`: six ticks with its other picture.
+void hover_dropped(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, HOVER_DROP_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = HOVER_DROP_YIELD_PC;
+}
+
+// `$83:B75C`: its own picture back, the aim's `RTS`, and on to its move.
+void hover_drop_woke(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, HOVER_DP_RECORD));
+  lda(c, HOVER_PICTURE);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  pull16(w, c);
+  ran(k, TS_HOVER_DROP_WOKE);
+  hover_step(w, c, k);
+}
+
+// `$83:B6B3`: the ground at the place across, at the height it now has.
+static void hover_ask_across(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  ldx(c, page(w, c, HOVER_DP_NEXT_X));
+  ldy(c, page(w, c, HOVER_DP_Y));
+  ran(k, TS_HOVER_GROUND_X);
+  c->pc = HOVER_GROUND_X_CALL_PC;
+}
+
+// `$83:B6A1`: the ground up or down. Clear, then is anything there?
+void hover_ground_y(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+    hover_ask_across(w, c, k);
+    return;
+  }
+  lda(c, page(w, c, HOVER_DP_RECORD));
+  ldx(c, page(w, c, HOVER_DP_X));
+  ldy(c, page(w, c, HOVER_DP_NEXT_Y));
+  ran(k, TS_HOVER_THING_Y_ASK);
+  c->pc = HOVER_THING_Y_CALL_PC;
+}
+
+// `$83:B6AD`: nothing there either, and it rises or sinks.
+void hover_thing_y(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+  } else {
+    lda(c, page(w, c, HOVER_DP_NEXT_Y));
+    set_page(w, c, HOVER_DP_Y, c->a);
+    ran(k, TS_HOVER_RISE);
+  }
+  hover_ask_across(w, c, k);
+}
+
+// `$83:B6BB`: the ground across. Clear, then is anything there?
+void hover_ground_x(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+    hover_moved(w, c, k);
+    return;
+  }
+  lda(c, page(w, c, HOVER_DP_RECORD));
+  ldx(c, page(w, c, HOVER_DP_NEXT_X));
+  ldy(c, page(w, c, HOVER_DP_Y));
+  ran(k, TS_HOVER_THING_X_ASK);
+  c->pc = HOVER_THING_X_CALL_PC;
+}
+
+// `$83:B6C7`: nothing there either, and it goes across.
+void hover_thing_x(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+  } else {
+    lda(c, page(w, c, HOVER_DP_NEXT_X));
+    set_page(w, c, HOVER_DP_X, c->a);
+    ran(k, TS_HOVER_STEP_X);
+  }
+  hover_moved(w, c, k);
+}
+
+// `$83:B82F`: its points given, nothing to hit any more, its other bank of
+// pictures, and the sound.
+void hover_scored(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, HOVER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), HOVER_PICTURE_BANK);
+  lda(c, HOVER_DEATH_SFX);
+  ran(k, TS_HOVER_SCORED);
+  c->pc = HOVER_SOUND_CALL_PC;
+}
+
+// `$83:B844`: its last pictures.
+void hover_sounded(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, HOVER_LAST_PICTURES);
+  ran(k, TS_LDA_IMM);
+  c->pc = HOVER_PICTURES_CALL_PC;
+}
+
+// `$83:B84B`: its weight given back, and its record to be freed.
+void hover_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(hover_ended);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), HOVER_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, HOVER_DP_RECORD));
+  ran(k, TS_HOVER_ENDED);
+  c->pc = HOVER_FREE_PC;
+}
+
+// --- what the hoverer drops ---------------------------------------------------
+
+// The next tick's sleep, from `$83:B93B`.
+static void drop_sleep(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, 0x0001);
+  ran(k, TS_LDA_IMM);
+  c->pc = DROP_YIELD_PC;
+}
+
+// `$83:B8FC`: its record where it was begun, drawn, id 3, and 45 ticks.
+void drop_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(drop_made);
+  set_page(w, c, DROP_DP_RECORD, c->a);
+  ldy(c, c->a);
+  const uint16_t record = c->y;
+  lda(c, page(w, c, HOVER_DP_SPAWN_X));
+  set_page(w, c, DROP_DP_X, c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  lda(c, page(w, c, HOVER_DP_SPAWN_Y));
+  set_page(w, c, DROP_DP_Y, c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), DROP_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), DROP_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), DROP_COLLIDE_ID);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | DROP_FLAGS));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  set_page(w, c, DROP_DP_TICKS_LEFT, DROP_TICKS_MOST);
+  set_page(w, c, DROP_DP_STOP, 0);
+  lda(c, 0x0001);
+  ran(k, TS_DROP_MADE);
+  c->pc = DROP_YIELD_PC;
+}
+
+// `$83:B972`: freed.
+static void drop_free(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, DROP_DP_RECORD));
+  ran(k, TS_LDA_DP);
+  c->pc = DROP_FREE_PC;
+}
+
+// `$83:B942`: told to stop, it is freed; otherwise four pixels further down,
+// and is the ground there?
+void drop_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, DROP_DP_STOP));
+  ran(k, TS_DROP_WOKE);
+  if (c->a != 0) {
+    PORT_COVER(drop_stopped);
+    ran(k, TS_TAKEN);
+    drop_free(w, c, k);
+    return;
+  }
+  lda(c, page(w, c, DROP_DP_Y));
+  set_c(c, false);
+  lda(c, adc16(c, c->a, DROP_FALL));
+  set_page(w, c, DROP_DP_Y, c->a);
+  ldx(c, page(w, c, DROP_DP_X));
+  ldy(c, c->a);
+  ran(k, TS_DROP_FALL);
+  c->pc = DROP_GROUND_CALL_PC;
+}
+
+// `$83:B956`: not the ground yet, it is drawn lower, and with ticks left it
+// sleeps again; on the ground, or out of ticks, its pictures.
+void drop_ground(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(drop_landed);
+    ran(k, TS_TAKEN);
+  } else {
+    ldy(c, page(w, c, DROP_DP_RECORD));
+    lda(c, page(w, c, DROP_DP_Y));
+    wram_w16(w, (uint16_t)(c->y + ACTOR_Y), c->a);
+    const uint16_t left = (uint16_t)(page(w, c, DROP_DP_TICKS_LEFT) - 1);
+    set_page(w, c, DROP_DP_TICKS_LEFT, left);
+    set_nz16(c, left);
+    ran(k, TS_DROP_PUT);
+    if (left != 0) {
+      ran(k, TS_TAKEN);
+      drop_sleep(c, k);
+      return;
+    }
+    PORT_COVER(drop_spent);
+  }
+  ldy(c, page(w, c, DROP_DP_RECORD));
+  lda(c, DROP_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), c->a);
+  lda(c, DROP_PICTURES);
+  ran(k, TS_DROP_LAND);
+  c->pc = DROP_PICTURES_CALL_PC;
+}
+
+// `$83:B972`: its pictures over.
+void drop_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  drop_free(w, c, k);
+}
+
+// --- the fourth's blast ------------------------------------------------------
+
+// `$82:DCA0`: its weight, and a record asked for.
+void prize_blast(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(prize_blast_begun);
+  load_up(w, c, PRIZE_BLAST_LOAD);
+  ran(k, TS_PRIZE_BLAST_ENTER);
+  c->pc = PRIZE_BLAST_ALLOC_PC;
+}
+
+// `$82:DCAE`: the record where it was begun, drawn, with no handler; and
+// the box round it, for `actor_notify_box`, on page zero.
+void prize_blast_made(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, PRIZE_BLAST_DP_RECORD, c->a);
+  const uint16_t record = c->y;
+  const uint16_t x = page(w, c, PRIZE_BLAST_DP_X);
+  const uint16_t y = page(w, c, PRIZE_BLAST_DP_Y);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), PRIZE_BLAST_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), PRIZE_BLAST_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), PRIZE_BLAST_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      PRIZE_BLAST_FLAGS));
+  c->a = 0;
+  ldy(c, 0);
+  ran(k, TS_PRIZE_BLAST_MADE);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+
+  // `$82:DCE9`: the box, as absolute stores through its own bank.
+  set_c(c, true);
+  const uint16_t left = sbc16(c, x, PRIZE_BLAST_BOX_LEFT);
+  wram_w16(w, NOTIFY_BOX_DP_X0, left);
+  set_c(c, false);
+  wram_w16(w, NOTIFY_BOX_DP_X1, adc16(c, left, PRIZE_BLAST_BOX_WIDE));
+  set_c(c, false);
+  const uint16_t top = adc16(c, y, PRIZE_BLAST_BOX_DOWN);
+  wram_w16(w, NOTIFY_BOX_DP_Y0, top);
+  set_c(c, false);
+  wram_w16(w, NOTIFY_BOX_DP_Y1, adc16(c, top, PRIZE_BLAST_BOX_TALL));
+  lda(c, PRIZE_BLAST_ID);
+  wram_w16(w, NOTIFY_BOX_DP_ID, c->a);
+  ran(k, TS_PRIZE_BLAST_BOX);
+  c->pc = PRIZE_BLAST_TELL_PC;
+}
+
+// `$82:DD13`: everything in the box told, and its pictures.
+void prize_blast_told(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, PRIZE_BLAST_PICTURES);
+  ran(k, TS_LDA_IMM);
+  c->pc = PRIZE_BLAST_PICTURES_CALL_PC;
+}
+
+// `$82:DD1A`: its weight given back, and its record to be freed.
+void prize_blast_shown(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(prize_blast_ended);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), PRIZE_BLAST_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, PRIZE_BLAST_DP_RECORD));
+  ran(k, TS_PRIZE_BLAST_ENDED);
+  c->pc = PRIZE_BLAST_FREE_PC;
+}
+
+// --- a frozen ant ------------------------------------------------------------
+
+// `$81:BB4B`.
+void ant_freeze_begin(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  c->y = page(w, c, FREEZE_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_ATTR), ANT_FROZEN_ATTR);
+  push16(w, c, wram_r16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID)));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), FREEZE_COLLIDE_ID);
+  ran(k, TS_ANT_FREEZE_BEGIN);
+  lda(c, FREEZE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = ANT_FREEZE_YIELD_PC;
+}
+
+// `$81:BB64`.
+void ant_freeze_pass(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t left = (uint16_t)(page(w, c, FREEZE_DP_HITS) - 1);
+  set_page(w, c, FREEZE_DP_HITS, left);
+  ran(k, TS_FREEZE_COUNT);  // `DEC $7E : BPL`, the same two instructions
+  if ((left & 0x8000u) == 0) {
+    PORT_COVER(ant_freeze_held);
+    ran(k, TS_TAKEN);
+    lda(c, FREEZE_TICKS);
+    ran(k, TS_LDA_IMM);
+    c->pc = ANT_FREEZE_YIELD_PC;
+    return;
+  }
+  PORT_COVER(ant_freeze_over);
+  c->y = page(w, c, FREEZE_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_ATTR), 0);
+  lda(c, pull16(w, c));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
+  ran(k, TS_ANT_FREEZE_END);
+  c->pc = ANT_FREEZE_OVER_PC;
 }
 
 // --- the chainsaw maniac's cut -----------------------------------------------

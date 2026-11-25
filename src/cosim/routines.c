@@ -3620,7 +3620,7 @@ static const CosimExclude BUILD_OAM_EXCLUDES[] = {
 
 static bool guard_sprite_build_oam(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
-  return sprite_build_oam(scratch, rom, in->d);
+  return sprite_build_oam(scratch, rom, in->d, in->db);
 }
 
 // ---------------------------------------------------------------------------
@@ -3791,7 +3791,7 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   // The guard already established it will not decline.
   SpriteBuildWork work;
-  sprite_build_oam_counted(w, rom, in->d, &work);
+  sprite_build_oam_counted(w, rom, in->d, in->db, &work);
 
   // `$80:BDD2 LDA $20` runs after `PLD`, on the caller's page, so an unaligned
   // one costs an internal cycle the table above does not carry. `$80:BDDE STA
@@ -3818,14 +3818,15 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
   //   * A is the table entry after the mask — the value just stored.
   //   * X is the low two bits of `$20` on the **caller's** page, from the `TAX`.
   //     `$80:BDD0  PLD` has already restored it, so this is `in->d + $20` and
-  //     not `W_SCHED_TICK`; two of the three callers are threads. Because all
-  //     four table entries are $80, the difference is invisible in WRAM and
-  //     shows up here and nowhere else — `movies/level49-bubble.zmv` is the
-  //     first input to reach one of those callers, and it failed on this
-  //     register with 128 KB matching.
+  //     not `W_SCHED_TICK`; two of the three callers are threads.
+  //     `movies/level49-bubble.zmv` was the first input to reach one of those
+  //     callers, and it failed on this register with 128 KB matching.
+  //   * The table read is through the caller's data bank (`PLB` has run), so
+  //     in bank `$80` every entry is $80 but in the threads' bank `$82` they
+  //     are `$22,$F2,$BD,$80`. The weapon-12 discovery session on level 49 was
+  //     the first to store one of the others.
   //   * `AND #$00FF` is the last flag-setting instruction, so N and Z describe
-  //     that same value. It is $80 for all four entries, so Z is false and N is
-  //     false too: $0080 is positive in 16 bits.
+  //     that same value. A byte is never negative in 16 bits, so N is false.
   //   * Carry is the `SEC`, and it is the one output here a caller could
   //     plausibly read.
   //
@@ -8020,9 +8021,14 @@ static bool accepts_player_walk(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100;
 }
 
+// A walk that opens a door stops at the `JSL` that puts the door's block in
+// the map, as it does under `player_frame`; a wall's pictures are not the
+// ordinary walk's.
 static bool supported_player_walk(Wram* scratch, const Rom* rom,
                                   const CosimRegs* in) {
-  return walk_supported(scratch, rom, in->d);
+  WalkLog log = {0};
+  return player_walk_stoppable(scratch, rom, in->d, &log) &&
+         !log.wall_stopped;
 }
 
 // Of the registers, only carry and overflow outlive the frame: nothing reads
@@ -8031,16 +8037,44 @@ static bool supported_player_walk(Wram* scratch, const Rom* rom,
 // the last add's. This said overflow was always clear, until levels 19 and 25
 // set it on half their walks: a tilemap row based under `$8000` whose tile
 // lies past it.
+// It ends at its `RTS`, or at a door's block with the axis's return and the
+// reaction's under it (and the double step's `JSR $E4C1` under those, when
+// the first of the two stopped).
 static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   WalkLog log = {0};
-  player_walk(w, rom, in->d, &log);
-  cosim_cost(walk_cycles(&log, rom, in));
-  out->c = log.last_yes;
-  out->v = log.overflow;
-  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  player_walk_stoppable(w, rom, in->d, &log);
+  // Its `RTS` is an exit now, which the ROM reaches rather than runs, so it
+  // is not charged here. It is 40 cycles with FastROM on, exactly one DRAM
+  // refresh, and only level 49, where FastROM is off, shows it.
+  int cycles = walk_cycles(&log, rom, in);
+  if (!log.stopped) cycles -= cosim_run_cycles(&RUN_RTS, fetch_fast(in));
+  cosim_cost(cycles);
+  if (log.stopped) {
+    const uint16_t under = log.stopped_first ? 2 : 0;
+    if (under) wram_w16(w, (uint16_t)(in->s - 1), WALK_TWICE_RETURN);
+    wram_w16(w, (uint16_t)(in->s - 1 - under),
+             log.stop_axis == 0 ? WALK_ACROSS_RETURN : WALK_UP_DOWN_RETURN);
+    wram_w16(w, (uint16_t)(in->s - 3 - under), log.stop_return);
+    PortCpu c = log.stop;
+    const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
+    c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
+    c.s = (uint16_t)(in->s - 4 - under);
+    cpu_to(&c, out);
+    return;
+  }
+  out->s = in->s;
+  out->pc = PLAYER_WALK_RTS_PC;
   out->regs = 0;
+  out->p = (uint8_t)(in->p & ~(PORT_P_C | PORT_P_V));
+  if (log.last_yes) out->p |= PORT_P_C;
+  if (log.overflow) out->p |= PORT_P_V;
+  out->p_keep = PORT_P_N | PORT_P_Z;
 }
+
+static const uint32_t PLAYER_WALK_EXITS[] = {
+    PLAYER_WALK_RTS_PC, WALK_DOOR_PUT_PC, WALK_DOOR_B_PUT_PC,
+    WALK_FOURTH_PUT_PC};
 
 static bool supported_monster_walk(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
@@ -9989,6 +10023,55 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_FREEZE_BEGIN] = {252, 21, 1},
     [TS_FREEZE_COUNT] = {62, 4, 1},
     [TS_FREEZE_END] = {200, 15, 1},
+    [TS_ANT_FREEZE_BEGIN] = {212, 18, 1},
+    [TS_HOVER_ENTER] = {126, 12, 1},
+    [TS_HOVER_MADE] = {988, 90, 11},
+    [TS_HOVER_WANDER_A] = {100, 9, 1},
+    [TS_HOVER_WANDER_B] = {202, 18, 3},
+    [TS_HOVER_LOOP] = {46, 5, 1},
+    [TS_HOVER_WOKE] = {142, 8, 1},
+    [TS_HOVER_LOOK] = {74, 7, 2},
+    [TS_HOVER_FOUND] = {24, 3, 0},
+    [TS_HOVER_NEAR_X] = {58, 7, 1},
+    [TS_HOVER_AIM] = {98, 10, 1},
+    [TS_HOVER_AIM_LEFT] = {18, 3, 0},
+    [TS_HOVER_SPEED] = {28, 2, 1},
+    [TS_HOVER_HEIGHT] = {92, 8, 1},
+    [TS_HOVER_ABOVE] = {12 + 6, 2, 0},
+    [TS_HOVER_LOW] = {30, 5, 0},
+    [TS_HOVER_HIGH] = {30, 5, 0},
+    [TS_HOVER_UP] = {98 + 6, 10, 2},
+    [TS_HOVER_DOWN] = {98 + 6, 10, 2},
+    [TS_HOVER_DRAW_CALL] = {54, 4, 0},
+    [TS_HOVER_DRAWN] = {30, 5, 0},
+    [TS_HOVER_UNDER] = {120, 10, 2},
+    [TS_HOVER_NEGATE] = {30, 4, 0},
+    [TS_HOVER_CLOSE] = {30, 5, 0},
+    [TS_HOVER_DROP] = {264, 26, 5},
+    [TS_HOVER_DROP_WOKE] = {126, 9, 1},
+    [TS_HOVER_STEP] = {96, 7, 3},
+    [TS_HOVER_GROUND_Y] = {56, 4, 2},
+    [TS_HOVER_THING_Y_ASK] = {84, 6, 3},
+    [TS_HOVER_RISE] = {56, 4, 2},
+    [TS_HOVER_GROUND_X] = {56, 4, 2},
+    [TS_HOVER_THING_X_ASK] = {84, 6, 3},
+    [TS_HOVER_STEP_X] = {56, 4, 2},
+    [TS_HOVER_COUNT] = {62, 4, 1},
+    [TS_HOVER_PLACE] = {204, 13, 3},
+    [TS_HOVER_FATE] = {40, 4, 1},
+    [TS_HOVER_DEAD] = {58, 7, 1},
+    [TS_HOVER_SCORED] = {162, 17, 1},
+    [TS_HOVER_ENDED] = {138, 14, 1},
+    [TS_DROP_MADE] = {728, 66, 7},
+    [TS_DROP_WOKE] = {40, 4, 1},
+    [TS_DROP_FALL] = {142, 12, 4},
+    [TS_DROP_PUT] = {158, 11, 3},
+    [TS_DROP_LAND] = {104, 11, 1},
+    [TS_PRIZE_BLAST_ENTER] = {98, 10, 0},
+    [TS_PRIZE_BLAST_MADE] = {652, 59, 3},
+    [TS_PRIZE_BLAST_BOX] = {364, 38, 2},
+    [TS_PRIZE_BLAST_ENDED] = {138, 14, 1},
+    [TS_ANT_FREEZE_END] = {160, 12, 1},
     // The chainsaw maniac's cut, `--db=81`. Its tables and lists are read
     // from the cartridge; the square's tile from WRAM.
     [TS_CUT_HEARD] = {64, 8, 0},
@@ -10345,9 +10428,12 @@ static int thread_stretch_cycles(const ThreadStretchWork* k,
 static bool thread_stretch_bank_ok(const CosimRegs* in) {
   const uint8_t bank = (uint8_t)(in->pc >> 16);
   // `$82:DC57` reads only `$0038` through it, and the bazooka's shot calls
-  // it with bank `$81`.
+  // it with bank `$81`. A bubbled creature, like a frozen one, runs on its
+  // own thread, and both ends of the bubble read only low WRAM through it:
+  // the vampire's has bank `$82`.
   if (bank == 0x80 || in->pc == FREEZE_BEGIN_PC || in->pc == FREEZE_PASS_PC ||
-      in->pc == FOURTH_DRAW_PC)
+      in->pc == FOURTH_DRAW_PC || in->pc == BUBBLED_PC ||
+      in->pc == BUBBLE_OVER_PC)
     return bank_sees_low_wram(in->db);
   return in->db == bank;
 }
@@ -10477,6 +10563,19 @@ static const uint32_t TS_EXITS_BYSTANDER[] = {
     BYSTANDER_ALLOC_PC, BYSTANDER_HANDLER_CALL_PC, BYSTANDER_YIELD_PC,
     BYSTANDER_WAIT_PC, BYSTANDER_SAY_PC};
 static const uint32_t TS_EXITS_FREEZE[] = {FREEZE_YIELD_PC, FREEZE_OVER_PC};
+static const uint32_t TS_EXITS_ANT_FREEZE[] = {ANT_FREEZE_YIELD_PC,
+                                               ANT_FREEZE_OVER_PC};
+static const uint32_t TS_EXITS_HOVER[] = {
+    HOVER_MARK_CALL_PC,     HOVER_ALLOC_PC,         HOVER_YIELD_PC,
+    HOVER_RANGE_CALL_PC,    HOVER_DROP_CALL_PC,     HOVER_DROP_YIELD_PC,
+    HOVER_GROUND_Y_CALL_PC, HOVER_THING_Y_CALL_PC,  HOVER_GROUND_X_CALL_PC,
+    HOVER_THING_X_CALL_PC,  HOVER_SCORE_CALL_PC,    HOVER_SOUND_CALL_PC,
+    HOVER_PICTURES_CALL_PC, HOVER_FREE_PC};
+static const uint32_t TS_EXITS_DROP[] = {DROP_YIELD_PC, DROP_GROUND_CALL_PC,
+                                         DROP_PICTURES_CALL_PC, DROP_FREE_PC};
+static const uint32_t TS_EXITS_PRIZE_BLAST[] = {
+    PRIZE_BLAST_ALLOC_PC, PRIZE_BLAST_TELL_PC, PRIZE_BLAST_PICTURES_CALL_PC,
+    PRIZE_BLAST_FREE_PC};
 static const uint32_t TS_EXITS_CUT[] = {
     CUT_HEARD_PC, CUT_SOUND_PC, CUT_ACROSS_PC, CUT_DOWN_PC,
     CUT_ACROSS_SLEEP_PC, CUT_DOWN_SLEEP_PC, CUT_ACROSS_ASK_PC,
@@ -13468,6 +13567,7 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_PLACE_X] = {206 - 126, 20 - 14, 1},
     [SF_PLACE_Y] = {202, 16, 3},
     [SF_PLACE_MAP] = {122, 10, 2},
+    [SF_PLACE_FAR] = {130, 10, 4},
     [SF_CIRCLE_MAP] = {122, 10, 2},
     [SF_CIRCLE_GROUND] = {122, 10, 2},
     [SF_CIRCLE_LEAVE] = {18 + 408, 3 + 40, 5},
@@ -17239,10 +17339,13 @@ static void shim_fishman_dive_wake(Wram* w, const Rom* rom,
     case FISHMAN_SEEK_FROM_ACROSS:
     case FISHMAN_SEEK_FROM_DOWN:
       // The walk's `BRA` past its seek, the step down after one across,
-      // and back out of the walk and the body.
+      // and back out of the walk and the body. A step down that dives
+      // again stops at the dive's sleep instead.
       fishman_add(&b, &FISHMAN_RUN_BRANCH);
       fishman_taken(&b);
-      if (k.from == FISHMAN_SEEK_FROM_ACROSS) fishman_walk_axis_bill(&b, 1);
+      if (k.from == FISHMAN_SEEK_FROM_ACROSS &&
+          !fishman_walk_axis_bill(&b, 1))
+        break;
       fishman_add(&b, &FISHMAN_RUN_RTS);
       fishman_add(&b, &FISHMAN_RUN_RTS);
       break;
@@ -17253,9 +17356,15 @@ static void shim_fishman_dive_wake(Wram* w, const Rom* rom,
       fishman_go_about_on_bill(&b, k.from);
       break;
   }
-  fishman_end_bill(&b, stays);
+  if (k.pass.stop == FISHMAN_STOP_PASS) fishman_end_bill(&b, stays);
   fishman_charge(&b);
 }
+
+// ...and the dive's own sleep, when what is left of the pass finds water
+// past the ground again.
+static const uint32_t FISHMAN_DIVE_WAKE_EXITS[] = {
+    FISHMAN_YIELD_PC,        FISHMAN_FATE_PC,      FISHMAN_PATROL_YIELD_PC,
+    FISHMAN_PATROL_FATE_PC,  FISHMAN_DIVE_SLEEP_PC};
 
 static bool accepts_fishman_after(const Wram* w, const CosimRegs* in) {
   return fishman_woken_ok(w, in) && fishman_after_supported(w, in->d, in->s);
@@ -20450,6 +20559,8 @@ static void shim_walk_woken(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t WALK_WOKEN_EXITS[] = {PLAYER_FRAME_YIELD_PC};
+static const uint32_t WALL_WOKEN_EXITS[] = {PLAYER_FRAME_YIELD_PC,
+                                            MONSTER_WALL_PICTURES_PC};
 
 // `$80:F1C2`, the monster back from a wall's pictures: their `RTS` to the
 // axis's `BRA`, the rest of the walk, and the frame's tail.
@@ -20478,6 +20589,18 @@ static void shim_wall_woken(Wram* w, const Rom* rom, const CosimRegs* in,
   static PlayerFrameLog log;
   player_wall_woken(w, rom, in->d, wall_woken_axis(w, in),
                     (in->p & PORT_P_C) != 0, (in->p & PORT_P_V) != 0, &log);
+  if (log.walk.stopped) {
+    // Another wall's pictures: the across axis's return is spent, and the
+    // up-down axis's `JSR $E790` is where it was.
+    cosim_cost(walk_cycles_as(&log.walk, rom, in, WALK_OF_MONSTER));
+    wram_w16(w, (uint16_t)(in->s + 1), log.walk.stop_return);
+    PortCpu c = log.walk.stop;
+    const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
+    c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
+    c.s = in->s;
+    cpu_to(&c, out);
+    return;
+  }
   CosimRun own = {0, 0, 0};
   const int calls = walk_cycles_as(&log.walk, rom, in, WALK_OF_MONSTER) +
                     pframe_after_move_bill(&own, &log, in);
@@ -29330,6 +29453,12 @@ static const uint32_t LUNGE_EXITS[] = {LUNGE_SLEEP_PC, LUNGE_ENDED_PC,
 // `$81:F16D`.
 static const CosimRun DC_LOOK_END = {140 + 6, 13, 2};  // $F16D-$F179
 static const CosimRun DC_LOOK = {170 + 6, 18, 2};      // $F16D-$F17E
+// A moving tile: the `BEQ` at `$F17D` not taken, then the four tests, of
+// which the first that matches moves it, and `$F1A9-$F1B4`.
+static const CosimRun DC_LOOK_MOVES = {170, 18, 2};
+static const CosimRun DC_MOVE_MISS = {36, 5, 0};   // CMP # : BNE, taken
+static const CosimRun DC_MOVE_HIT = {130, 9, 2};   // CMP # : BNE : DEC/INC x2
+static const CosimRun DC_MOVE_PUT = {164, 12, 3};  // $F1A9-$F1B4
 static const CosimRun DC_PICTURE = {70 + 6, 8, 1};     // $F1B5-$F1BC
 static const CosimRun DC_SET = {196, 18, 3};           // $F1C7-$F1D6
 static const CosimRun DC_COUNT = {62, 4, 1};           // DEC $3E : BNE
@@ -29337,16 +29466,12 @@ static const CosimRun DC_AGAIN = {18, 3, 0};           // LDA #$000A
 
 static bool guard_decoy_frame(Wram* scratch, const Rom* rom,
                               const CosimRegs* in) {
-  if (!body_ok(in) || in->d < 0x0100 || in->db != DECOY_BANK ||
-      wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_RECORD)) >= 0x1f00 ||
-      wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_PICTURE)) >=
-          DECOY_PICTURE_COUNT)
-    return false;
-  PortCpu c;
-  DecoyWork k = {0};
-  cpu_from(in, &c);
-  decoy_frame(scratch, rom, &c, &k);
-  return !k.declined;
+  (void)scratch;
+  (void)rom;
+  return body_ok(in) && in->d >= 0x0100 && in->db == DECOY_BANK &&
+         wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_RECORD)) < 0x1f00 &&
+         wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_PICTURE)) <
+             DECOY_PICTURE_COUNT;
 }
 
 static void shim_decoy_frame(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -29365,7 +29490,18 @@ static void shim_decoy_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   if (k.end == DECOY_ON_AN_ENDING_TILE) {
     run_add(&run, &DC_LOOK_END, 1);
   } else {
-    run_add(&run, &DC_LOOK, 1);
+    if (k.moved < 0) {
+      run_add(&run, &DC_LOOK, 1);
+    } else {
+      run_add(&run, &DC_LOOK_MOVES, 1);
+      run_add(&run, &DC_MOVE_MISS, k.moved);
+      if (k.moved < DECOY_MOVE_TESTS) {
+        run_add(&run, &DC_MOVE_HIT, 1);
+        // `BRA $F1A9`, which the last of the four falls through to.
+        if (k.moved < DECOY_MOVE_TESTS - 1) run_add(&run, &RUN_BRA, 1);
+      }
+      run_add(&run, &DC_MOVE_PUT, 1);
+    }
     run_add(&run, &DC_PICTURE, 1);
     run_add(&run, &DC_SET, 1);
     if (k.end == DECOY_HIT) {
@@ -34910,18 +35046,18 @@ static const CosimRoutine ROUTINES[] = {
     },
     // The first routine in readable C. See `port/walk.h`. Entered by the
     // frame's `RTS` with the frame's return address already pushed, so it is
-    // a routine like any other to the harness. It declines the double step
-    // and the tiles with a reaction of their own, but for a door that stays
-    // shut and the fifth reaction, and the ROM walks those.
+    // a routine like any other to the harness. It declines the tiles with a
+    // reaction of its own that it does not know, and stops at a door it
+    // opens.
     {
         .name = "player_walk",
         .symbol = "$80:E4BA",
         .entry = PLAYER_WALK_PC,
-        .ret_op = PLAYER_WALK_RTS_PC,
-        .ret_kind = COSIM_RTS,
         .run = shim_player_walk,
         .accepts = accepts_player_walk,
         .supported = supported_player_walk,
+        COSIM_EXITS(PLAYER_WALK_EXITS),
+        .returns_on_entry_stack = true,
         .uncalled = true,
         // Never charged: the shim prices every call it serves.
         .cycles = 6000,
@@ -35913,7 +36049,7 @@ static const CosimRoutine ROUTINES[] = {
         .entry = FISHMAN_DIVE_WAKE_PC,
         .run = shim_fishman_dive_wake,
         .supported = guard_fishman_dive_wake,
-        COSIM_EXITS(FISHMAN_WOKEN_EXITS),
+        COSIM_EXITS(FISHMAN_DIVE_WAKE_EXITS),
         .uncalled = true,
         .cycles = 9000,
         .stack_bytes = 32,
@@ -38708,7 +38844,7 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_wall_woken,
         .accepts = accepts_wall_woken,
         .supported = supported_wall_woken,
-        COSIM_EXITS(WALK_WOKEN_EXITS),
+        COSIM_EXITS(WALL_WOKEN_EXITS),
         .uncalled = true,
         .cycles = 8000,
         .stack_bytes = 22,

@@ -25,8 +25,32 @@ void decoy_frame(Wram* w, const Rom* rom, PortCpu* c, DecoyWork* k) {
     return;
   }
   if (c->a & DECOY_TILE_MOVES) {
-    k->declined = true;
-    return;
+    // `$81:F17F`: two pixels the way the tile says, by four `CMP`s in turn,
+    // and its record put where it now is. A tile with bit 3 and none of the
+    // four leaves it where it is, but its record is still written.
+    PORT_COVER(decoy_moved);
+    static const struct {
+      uint16_t tile, at;
+      int16_t by;
+    } WAYS[] = {
+        {DECOY_TILE_UP, DECOY_DP_Y, -2},
+        {DECOY_TILE_DOWN, DECOY_DP_Y, 2},
+        {DECOY_TILE_LEFT, DECOY_DP_X, -2},
+        {DECOY_TILE_RIGHT, DECOY_DP_X, 2},
+    };
+    k->moved = DECOY_MOVE_TESTS;
+    for (int i = 0; i < DECOY_MOVE_TESTS; i++) {
+      if (c->a != WAYS[i].tile) continue;
+      set_field(w, c, WAYS[i].at,
+                (uint16_t)(field(w, c, WAYS[i].at) + WAYS[i].by));
+      k->moved = i;
+      break;
+    }
+    c->y = field(w, c, DECOY_DP_RECORD);
+    wram_w16(w, (uint16_t)(c->y + ACTOR_X), field(w, c, DECOY_DP_X));
+    wram_w16(w, (uint16_t)(c->y + ACTOR_Y), field(w, c, DECOY_DP_Y));
+  } else {
+    k->moved = -1;
   }
 
   uint16_t picture = (uint16_t)(field(w, c, DECOY_DP_PICTURE) + 1);

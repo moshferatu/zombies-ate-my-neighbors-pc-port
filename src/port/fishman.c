@@ -1808,10 +1808,29 @@ FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
       go_about_on(&s, k->from);
       break;
   }
-  // A second dive in what is left is the ROM's.
-  if (stopped(&s)) k->pass.declined = true;
   if (k->pass.declined) return FISHMAN_SLEEPS;
-  return finish(&s, c, returns);
+  if (!stopped(&s)) return finish(&s, c, returns);
+  // Anything but a dive in what is left is the ROM's.
+  if (k->pass.stop != FISHMAN_STOP_DIVE) {
+    k->pass.declined = true;
+    return FISHMAN_SLEEPS;
+  }
+
+  // What is left found water past the ground too, and it waits a few ticks
+  // at the same sleep to dive again.
+  PORT_COVER(fishman_dive_again);
+  FishmanLog* log = &k->pass;
+  log->c = s.flags.c;
+  log->v = s.flags.v;
+  log->c_set = s.flags.c_set;
+  log->v_set = s.flags.v_set;
+  c->s = log->s;
+  c->pc = FISHMAN_DIVE_SLEEP_PC;
+  c->a = log->a;
+  set_nz16(c, c->a);
+  if (log->c_set) set_c(c, log->c);
+  if (log->v_set) set_v(c, log->v);
+  return FISHMAN_SLEEPS;
 }
 
 bool fishman_after_supported(const Wram* w, uint16_t page, uint16_t s) {

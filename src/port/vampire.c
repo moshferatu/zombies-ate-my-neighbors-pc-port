@@ -696,8 +696,6 @@ static uint16_t place_step(Vampire* s) {
 // and a puff begins a pixel below it.
 static void come_back(Vampire* s) {
   PortCpu* c = s->c;
-  PORT_COVER(vampire_came_back);
-  ran(s, SF_PLACE_MAP);
   c->y = field(s, VAMPIRE_DP_RECORD);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_META), VAMPIRE_BACK_PICTURE);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS),
@@ -720,14 +718,24 @@ static void come_back(Vampire* s) {
 
 // `$82:EBCF`: hidden, it tries a place near whoever is nearest. Ground that
 // will not do, or a place off the level, and it tries again next frame.
-// Nobody in reach is the ROM's.
+// With nobody in reach it comes back where it already is.
 static bool place(Vampire* s) {
   PortCpu* c = s->c;
   look(s);
   cmp16(c, c->a, VAMPIRE_TOO_FAR);
   set_field(s, VAMPIRE_DP_TARGET, c->x);
-  if (c->a >= VAMPIRE_TOO_FAR) return false;
   ran(s, SF_PLACE);
+  if (c->a >= VAMPIRE_TOO_FAR) {
+    // `$82:EBDE`: the place is the one it is at, with no ground or edge to
+    // test, and `BRA $EC2C`.
+    PORT_COVER(vampire_place_nobody);
+    set_field(s, VAMPIRE_DP_STEP_X, field(s, VAMPIRE_DP_X));
+    c->a = field(s, VAMPIRE_DP_Y);
+    set_field(s, VAMPIRE_DP_STEP_Y, c->a);
+    ran(s, SF_PLACE_FAR);
+    come_back(s);
+    return true;
+  }
   ran(s, SF_TAKEN);
   const uint16_t target = c->x;
 
@@ -767,6 +775,8 @@ static bool place(Vampire* s) {
   c->y = y;
   set_c(c, map.c);
   if (!map.c) {
+    PORT_COVER(vampire_came_back);
+    ran(s, SF_PLACE_MAP);
     come_back(s);
     return true;
   }
