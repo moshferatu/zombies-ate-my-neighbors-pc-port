@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "port/coverage.h"
+#include "port/cpu.h"
 #include "port/flags.h"
 #include "port/rng.h"
 
@@ -97,6 +98,20 @@ static void set_record_field(Werewolf* p, uint16_t at, uint16_t v) {
 static uint16_t table_word(const Werewolf* p, uint16_t table, uint16_t index) {
   return rom_word(p->rom, ((uint32_t)WEREWOLF_BANK << 16) +
                               (uint16_t)(table + index));
+}
+
+// The same through the bus, `LDA abs,X` as the 65816 has it, carried into
+// the next bank: for a way that was never set, which may be anything. The
+// cartridge and low WRAM are followed; anything else, false.
+static bool table_word_any(const Werewolf* p, uint16_t table, uint16_t index,
+                           uint16_t* word) {
+  const uint32_t at = ((uint32_t)WEREWOLF_BANK << 16) + table + index;
+  for (uint32_t i = 0; i < 2; i++) {
+    const uint16_t low = (uint16_t)(at + i);
+    if (low >= 0x2000u && low < 0x8000u) return false;
+  }
+  *word = bus_r16(p->w, p->rom, at);
+  return true;
 }
 
 static Point position(const Werewolf* p) {
@@ -251,12 +266,20 @@ static void show_running(Werewolf* p) {
   }
   const uint16_t at = (uint16_t)(
       ((((way - 1) << 2) | field(p, WEREWOLF_DP_PICTURE)) << 2));
-  flags_carry(&p->flags, false);  // the shifts
-  set_record_field(p, ACTOR_META,
-                   table_word(p, WEREWOLF_RUN_PICTURE_AT + 2, at));
+  // Its last shift's carry, which is the way's: not nothing only for one
+  // that was never set.
+  flags_carry(&p->flags, ((((way - 1) << 2) | field(p, WEREWOLF_DP_PICTURE)) &
+                          0x4000u) != 0);
+  uint16_t picture, mask;
+  if (!table_word_any(p, WEREWOLF_RUN_PICTURE_AT + 2, at, &picture) ||
+      !table_word_any(p, WEREWOLF_RUN_PICTURE_AT, at, &mask)) {
+    log->declined = true;
+    return;
+  }
+  if (way > BEARING_UP_LEFT) PORT_COVER(werewolf_unset_way_shown);
+  set_record_field(p, ACTOR_META, picture);
   set_record_field(p, ACTOR_META_BANK, WEREWOLF_PICTURE_BANK);
-  log->mask_clears =
-      apply_to_flags(p, table_word(p, WEREWOLF_RUN_PICTURE_AT, at));
+  log->mask_clears = apply_to_flags(p, mask);
 }
 
 // `$81:A7E6`: may it come down on the spot it chose? If so the flight is
@@ -495,11 +518,10 @@ static void run(Werewolf* p) {
 
   log->steps = (random_byte(p) & WEREWOLF_STEP_ONCE_BIT) != 0 ? 1 : 2;
   for (int i = 0; i < log->steps; i++) run_step(p, &log->step[i]);
-  // No step chose a way, and the one it has is not one: see the header.
-  if (field(p, WEREWOLF_DP_WAY) > BEARING_UP_LEFT) {
-    log->declined = true;
-    return;
-  }
+  // No step chose a way when its first pass leaves, and the one it has is
+  // whatever the page held: see the header. Leaving, its target is too far
+  // to pounce at or strike, so only its picture reads it.
+  if (field(p, WEREWOLF_DP_WAY) > BEARING_UP_LEFT) PORT_COVER(werewolf_unset_way);
 
   const uint16_t wait = (uint16_t)(field(p, WEREWOLF_DP_PICTURE_WAIT) - 1);
   set_field(p, WEREWOLF_DP_PICTURE_WAIT, wait);

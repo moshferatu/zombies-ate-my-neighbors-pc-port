@@ -298,17 +298,18 @@ void victim_start(Wram* w, const Rom* rom, PortCpu* c, VictimsWork* k) {
   const uint16_t thread_bank =
       bus_r16(w, rom, bank | (uint16_t)(at + VICTIM_ENTRY_BANK));
   k->slot = thread_spawn(w, rom, thread, thread_bank, c->d);
-  if (k->slot < 0) {  // no thread free; it comes back as slot nothing
-    k->declined = true;
-    return;
-  }
+  // With no thread free the spawn's `LDA #$0000` is slot 0 to the `BPL`, so
+  // the entry is still marked started, on slot 0, and never begins. Y is
+  // still the thread's bank, which the spawn never reached.
+  const uint16_t slot = k->slot < 0 ? 0 : (uint16_t)k->slot;
+  if (k->slot < 0) PORT_COVER(victim_start_full);
   // The slot's low byte, and that the entry is started. A's high byte is
   // the slot's, which is nothing.
-  wram_w8(w, (uint32_t)(W_VICTIM_THREAD + entry), (uint8_t)k->slot);
+  wram_w8(w, (uint32_t)(W_VICTIM_THREAD + entry), (uint8_t)slot);
   wram_w8(w, (uint32_t)(W_VICTIM_SPAWNED + entry), 1);
-  c->a = (uint16_t)((k->slot & 0xff00) | 1);
+  c->a = (uint16_t)((slot & 0xff00) | 1);
   c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
   c->x = entry;
-  c->y = (THREAD_SPAWN_ARGS - 1) * 2;
+  c->y = k->slot < 0 ? thread_bank : (THREAD_SPAWN_ARGS - 1) * 2;
   c->pc = VICTIM_START_RTS_PC;
 }

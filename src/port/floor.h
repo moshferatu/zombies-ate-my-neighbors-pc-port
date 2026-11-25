@@ -170,6 +170,7 @@ typedef enum {
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  bool v;  // the tile lookup's, or the rightward belt's ground test's
   // For the harness, and only for it: what the tile was and what came of it,
   // which is what it takes to price the ROM's instructions.
   FloorTile tile;

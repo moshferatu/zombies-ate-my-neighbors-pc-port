@@ -340,6 +340,7 @@ void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
   uint32_t sum = (uint32_t)base + col;  // CLC : ADC $01,S
   out->a = (uint16_t)sum;
   out->c = sum > 0xffffu;
+  out->v = add16_overflows(base, col);
   // `PLX` last, so N and Z are the doubled column's and not the address's.
   out->x = col;
   out->n = (col & 0x8000u) != 0;
@@ -370,6 +371,7 @@ void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,
   // business; this caller only wants A.
   TilemapAddrRegs addr;
   tilemap_tile_addr(w, col, row, &addr);
+  out->v = addr.v;
   uint16_t entry =
       wram_r16(w, ((uint32_t)(TERRAIN_MAP_BANK & 1) << 16) + addr.a);
 

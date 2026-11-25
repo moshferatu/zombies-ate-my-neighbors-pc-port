@@ -18,7 +18,9 @@
 //             fifty-five draws in 256 say stop: it does if where it is is on
 //             the level and the ground there will do, and it lands.
 //   $82:E8D9  ...which asks whether they are still there and still the
-//             nearest, and goes on circling.
+//             nearest, and goes on circling. If they are gone, or someone
+//             else has come within 24, it goes back to coming at whoever is
+//             nearest, by `$82:E827`, as after it is struck.
 //   $82:EB64  It stays where it is and faces whoever is nearest.
 //   $82:EB7A  The same, and when it stops it hides.
 //   $82:ECA3  The same again, and its record set to be drawn every frame.
@@ -225,6 +227,7 @@ enum {
   SF_ASK_LOOK,      // $E8E0-$E8EB
   SF_ASK_NEAR,      // CMP #$0018 : BCS
   SF_ASK_SET,       // LDA #$E8F9 : STA $16
+  SF_ASK_GIVE_UP,   // JMP $E827
   SF_CIRCLE,        // $E8F9-$E914
   SF_CIRCLE_CMP,    // CMP #$00A0 : BCC
   SF_CIRCLE_OVER,   // LDA #$0000 : INC $2A : BRA

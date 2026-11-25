@@ -80,6 +80,7 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
   out->x = px;
   out->y = py;
   out->c = tile.c;  // always clear; nothing below the `AND` changes it
+  out->v = tile.v;  // ...and the overflow, which only the belt's test does
   out->tile = FLOOR_TILE_PLAIN;
   out->gate = FLOOR_GATE_NONE;
   out->harm = FLOOR_HARM_NONE;
@@ -172,6 +173,7 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
     out->x = t.x;
     out->y = t.y;
     out->c = t.blocked;
+    out->v = t.v;
     out->probes = t.probes;
     out->belt = t.blocked ? FLOOR_BELT_RIGHT_BLOCKED : FLOOR_BELT_RIGHT;
     // `$80:AE96` is `PLD : RTL`, so N and Z are this routine's own direct page

@@ -341,6 +341,11 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_HOVER_ENDED:
       return (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
              wram_r16(w, W_SPAWN_LOAD) >= HOVER_LOAD;
+    case TS_NEEDS_BREAKABLE_ENDED:
+      // Below nothing, its `BMI` spins on itself, which is the ROM's.
+      return page(w, c, HITS_WAIT_DP_RECORD) < 0x1f00 &&
+             (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= BREAKABLE_LOAD;
     case TS_NEEDS_PRIZE_BLAST_ENDED:
       // Below nothing, its `BMI` spins on itself, which is the ROM's.
       return (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
@@ -5090,6 +5095,36 @@ void breakable_made(Wram* w, const Rom* rom, PortCpu* c,
   set_nz16(c, c->y);
   ran(k, TS_BREAKABLE_HANDLER);
   c->pc = BREAKABLE_HANDLER_CALL_PC;
+}
+
+// `$82:F2CA`: taken away or broken, its weight given back, and its record
+// to be freed.
+void breakable_gone(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(breakable_ended);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), BREAKABLE_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, HITS_WAIT_DP_RECORD));
+  ran(k, TS_BREAKABLE_ENDED);
+  c->pc = BREAKABLE_FREE_PC;
+}
+
+// `$82:F2C2`: broken. A place in the level's list is marked gone; with
+// none, straight to its end.
+void breakable_broken(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  lda(c, page(w, c, BREAKABLE_DP_MARK));
+  ran(k, TS_BREAKABLE_BROKEN);
+  if (c->a != 0) {
+    PORT_COVER(breakable_marked);
+    c->pc = BREAKABLE_MARK_CALL_PC;
+    return;
+  }
+  PORT_COVER(breakable_unmarked);
+  ran(k, TS_TAKEN);
+  breakable_gone(w, rom, c, k);
 }
 
 // `$81:A455`: its weight and its count, and `JSR $A410` to `record_begin`.

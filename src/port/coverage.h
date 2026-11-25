@@ -480,6 +480,7 @@
   X(victim_ungated,   "victim_start",       "an entry with no gate") \
   X(victim_at_the_gate,"victim_start",      "...or the last the level has") \
   X(victim_within_the_gate,"victim_start",  "...or one before the last") \
+  X(victim_start_full,"victim_start",       "no thread free: marked started on slot 0, and never begun") \
   X(victim_retired,   "victim_start",       "...or one past the level's, marked gone") \
   /* The loops the game waits in -- see port/hold.h. */                         \
   X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
@@ -769,6 +770,8 @@
   X(vampire_circle_left,"vampire_frame",      "...or from a place that will: it stops circling") \
   X(vampire_ask_same,  "vampire_frame",       "still nearest to the one it circles") \
   X(vampire_ask_other_far,"vampire_frame",    "...or someone else is, not near enough to matter") \
+  X(vampire_ask_gone,     "vampire_frame",    "whoever it circled is gone: it comes at whoever is nearest") \
+  X(vampire_ask_other_near,"vampire_frame",   "someone else has come near: it comes at whoever is nearest") \
   X(vampire_watched,   "vampire_frame",       "still, facing whoever is nearest") \
   X(vampire_watched_b, "vampire_frame",       "...and the same from the other state") \
   X(vampire_faced_left,"vampire_frame",       "...to the left of it, so drawn as it is") \
@@ -2289,6 +2292,9 @@
   X(drop_spent, "ts_drop_ground", "...or fell its 45 ticks without, and the same") \
   X(prize_blast_begun, "ts_prize_blast", "the fourth's blast begun beside the player") \
   X(prize_blast_ended, "ts_prize_blast_shown", "...its pictures over: its weight given back, and its record freed") \
+  X(breakable_marked, "ts_breakable_broken", "broken: its place in the level's list marked gone") \
+  X(breakable_unmarked, "ts_breakable_broken", "...or it had none") \
+  X(breakable_ended, "ts_breakable_gone", "its weight given back, and its record freed") \
   X(chainsaw_second_freed, "ts_chainsaw_freed", "...and the second record it had") \
   X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
   X(clone_freed, "ts_clone_freed", "...or the hunting clone's") \
@@ -2604,6 +2610,8 @@
   /* $81:AC1E werewolf_frame -- the werewolf's three states. */                    \
   X(werewolf_ran, "werewolf_frame", "a pass running") \
   X(werewolf_left, "werewolf_frame", "its target exactly 360 away: it leaves") \
+  X(werewolf_unset_way, "werewolf_frame", "...on its first pass, with its way never set") \
+  X(werewolf_unset_way_shown, "werewolf_frame", "...and its picture read by that way") \
   X(werewolf_on_them, "werewolf_frame", "on the same spot as its target: no step") \
   X(werewolf_hopped_hurt, "werewolf_frame", "hurt since it last looked: it chooses somewhere near to hop to") \
   X(werewolf_pounce_too_far, "werewolf_frame", "the draw said pounce, with its target 325 or more away") \

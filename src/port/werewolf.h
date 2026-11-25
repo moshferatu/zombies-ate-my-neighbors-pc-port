@@ -38,7 +38,10 @@
 //
 // **Its first pass has no way to face.** The thread's setup does not clear
 // the word, and the pass sets it before it reads it unless its target is
-// exactly 360 away, when it leaves. That one pass is the ROM's.
+// exactly 360 away, when it leaves. Then the way is whatever the page held,
+// and its picture is read by it from wherever that lands, as the ROM's
+// `LDA abs,X` does, into the next bank if it must. Only a read that lands
+// on the hardware's registers is the ROM's.
 //
 // **It pounces on a draw**, about one pass in seventeen, at somebody under
 // 325 away and 70 or more by the sum of the two gaps. Hurt since it last

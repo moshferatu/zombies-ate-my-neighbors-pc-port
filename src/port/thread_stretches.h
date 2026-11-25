@@ -1361,6 +1361,7 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 // thread_set_handler` names the handler again.
 #define BUBBLED_PC 0x818404u
 #define BUBBLED_HANDLER_CALL_PC 0x818433u  // `JSL thread_set_handler`
+#define BUBBLE_HELD_PC 0x81843bu           // the three hundred ticks' argument
 #define BUBBLE_OVER_PC 0x818446u
 #define BUBBLE_OVER_JML_PC 0x81845au       // `JML thread_set_handler`
 #define BUBBLED_COLLIDE_ID 0x0036
@@ -1384,6 +1385,14 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define BREAKABLE_DP_X 0x12             // where it was begun, kept
 #define BREAKABLE_DP_Y 0x14
 #define BREAKABLE_TICKS 0x0002          // of its first picture
+// Broken, `$82:F2C2`: its place in the level's list marked gone if it has
+// one, by `JSL victim_mark_gone`; then, as when it is taken away,
+// `$82:F2CA`, its weight given back and its record freed.
+#define BREAKABLE_BROKEN_PC 0x82f2c2u
+#define BREAKABLE_MARK_CALL_PC 0x82f2c6u  // `JSL victim_mark_gone`
+#define BREAKABLE_GONE_PC 0x82f2cau
+#define BREAKABLE_FREE_PC 0x82f2d8u      // `JML actor_slot_free`
+#define BREAKABLE_DP_MARK 0x06           // what `victim_mark_gone` is given
 // ...and record 48's, which waits for a player near (`port/waits.h`): its
 // weight and its count, `JSR $A410` to `record_begin`, and from there its
 // record's picture and the rest of its page, as far as its handler.
@@ -2848,6 +2857,8 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_BUBBLE_OVER, 0x818446, 0x81845a, 0) \
   X(TS_BREAKABLE_MADE, 0x82f2f0, 0x82f330, 0)  /* the RTS too */ \
   X(TS_BREAKABLE_HANDLER, 0x82f26a, 0x82f275, 0) \
+  X(TS_BREAKABLE_BROKEN, 0x82f2c2, 0x82f2c6, 0)  /* to the BEQ */ \
+  X(TS_BREAKABLE_ENDED, 0x82f2ca, 0x82f2d8, 0)   /* to the JML */ \
   X(TS_FRANKENSTEIN_ENTER, 0x81a455, 0x81a467, 0)   /* the JSR too */ \
   X(TS_FRANKENSTEIN_BEGUN, 0x81a414, 0x81a454, 0)   /* the JSR too */ \
   X(TS_FRANKENSTEIN_CLEARS, 0x81a191, 0x81a19f, 0)  /* the RTS too */ \
@@ -3011,6 +3022,7 @@ typedef enum {
                            //    and its weight in the load, for its end
   TS_NEEDS_HOVER_ENDED,    // its weight not more than the level's load
   TS_NEEDS_PRIZE_BLAST_ENDED,  // its weight not more than the level's load
+  TS_NEEDS_BREAKABLE_ENDED,    // ...and the same, and its record in low WRAM
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -3242,6 +3254,8 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(bubbled, "$81:8404", BUBBLED_PC, bubbled, BUBBLE, TS_NEEDS_RECORD) \
   X(bubble_over, "$81:8446", BUBBLE_OVER_PC, bubble_over, BUBBLE, TS_NEEDS_RECORD) \
   X(breakable_enter, "$82:F25D", BREAKABLE_ENTER_PC, breakable_enter, BREAKABLE, TS_NEEDS_NOTHING) \
+  X(breakable_broken, "$82:F2C2", BREAKABLE_BROKEN_PC, breakable_broken, BREAKABLE, TS_NEEDS_BREAKABLE_ENDED) \
+  X(breakable_gone, "$82:F2CA", BREAKABLE_GONE_PC, breakable_gone, BREAKABLE, TS_NEEDS_BREAKABLE_ENDED) \
   X(breakable_made, "$82:F2F0", BREAKABLE_MADE_PC, breakable_made, BREAKABLE, TS_NEEDS_BREAKABLE_MADE) \
   X(frankenstein_enter, "$81:A455", FRANKENSTEIN_ENTER_PC, frankenstein_enter, FRANKENSTEIN, TS_NEEDS_NOTHING) \
   X(frankenstein_begun, "$81:A414", FRANKENSTEIN_BEGUN_PC, frankenstein_begun, FRANKENSTEIN, TS_NEEDS_FRANKENSTEIN_BEGUN) \

@@ -342,13 +342,62 @@ static bool circle(Vampire* s) {
   return true;
 }
 
+// `$82:E827`: next frame it comes at whoever is nearest, and things that
+// touch it are told to nobody; to its `RTS`.
+static void reset(Vampire* s) {
+  PortCpu* c = s->c;
+  set_field(s, VAMPIRE_DP_SLEEP, 1);
+  set_field(s, VAMPIRE_DP_STATE, VAMPIRE_STATE_CHASE);
+  set_field(s, VAMPIRE_DP_FRAMES, VAMPIRE_FLAP_FRAMES);
+  set_field(s, VAMPIRE_DP_PICTURE,
+            (uint16_t)(field(s, VAMPIRE_DP_PICTURE) & 0x0001u));
+  c->y = field(s, VAMPIRE_DP_RECORD);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                      ACTOR_PRIORITY_TOP));
+  c->a = 0;
+  c->y = 0;
+  set_nz16(c, 0);
+  thread_set_handler(s->w, c);
+  s->k->handlers_set++;
+  ran(s, SF_RESET);
+  c->a = field(s, VAMPIRE_DP_STRENGTH);
+  set_nz16(c, c->a);
+  ran(s, SF_RESET_ALIVE);
+  if (c->a & 0x8000u) {
+    // `JMP $EA7E`: its strength is spent, and it flies off from the next
+    // frame, a way from one to eight by a draw. Its `RTS` goes where the
+    // other would have.
+    PORT_COVER(vampire_spent);
+    set_field(s, VAMPIRE_DP_STATE, VAMPIRE_STATE_FLEE);
+    ran(s, SF_SPENT);
+    draw(s);
+    c->a = (uint16_t)((c->a & VAMPIRE_FLEE_WAY_MASK) + 1);
+    set_nz16(c, c->a);
+    set_field(s, VAMPIRE_DP_WAY, c->a);
+    ran(s, SF_SPENT_WAY);
+  } else {
+    ran(s, SF_TAKEN);
+    ran(s, SF_RTS);
+  }
+}
+
 // `$82:E8D9`: is whoever it circles still there, and still the one to
-// circle? Then a frame of circling. If not, the ROM's.
+// circle? Then a frame of circling. If it is gone, or someone else has come
+// near, it goes back to coming at whoever is nearest.
 static bool circle_ask(Vampire* s) {
   PortCpu* c = s->c;
   const uint16_t target = field(s, VAMPIRE_DP_TARGET);
   ran(s, SF_ASK);
-  if (wram_r16(s->w, (uint16_t)(target + ACTOR_FLAGS)) == 0) return false;
+  c->y = target;
+  c->a = wram_r16(s->w, (uint16_t)(target + ACTOR_FLAGS));
+  if (c->a == 0) {
+    PORT_COVER(vampire_ask_gone);
+    ran(s, SF_TAKEN);
+    ran(s, SF_ASK_GIVE_UP);
+    reset(s);
+    return true;
+  }
   look(s);
   cmp16(c, c->x, target);
   ran(s, SF_ASK_LOOK);
@@ -357,9 +406,14 @@ static bool circle_ask(Vampire* s) {
     ran(s, SF_TAKEN);
   } else {
     cmp16(c, c->a, VAMPIRE_CIRCLE_LOST);
-    if (c->a < VAMPIRE_CIRCLE_LOST) return false;
-    PORT_COVER(vampire_ask_other_far);
     ran(s, SF_ASK_NEAR);
+    if (c->a < VAMPIRE_CIRCLE_LOST) {
+      PORT_COVER(vampire_ask_other_near);
+      ran(s, SF_ASK_GIVE_UP);
+      reset(s);
+      return true;
+    }
+    PORT_COVER(vampire_ask_other_far);
     ran(s, SF_TAKEN);
   }
   set_field(s, VAMPIRE_DP_STATE, VAMPIRE_STATE_CIRCLE);
@@ -1020,42 +1074,9 @@ bool vampire_struck_shown(Wram* w, const Rom* rom, PortCpu* c, VampireWork* k) {
                     ACTOR_PRIORITY_TOP);
   wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
   ran(&s, SF_SHOWN);
-  // `$82:E827`: next frame it comes at whoever is nearest, and things that
-  // touch it are told to nobody.
-  set_field(&s, VAMPIRE_DP_SLEEP, 1);
-  set_field(&s, VAMPIRE_DP_STATE, VAMPIRE_STATE_CHASE);
-  set_field(&s, VAMPIRE_DP_FRAMES, VAMPIRE_FLAP_FRAMES);
-  set_field(&s, VAMPIRE_DP_PICTURE,
-            (uint16_t)(field(&s, VAMPIRE_DP_PICTURE) & 0x0001u));
-  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
-           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
-                      ACTOR_PRIORITY_TOP));
-  c->a = 0;
-  c->y = 0;
-  set_nz16(c, 0);
-  thread_set_handler(w, c);
-  k->handlers_set++;
-  ran(&s, SF_RESET);
-  c->a = field(&s, VAMPIRE_DP_STRENGTH);
-  set_nz16(c, c->a);
-  ran(&s, SF_RESET_ALIVE);
-  if (c->a & 0x8000u) {
-    // `JMP $EA7E`: its strength is spent, and it flies off from the next
-    // frame, a way from one to eight by a draw. Its `RTS` goes where the
-    // other would have.
-    PORT_COVER(vampire_spent);
-    set_field(&s, VAMPIRE_DP_STATE, VAMPIRE_STATE_FLEE);
-    ran(&s, SF_SPENT);
-    draw(&s);
-    c->a = (uint16_t)((c->a & VAMPIRE_FLEE_WAY_MASK) + 1);
-    set_nz16(c, c->a);
-    set_field(&s, VAMPIRE_DP_WAY, c->a);
-    ran(&s, SF_SPENT_WAY);
-  } else {
+  reset(&s);
+  if (field(&s, VAMPIRE_DP_STATE) == VAMPIRE_STATE_CHASE)
     PORT_COVER(vampire_struck_shown);
-    ran(&s, SF_TAKEN);
-    ran(&s, SF_RTS);
-  }
   // Back in the state, after its `JSR $EB13`, with the loop's return under;
   // or, struck darting, in the loop.
   const uint16_t back = pull16(w, c);

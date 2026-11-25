@@ -10071,6 +10071,8 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_PRIZE_BLAST_MADE] = {652, 59, 3},
     [TS_PRIZE_BLAST_BOX] = {364, 38, 2},
     [TS_PRIZE_BLAST_ENDED] = {138, 14, 1},
+    [TS_BREAKABLE_BROKEN] = {40, 4, 1},
+    [TS_BREAKABLE_ENDED] = {138, 14, 1},
     [TS_ANT_FREEZE_END] = {160, 12, 1},
     // The chainsaw maniac's cut, `--db=81`. Its tables and lists are read
     // from the cartridge; the square's tile from WRAM.
@@ -10429,11 +10431,11 @@ static bool thread_stretch_bank_ok(const CosimRegs* in) {
   const uint8_t bank = (uint8_t)(in->pc >> 16);
   // `$82:DC57` reads only `$0038` through it, and the bazooka's shot calls
   // it with bank `$81`. A bubbled creature, like a frozen one, runs on its
-  // own thread, and both ends of the bubble read only low WRAM through it:
-  // the vampire's has bank `$82`.
+  // own thread, and both ends of the bubble read only low WRAM through it,
+  // and its five seconds between them nothing: the vampire's has bank `$82`.
   if (bank == 0x80 || in->pc == FREEZE_BEGIN_PC || in->pc == FREEZE_PASS_PC ||
       in->pc == FOURTH_DRAW_PC || in->pc == BUBBLED_PC ||
-      in->pc == BUBBLE_OVER_PC)
+      in->pc == BUBBLE_HELD_PC || in->pc == BUBBLE_OVER_PC)
     return bank_sees_low_wram(in->db);
   return in->db == bank;
 }
@@ -10653,8 +10655,9 @@ static const uint32_t TS_EXITS_VAMPIRE[] = {
     VAMPIRE_START_SFX_CALL_PC};
 static const uint32_t TS_EXITS_BUBBLE[] = {BUBBLED_HANDLER_CALL_PC,
                                            BUBBLE_OVER_JML_PC};
-static const uint32_t TS_EXITS_BREAKABLE[] = {BREAKABLE_ALLOC_PC,
-                                              BREAKABLE_HANDLER_CALL_PC};
+static const uint32_t TS_EXITS_BREAKABLE[] = {
+    BREAKABLE_ALLOC_PC, BREAKABLE_HANDLER_CALL_PC, BREAKABLE_MARK_CALL_PC,
+    BREAKABLE_FREE_PC};
 static const uint32_t TS_EXITS_FRANKENSTEIN[] = {FRANKENSTEIN_BEGIN_CALL_PC,
                                             FRANKENSTEIN_HANDLER_CALL_PC};
 static const uint32_t TS_EXITS_DECOY_START[] = {
@@ -13506,6 +13509,7 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_ASK_LOOK] = {150, 12, 3},
     [SF_ASK_NEAR] = {30, 5, 0},
     [SF_ASK_SET] = {46, 5, 1},
+    [SF_ASK_GIVE_UP] = {18, 3, 0},
     [SF_CIRCLE] = {352, 32, 5},
     [SF_CIRCLE_CMP] = {30, 5, 0},
     [SF_CIRCLE_OVER] = {80 + 6, 7, 1},
@@ -20308,8 +20312,10 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
         out->s = (uint16_t)(in->s - 2);
         out->pc = PLAYER_MONSTER_OVER_PC;
         out->regs = 0;
-        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C)) |
-                           PORT_P_Z | (log.c ? PORT_P_C : 0));
+        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C |
+                                      PORT_P_V)) |
+                           PORT_P_Z | (log.c ? PORT_P_C : 0) |
+                           (log.floor.v ? PORT_P_V : 0));
         return;
       }
       run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
@@ -20331,8 +20337,10 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
         out->s = (uint16_t)(in->s - 2);
         out->pc = PLAYER_GHOST_OVER_PC;
         out->regs = 0;
-        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C)) |
-                           PORT_P_Z | (log.c ? PORT_P_C : 0));
+        out->p = (uint8_t)((in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C |
+                                      PORT_P_V)) |
+                           PORT_P_Z | (log.c ? PORT_P_C : 0) |
+                           (log.floor.v ? PORT_P_V : 0));
         return;
       }
       run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION

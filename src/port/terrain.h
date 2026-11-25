@@ -324,6 +324,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out);
 typedef struct {
   uint16_t a, x;
   bool n, z, c;
+  bool v;  // the `ADC`'s too, which nothing after it touches
 } TilemapAddrRegs;
 
 void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
@@ -408,6 +409,7 @@ void tilemap_tile_word(Wram* w, uint16_t x, uint16_t y, uint16_t d,
 typedef struct {
   uint16_t a;
   bool c;
+  bool v;  // `$80:AD1C`'s `ADC`, row and column: nothing after it touches it
 } TileAttrsRegs;
 
 void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,
