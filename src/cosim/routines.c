@@ -12184,8 +12184,7 @@ static bool martian_frame_ok(const Wram* w, const CosimRegs* in) {
       wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE)) == MARTIAN_STATE_WALK;
   const uint16_t target = wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_TARGET));
   return wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_RECORD)) < 0x1f00 &&
-         (walking || target < 0x1f00 ||
-          (target >= 0x8000 && target <= 0xfff0)) &&
+         (walking || target < 0x1f00 || target >= 0x8000) &&
          wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_PICTURES)) >= 0x8000 &&
          martian_frame_supported(w, in->d);
 }
@@ -26277,10 +26276,13 @@ static bool accepts_frankenstein(const Wram* w, const CosimRegs* in) {
   const uint16_t d = in->d;
   if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_RECORD)) >= 0x1f00) return false;
   if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_WAY)) > 0x0040) return false;
+  // A free slot's way is whatever the page held before: it is only read once
+  // a thing is made there, which writes it first.
   for (uint16_t i = 0; i <= FRANKENSTEIN_THING_LAST; i += FRANKENSTEIN_THING_STRIDE) {
-    if (!frankenstein_thing_ok(wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THINGS + i))))
-      return false;
-    if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THING_WAY + i)) > 0x0040)
+    const uint16_t thing = wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THINGS + i));
+    if (!frankenstein_thing_ok(thing)) return false;
+    if (thing != FRANKENSTEIN_NO_THING &&
+        wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_THING_WAY + i)) > 0x0040)
       return false;
   }
   switch (in->pc) {

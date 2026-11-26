@@ -6,6 +6,7 @@
 
 #include "port/begin.h"  // RECORD_SEARCHED_FIRST
 #include "port/coverage.h"
+#include "port/cpu.h"  // bus_r16
 #include "port/flags.h"
 #include "port/rng.h"
 
@@ -477,13 +478,13 @@ static void pick_side(Martian* m) {
 
 // `$81:9DEF`: to its side of the target, and up or down to its height
 // above them.
-// A word of the target's record, read as the ROM's `LDA $0000,Y` reads it:
+// A word of the target's record, read as the ROM's `LDA $0006,Y` reads it:
 // through the data bank, `$81`. A look that found nobody leaves whatever its
-// last search did in the target, and past `$8000` that is the cartridge.
+// last search did in the target, and past `$8000` that is the cartridge. The
+// index is carried, not wrapped: `$FFFF`, nobody at all, reads `$82:0005`,
+// which is WRAM's first page again.
 static uint16_t target_word(const Martian* m, uint16_t target, uint16_t at) {
-  const uint16_t a = (uint16_t)(target + at);
-  if (a >= 0x8000) return rom_word(m->rom, (uint32_t)MARTIAN_BANK << 16 | a);
-  return wram_r16(m->w, a);
+  return bus_r16(m->w, m->rom, ((uint32_t)MARTIAN_BANK << 16) + target + at);
 }
 
 static void arrive_on(Martian* m) {
