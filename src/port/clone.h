@@ -96,6 +96,10 @@
 
 #define CLONE_BEGIN_PC 0x818e89u
 #define CLONE_BEGIN_SOUND_PC 0x818d12u  // `JSL apu_play_sfx`, sound in A
+// The `RTL` that ends the thread when neither player is in the game, one
+// for each of the two threads.
+#define CLONE_NOBODY_RTL_PC 0x818f02u
+#define CLONE_HUNTER_NOBODY_RTL_PC 0x818f82u
 #define CLONE_FIRST_PC 0x818d16u
 #define CLONE_GROW_PC 0x818d29u
 #define CLONE_GROW_YIELD_PC 0x818d25u  // `JSL thread_yield`, ten ticks in A
@@ -185,8 +189,9 @@ bool clone_hunter_frame(Wram* w, const Rom* rom, uint16_t page,
 #define W_PLAYER_CHARACTER 0x1e84u
 
 typedef struct {
-  bool declined;       // nobody in the game, or no record free: the ROM's
-  int looked;          // players asked whether they are in the game
+  bool declined;       // no record free, or a character not 0 or 2
+  bool nobody;         // neither player in the game: it ends at the `RTL`
+  int looked;         // players asked whether they are in the game
   bool drew;           // both were, so a random draw chose...
   bool drew_overflow;  // ...one that overflowed, which costs more
   bool first_in_game;  // player one is in the game...
@@ -196,8 +201,8 @@ typedef struct {
 } CloneBeginLog;
 
 // The thread's start, as far as its sound, for either thread: `c->pc` says
-// which. It ends at `CLONE_BEGIN_SOUND_PC`, a call deep. Asked of a copy
-// first: `declined`.
+// which. It ends at `CLONE_BEGIN_SOUND_PC`, a call deep, or with nobody in
+// the game at that thread's `RTL`. Asked of a copy first: `declined`.
 void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log);
 // From where the sound comes back to the first picture's sleep, at
 // `CLONE_GROW_YIELD_PC`.

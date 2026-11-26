@@ -125,6 +125,16 @@ if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The emulator held open for `tools/bot.py`, which plays levels to their end:
+# commands on stdin step it, save and load it, and read its memory.
+add_executable(zamn_bot_host src/bot_host.c)
+target_link_libraries(zamn_bot_host PRIVATE snescore zamn_analysis zamn_assets_lib zamn_port
+                      zamn_video_with_ppu)
+target_include_directories(zamn_bot_host PRIVATE third_party/stb)
+if(MSVC)
+  target_compile_definitions(zamn_bot_host PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # The launcher's icon (tools/make_icon.c): the title screen, drawn by the core
 # from the player's cartridge, as a Windows .ico. The launcher target below
 # runs it when there is a cartridge to run.

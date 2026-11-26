@@ -14459,6 +14459,12 @@ static const CosimRun PK_COST[PK_BLOCK_COUNT] = {
     [PK_SOUND] = {36, 5, 0},
     [PK_END] = {74, 5, 0},
     [PK_CLOCK] = {52, 6, 0},
+    [PK_BACK_EMPTY] = {46, 5, 0},
+    [PK_BACK_FULL] = {46, 5, 0},
+    [PK_BACK_LAST] = {44, 5, 0},
+    [PK_BACK_INX] = {12, 1, 0},
+    [PK_BACK_STORE] = {130, 12, 0},
+    [PK_WIDE] = {18, 2, 0},
     [PK_TAKEN] = {6, 0, 0},
 };
 
@@ -14512,8 +14518,8 @@ static void shim_cursor_after_move(Wram* w, const Rom* rom,
   cursor_after_shim(w, in, out, false);
 }
 
-static const uint32_t CURSOR_PICK_EXITS[] = {CURSOR_PICK_SOUND_PC,
-                                             CURSOR_PICK_RTS_PC};
+static const uint32_t CURSOR_PICK_EXITS[] = {
+    CURSOR_PICK_SOUND_PC, CURSOR_PICK_RTS_PC, CURSOR_PICK_WIDE_RTS_PC};
 static const uint32_t CURSOR_AFTER_EXITS[] = {CURSOR_SLEEP_PC, CURSOR_DONE_PC};
 
 // ---------------------------------------------------------------------------
@@ -28951,6 +28957,7 @@ static const uint32_t LOB_END_EXITS[] = {LOB_END_FREE_PC};
 // The clones' start. See `port/clone.h`. Runs from `tools/cycles816.py
 // --db 81`, branches not taken, and a taken one 6 more.
 static const CosimRun CB_RUN_HEAD = {218, 21, 0};       // $8E89-$8E9D
+static const CosimRun CB_RUN_NOBODY = {80, 8, 0};       // LDA : ORA : BEQ
 static const CosimRun CB_RUN_FIRST = {18, 3, 0};        // $8D5A LDX #$0002
 static const CosimRun CB_RUN_IN_GAME = {88, 9, 0};      // $8D5D-$8D65
 // `LDA $1E88,X : BEQ` taken, and `$8D95-$8DA0` with its `BRA`.
@@ -28989,6 +28996,12 @@ static void shim_clone_begin(Wram* w, const Rom* rom, const CosimRegs* in,
   cpu_to(&c, out);
 
   CosimRun run = {0, 0, 0};
+  if (log.nobody) {
+    run_add(&run, &CB_RUN_NOBODY, 1);
+    run_add(&run, &RUN_TAKEN, 1);
+    cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+    return;
+  }
   int calls = saucer_alloc_cycles(log.record, in->fastrom);
   run_add(&run, &CB_RUN_HEAD, 1);
   run_add(&run, &CB_RUN_FIRST, 1);
@@ -29077,7 +29090,8 @@ static void shim_clone_grow_first(Wram* w, const Rom* rom,
                                  (in->d & 0xffu) != 0));
 }
 
-static const uint32_t CLONE_BEGIN_EXITS[] = {CLONE_BEGIN_SOUND_PC};
+static const uint32_t CLONE_BEGIN_EXITS[] = {
+    CLONE_BEGIN_SOUND_PC, CLONE_NOBODY_RTL_PC, CLONE_HUNTER_NOBODY_RTL_PC};
 static const uint32_t CLONE_FIRST_EXITS[] = {CLONE_GROW_YIELD_PC};
 static const uint32_t CLONE_GROW_EXITS[] = {CLONE_GROW_YIELD_PC,
                                             CLONE_YIELD_PC,
@@ -31962,6 +31976,9 @@ static const CosimRun CURSOR_RUN_wrong_again = {18, 3, 0};
 static const CosimRun CURSOR_RUN_wrong_again_sleep = {18, 3, 0};
 static const CosimRun CURSOR_RUN_entry_print_ask = {274, 30, 1};
 static const CosimRun CURSOR_RUN_pick_end = {18, 2, 0};
+static const CosimRun CURSOR_RUN_back_clear = {132, 15, 0};  // to the `JSL`
+// `BRA` taken, and the `REP` it goes to.
+static const CosimRun CURSOR_RUN_back_done = {12 + 6 + 18, 4, 0};
 
 static bool cursor_stretch_ok(const CosimRegs* in) {
   return body_ok(in) && bank_sees_low_wram(in->db);

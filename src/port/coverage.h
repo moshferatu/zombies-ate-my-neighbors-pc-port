@@ -280,6 +280,9 @@
   X(cursor_pick_last, "cursor_pick",        "...or entered at the last place, which stays") \
   X(cursor_pick_space,"cursor_pick",        "the grid's `$3C`, entered as `$2F`") \
   X(cursor_pick_end,  "cursor_pick",        "the grid's `$3B`: the entry is over") \
+  X(cursor_pick_back, "cursor_pick",        "the grid's `$3A`: one taken back") \
+  X(cursor_pick_back_last,"cursor_pick",    "...the last place's own, which was filled") \
+  X(cursor_pick_back_none,"cursor_pick",    "...or nothing entered, so nothing to take") \
   X(cursor_after_pick,"cursor_after",       "the clock set again after a pick") \
   X(cursor_after_move,"cursor_after",       "...or after a move's sound") \
   X(password_screen_ask, "cursor_password_screen_ask", "the table for a pad, for the password's screen") \
@@ -320,6 +323,8 @@
   X(cursor_wrong_again_sleep, "cursor_wrong_again_sleep", "...and ten more") \
   X(cursor_entry_print_ask, "cursor_entry_print_ask", "the entry printed after a pick's sound") \
   X(cursor_pick_wide, "cursor_pick_end", "a pick's `REP`") \
+  X(cursor_back_clear, "cursor_back_clear", "the place taken back cleared, and its sound") \
+  X(cursor_back_done, "cursor_back_done", "...and back from that sound") \
   X(password_cheat,   "password_check",     "the one password tested by its letters") \
   X(password_good,    "password_check",     "a level, and one to nine neighbours") \
   X(password_ten,     "password_check",     "...or all ten") \
@@ -2971,6 +2976,7 @@
   X(clone_began, "clone_begin", "a clone's start, as far as its sound") \
   X(clone_grew_first, "clone_grow_first", "the first picture of the growing") \
   X(clone_began_drawn, "clone_begin", "...with both players in the game, so whose double is a draw") \
+  X(clone_began_unplayed, "clone_begin", "...or with neither, after a game over, so the thread ends at once") \
   X(clone_grew, "clone_grow", "the next picture of the growing") \
   X(clone_grown, "clone_grow", "...or the last shown, and it can be hit") \
                                                                                    \

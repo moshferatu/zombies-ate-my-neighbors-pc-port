@@ -21,9 +21,13 @@
 //   * `$3B` ends the entry, as Start does;
 //   * `$3C` is entered as `$2F`, which the grid itself has between its
 //     letters, so I take it for a space;
-//   * `$3A` takes the last one back. That one is the ROM's.
+//   * `$3A` takes the last one back: the place before is made `$3C`, the
+//     entry printed and the place cleared, with two sounds. At the first
+//     place there is nothing to take back, and it does nothing at all.
 //
 // Past the last place the entry does not grow: the last letter is replaced.
+// So taking one back at the last place takes the last letter if there is
+// one, and the one before it if not.
 //
 // `cursor_after` is the end of a turn that did something, from where the
 // pick or the move's sound comes back: the clock set to three hundred
@@ -51,6 +55,11 @@
 #define CURSOR_PICK_PC 0x82b3f6u
 #define CURSOR_PICK_SOUND_PC 0x82b48au  // `JSL`, the sound in A
 #define CURSOR_PICK_RTS_PC 0x82b4b6u    // the end of the entry
+#define CURSOR_PICK_WIDE_RTS_PC 0x82b4b0u  // nothing to take back
+// Taking one back calls the pick's sound and print, `$82:B485`, as a
+// subroutine, which comes back here (the `JSR`'s word is this less one).
+#define CURSOR_BACK_RETURN 0xb45eu
+#define CURSOR_BACK_SOUND 0x000d
 #define CURSOR_AFTER_PICK_PC 0x82b28au
 #define CURSOR_AFTER_MOVE_PC 0x82b2c5u
 
@@ -141,6 +150,12 @@ enum {
   PK_SOUND,       // REP #$30 : LDA #$0010
   PK_END,         // REP #$30 : DEC $1EB2
   PK_CLOCK,       // LDA #$012C : STA $004C
+  PK_BACK_EMPTY,  // LDX $1E94 : BEQ
+  PK_BACK_FULL,   // CPX $1E9C : BCC
+  PK_BACK_LAST,   // LDA $1EA0,X : BEQ
+  PK_BACK_INX,    // INX
+  PK_BACK_STORE,  // $B453-$B45C, the `JSR` included
+  PK_WIDE,        // REP #$30, before the `RTS`
   PK_TAKEN,
   PK_BLOCK_COUNT
 };
@@ -155,8 +170,8 @@ typedef struct {
 bool cursor_frame_supported(const Wram* w, const Rom* rom, uint16_t page);
 void cursor_frame(Wram* w, const Rom* rom, PortCpu* c, CursorWork* k);
 
-// False for a screen or a place of the cursor the tables do not have, for
-// an entry past its room, and for the character that takes one back.
+// False for a screen or a place of the cursor the tables do not have, and
+// for an entry past its room.
 bool cursor_pick_supported(const Wram* w, const Rom* rom, uint8_t db,
                            uint16_t page);
 // True if the character ended the entry.
@@ -293,7 +308,9 @@ bool cursor_needs_met(CursorNeeds needs, const Wram* w, const Rom* rom,
   X(wrong_again, "$82:B323", 0x82b323u, 0x82b326u, CURSOR_NEEDS_NOTHING) \
   X(wrong_again_sleep, "$82:B32A", 0x82b32au, 0x82b32du, CURSOR_NEEDS_NOTHING) \
   X(entry_print_ask, "$82:B48E", 0x82b48eu, 0x82b4a6u, CURSOR_NEEDS_SCREEN) \
-  X(pick_end, "$82:B4AE", 0x82b4aeu, 0x82b4b0u, CURSOR_NEEDS_NOTHING)
+  X(pick_end, "$82:B4AE", 0x82b4aeu, 0x82b4b0u, CURSOR_NEEDS_NOTHING) \
+  X(back_clear, "$82:B45F", 0x82b45fu, 0x82b46eu, CURSOR_NEEDS_NOTHING) \
+  X(back_done, "$82:B472", 0x82b472u, 0x82b4b0u, CURSOR_NEEDS_NOTHING)
 
 #define X(name, sym, entry, exit, needs) \
   void cursor_##name(Wram* w, const Rom* rom, PortCpu* c);

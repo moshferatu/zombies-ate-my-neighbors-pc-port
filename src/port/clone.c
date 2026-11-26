@@ -306,8 +306,15 @@ void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log) {
   const uint16_t grow_return = c->pc == CLONE_HUNTER_BEGIN_PC
                                    ? CLONE_HUNTER_GROW_RETURN
                                    : CLONE_GROW_RETURN;
-  if ((wram_r16(w, W_HUD_PANEL_ON) | wram_r16(w, W_HUD_PANEL_ON + 2)) == 0) {
-    log->declined = true;
+  c->a = wram_r16(w, W_HUD_PANEL_ON) | wram_r16(w, W_HUD_PANEL_ON + 2);
+  set_nz16(c, c->a);
+  if (c->a == 0) {
+    // Neither player is in the game, after a game over: the thread ends
+    // before it takes anything.
+    PORT_COVER(clone_began_unplayed);
+    log->nobody = true;
+    c->pc = grow_return == CLONE_HUNTER_GROW_RETURN ? CLONE_HUNTER_NOBODY_RTL_PC
+                                                    : CLONE_NOBODY_RTL_PC;
     return;
   }
   set_c(c, false);

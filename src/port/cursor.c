@@ -263,9 +263,54 @@ static uint8_t grid_char(const Wram* w, const Rom* rom, uint8_t db,
 bool cursor_pick_supported(const Wram* w, const Rom* rom, uint8_t db,
                            uint16_t page) {
   Pick p;
+  (void)db;
   return pick_at(w, rom, page, &p) && p.last < CURSOR_ENTRY_MAX &&
-         wram_r16(w, W_CURSOR_ENTRY_AT) <= p.last &&
-         grid_char(w, rom, db, &p) != CURSOR_CHAR_BACK;
+         wram_r16(w, W_CURSOR_ENTRY_AT) <= p.last;
+}
+
+// `$82:B443`: one taken back. The last place filled is the one taken, or with
+// it empty the one before; it is made `$3C` and printed, by the pick's own
+// sound and print called as a subroutine, and `cursor_back_clear` clears it
+// when that comes back.
+static void take_back(Wram* w, PortCpu* c, const Pick* p, PickWork* k) {
+  set_c(c, true);  // `CMP #$3A`, equal
+  c->x = wram_r16(w, W_CURSOR_ENTRY_AT);
+  set_nz16(c, c->x);
+  k->blocks[PK_BACK_EMPTY]++;
+  if (c->x == 0) {
+    PORT_COVER(cursor_pick_back_none);
+    k->blocks[PK_TAKEN]++;
+    k->blocks[PK_WIDE]++;
+    c->pc = CURSOR_PICK_WIDE_RTS_PC;
+    return;
+  }
+  cmp16(c, c->x, p->last);
+  k->blocks[PK_BACK_FULL]++;
+  if (c->x < p->last) {
+    k->blocks[PK_TAKEN]++;
+  } else {
+    const uint8_t last = wram_r8(w, (uint16_t)(W_CURSOR_ENTRY + c->x));
+    c->a = (uint16_t)((c->a & 0xff00u) | last);
+    k->blocks[PK_BACK_LAST]++;
+    if (last == 0) {
+      k->blocks[PK_TAKEN]++;
+    } else {
+      // The last place itself is filled: it is the one taken.
+      PORT_COVER(cursor_pick_back_last);
+      c->x++;
+      k->blocks[PK_BACK_INX]++;
+    }
+  }
+  PORT_COVER(cursor_pick_back);
+  c->x--;
+  wram_w8(w, (uint16_t)(W_CURSOR_ENTRY + c->x), CURSOR_CHAR_SPACE);
+  wram_w16(w, W_CURSOR_ENTRY_AT, c->x);
+  k->blocks[PK_BACK_STORE]++;
+  push16(w, c, CURSOR_BACK_RETURN);
+  c->a = CURSOR_PICK_SOUND;
+  set_nz16(c, c->a);
+  k->blocks[PK_SOUND]++;
+  c->pc = CURSOR_PICK_SOUND_PC;
 }
 
 bool cursor_pick(Wram* w, const Rom* rom, PortCpu* c, PickWork* k) {
@@ -298,6 +343,11 @@ bool cursor_pick(Wram* w, const Rom* rom, PortCpu* c, PickWork* k) {
     PORT_COVER(cursor_pick_space);
     ch = CURSOR_SPACE;
     k->blocks[PK_SPACE]++;
+  } else if (ch == CURSOR_CHAR_BACK) {
+    k->blocks[PK_TAKEN]++;  // the space test's `BNE`
+    k->blocks[PK_BACK_TEST]++;
+    take_back(w, c, &p, k);
+    return false;
   } else {
     k->blocks[PK_TAKEN] += 2;  // that `BNE`, and the one of the next test
     k->blocks[PK_BACK_TEST]++;
@@ -755,5 +805,23 @@ void cursor_pick_end(Wram* w, const Rom* rom, PortCpu* c) {
   (void)w;
   (void)rom;
   PORT_COVER(cursor_pick_wide);
-  c->pc = 0x82b4b0u;
+  c->pc = CURSOR_PICK_WIDE_RTS_PC;
+}
+
+// Back from printing the place taken back as `$3C`: it is cleared, and the
+// sound of taking one back.
+void cursor_back_clear(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(cursor_back_clear);
+  c->x = wram_r16(w, W_CURSOR_ENTRY_AT);
+  wram_w8(w, (uint16_t)(W_CURSOR_ENTRY + c->x), 0);
+  load_word(c, CURSOR_BACK_SOUND, 0x82b46eu);
+}
+
+// ...and from that sound, `BRA` to the pick's `REP`.
+void cursor_back_done(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(cursor_back_done);
+  c->pc = CURSOR_PICK_WIDE_RTS_PC;
 }
