@@ -1183,6 +1183,37 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define DEATH_LISTS 0x80cf63u           // by which of the two
 #define DEATH_PICTURES_AFTER 0x80cf5bu  // ...and the monster's after
 #define DEATH_HEALTH 0x000a
+
+// --- a player with no neighbours left to save -------------------------------
+//
+// `$80:CE25` (`port/bodies.h`) finds none left at `$1D52` and goes on at
+// `$80:CE2A`. Unless someone saved one (`$1F9C`, `$1F9E`) or the player is in
+// state 6 or 14, the state's end at `$72` is called as a death calls it, the
+// weapon is put away and nothing can touch or tell the player of anything
+// (the three `JSR`s of `$80:CE8B`, here from `$80:CE48`), and `$80:F354`
+// sleeps a tick. Then their side of the panel is blanked (`$80:C1CF`), one
+// picture is put up for good, and the thread sleeps `$7FFF` ticks at a time,
+// for ever:
+//
+//   $80:CE2A  somebody saved one, or the state is 6 or 14: back to the loop.
+//             Otherwise the state's end, if one is due
+//   $80:CE54  the panel side, by which player
+//   $80:CE5A  the picture, and the first long sleep
+//   $80:CE6B  ...and every one after
+#define LOST_CHECK_PC 0x80ce2au
+#define LOST_BACK_PC 0x80ce6du       // the `RTS` to the thread's loop
+#define LOST_ENDS_RETURN 0xce47u     // the `PEA` before a state's end
+#define LOST_HANDS_PC 0x80ce48u      // `JSR $ECFD`, where an end comes back
+#define LOST_PANEL_PC 0x80ce54u      // after `JSR $F354`
+#define LOST_PANEL_CALL_PC 0x80ce56u // `JSL $80:C1CF`, the player in A
+#define LOST_SHOWN_PC 0x80ce5au
+#define LOST_SLEEP_PC 0x80ce67u      // `JSL thread_yield`, `$7FFF` ticks
+#define LOST_AGAIN_PC 0x80ce6bu      // `BRA $CE64`
+#define LOST_PICTURES 0x80ce6eu      // a word for each of the two
+#define LOST_TICKS 0x7fff
+#define LOST_STATE_KEPT_A 0x0006
+#define LOST_STATE_KEPT_B 0x000e
+#define LOST_DP_STATE 0x70
 #define DEATH_FLASHING_FRAMES 0x0078
 #define DEATH_COLLIDE_ID 0x0038         // nothing can touch them
 #define W_PLAYER_LIVES 0x1d4cu          // a word a player
@@ -2670,6 +2701,14 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_DEATH_LIFE_KEPT, 0x80cec3, 0x80cec9, 0)  /* ...with three NOPs */ \
   X(TS_DEATH_SHOW, 0x80ceca, 0x80ced0, 0) \
   X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */ \
+  X(TS_LOST_SAVED, 0x80ce2a, 0x80ce32, 0)    /* LDA abs : ORA abs : BNE */ \
+  X(TS_LOST_STATE_A, 0x80ce32, 0x80ce39, 0)  /* LDA $70 : CMP # : BEQ */ \
+  X(TS_LOST_STATE_B, 0x80ce39, 0x80ce3e, 0)  /* CMP # : BEQ */ \
+  X(TS_LOST_ENDS_DUE, 0x80ce3e, 0x80ce42, 0) /* LDA $72 : BEQ */ \
+  X(TS_LOST_ENDS, 0x80ce42, 0x80ce47, 0)     /* PEA : DEC : PHA : RTS */ \
+  X(TS_LOST_PANEL, 0x80ce54, 0x80ce56, 0)    /* LDA $0E */ \
+  X(TS_LOST_SHOWN, 0x80ce5a, 0x80ce64, 0) \
+  X(TS_LOST_AGAIN, 0x80ce6b, 0x80ce6d, 1)    /* BRA, taken */ \
   X(TS_SPIDER_ENTER, 0x83b280, 0x83b28d, 0)  /* the JSR too */ \
   X(TS_SPIDER_MADE, 0x83b34a, 0x83b3a1, 0)   /* the JSL too */ \
   X(TS_HOVER_ENTER, 0x83b7f6, 0x83b802, 0)   /* to the JSL */ \
@@ -3146,6 +3185,10 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(death_shown, "$80:CE94", DEATH_SHOWN_PC, death_shown, DEATH, TS_NEEDS_DEATH) \
   X(death_still, "$80:CEAA", DEATH_STILL_PC, death_still, DEATH, TS_NEEDS_DEATH) \
   X(death_counted, "$80:CEC3", DEATH_COUNTED_PC, death_counted, DEATH, TS_NEEDS_DEATH) \
+  X(lost_check, "$80:CE2A", LOST_CHECK_PC, lost_check, LOST, TS_NEEDS_DEATH_ENDS) \
+  X(lost_panel, "$80:CE54", LOST_PANEL_PC, lost_panel, LOST, TS_NEEDS_NOTHING) \
+  X(lost_shown, "$80:CE5A", LOST_SHOWN_PC, lost_shown, LOST, TS_NEEDS_DEATH) \
+  X(lost_again, "$80:CE6B", LOST_AGAIN_PC, lost_again, LOST, TS_NEEDS_NOTHING) \
   X(argument_swipe, "$81:E8C1", 0x81e8c1u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_door_a, "$82:DF0A", 0x82df0au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_door_b, "$82:DF11", 0x82df11u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \

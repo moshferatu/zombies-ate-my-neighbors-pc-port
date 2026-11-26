@@ -3414,6 +3414,90 @@ void exit_door_paused(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k)
   exit_door_goes(c, k);
 }
 
+// --- a player with no neighbours left to save -----------------------------
+
+// `$80:CE2A`: back to the loop if somebody saved one or the state is one of
+// the two that keep going; otherwise the state's end, if one is due, which
+// comes back to `$CE48` as `$80:CE8B` is reached in a death.
+void lost_check(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, (uint16_t)(wram_r16(w, W_PLAYERS_RESCUED) |
+                    wram_r16(w, (uint16_t)(W_PLAYERS_RESCUED + 2))));
+  ran(k, TS_LOST_SAVED);
+  if (c->a != 0) {
+    PORT_COVER(lost_someone_saved);
+    ran(k, TS_TAKEN);
+    c->pc = LOST_BACK_PC;
+    return;
+  }
+  lda(c, page(w, c, LOST_DP_STATE));
+  cmp16(c, c->a, LOST_STATE_KEPT_A);
+  ran(k, TS_LOST_STATE_A);
+  if (c->a == LOST_STATE_KEPT_A) {
+    PORT_COVER(lost_state_kept);
+    ran(k, TS_TAKEN);
+    c->pc = LOST_BACK_PC;
+    return;
+  }
+  cmp16(c, c->a, LOST_STATE_KEPT_B);
+  ran(k, TS_LOST_STATE_B);
+  if (c->a == LOST_STATE_KEPT_B) {
+    PORT_COVER(lost_state_kept);
+    ran(k, TS_TAKEN);
+    c->pc = LOST_BACK_PC;
+    return;
+  }
+  const uint16_t ends_by = page(w, c, DEATH_DP_ENDS_BY);
+  lda(c, ends_by);
+  ran(k, TS_LOST_ENDS_DUE);
+  if (ends_by == 0) {
+    PORT_COVER(lost_no_end_due);
+    ran(k, TS_TAKEN);
+    c->pc = LOST_HANDS_PC;
+    return;
+  }
+  PORT_COVER(lost_state_ended);
+  push16(w, c, LOST_ENDS_RETURN);
+  lda(c, (uint16_t)(ends_by - 1));
+  push16(w, c, c->a);
+  pull16(w, c);
+  ran(k, TS_LOST_ENDS);
+  c->pc = (LOST_CHECK_PC & 0xff0000u) | ends_by;
+}
+
+// `$80:CE54  LDA $0E`, and the `JSL` that blanks that player's side.
+void lost_panel(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(lost_panel);
+  lda(c, page(w, c, DEATH_DP_PLAYER));
+  ran(k, TS_LOST_PANEL);
+  c->pc = LOST_PANEL_CALL_PC;
+}
+
+// `$80:CE5A`: the player's one picture, and the first sleep of many.
+void lost_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  PORT_COVER(lost_shown);
+  ldx(c, page(w, c, DEATH_DP_WHO));
+  ldy(c, page(w, c, DEATH_DP_RECORD));
+  lda(c, rom_word(rom, LOST_PICTURES + c->x));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  ran(k, TS_LOST_SHOWN);
+  lda(c, LOST_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = LOST_SLEEP_PC;
+}
+
+// `$80:CE6B  BRA $CE64`: and sleep again.
+void lost_again(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(lost_again);
+  ran(k, TS_LOST_AGAIN);
+  lda(c, LOST_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = LOST_SLEEP_PC;
+}
+
 // --- a player out ---------------------------------------------------------
 
 // `$80:F354`: the player's flag cleared, and a tick's sleep.

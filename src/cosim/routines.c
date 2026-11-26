@@ -10107,6 +10107,14 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_DEATH_LIFE_KEPT] = {28 + 3 * 12 + 12, 7, 1},
     [TS_DEATH_SHOW] = {96, 7, 2},
     [TS_DEATH_AGAIN] = {350, 32, 5},
+    [TS_LOST_SAVED] = {80, 8, 0},
+    [TS_LOST_STATE_A] = {58, 7, 1},
+    [TS_LOST_STATE_B] = {30, 5, 0},
+    [TS_LOST_ENDS_DUE] = {40, 4, 1},
+    [TS_LOST_ENDS] = {114, 6, 0},
+    [TS_LOST_PANEL] = {28, 2, 1},
+    [TS_LOST_SHOWN] = {132, 12, 2},
+    [TS_LOST_AGAIN] = {18, 2, 0},
     // A locked door's buzz, `--db=82`, and the slime's start, `--db=81`.
     [TS_DOOR_ASK] = {46, 5, 0},
     [TS_DOOR_BUZZ] = {74, 6, 0},
@@ -10587,6 +10595,10 @@ static const uint32_t TS_EXITS_CUT[] = {
 static const uint32_t TS_EXITS_DEATH[] = {
     DEATH_HANDS_PC, DEATH_SLEEP_PC, DEATH_PLAY_PC, DEATH_BACK_PC,
     DEATH_NONE_LEFT_PC,
+    // The ends of `DEATH_ENDS`.
+    0x80d97fu, 0x80da54u, 0x80db08u, 0x80dbdau, 0x80dc70u, 0x80f3a5u};
+static const uint32_t TS_EXITS_LOST[] = {
+    LOST_BACK_PC, LOST_HANDS_PC, LOST_PANEL_CALL_PC, LOST_SLEEP_PC,
     // The ends of `DEATH_ENDS`.
     0x80d97fu, 0x80da54u, 0x80db08u, 0x80dbdau, 0x80dc70u, 0x80f3a5u};
 static const uint32_t TS_EXITS_DOOR[] = {DOOR_BUZZ_SOUND_PC, DOOR_END_PC};
@@ -28302,7 +28314,13 @@ static bool accepts_boss_thread(const Wram* w, const CosimRegs* in) {
   for (uint16_t part = 0; part < 4; part += BOSS_PARTS_DP_STRIDE)
     if (wram_r16(w, (uint16_t)(in->d + BOSS_PARTS_DP_FIRST + part)) >= 0x1f00)
       return false;
-  return wram_r16(w, (uint16_t)(in->d + BOSS_DP_SPIT)) < 0x20 &&
+  if (wram_r16(w, (uint16_t)(in->d + BOSS_DP_SPIT)) >= 0x20) return false;
+  // The player it is after is read only by `$82:8E2D`, spitting at them:
+  // `$82:8CCE`, lining up, sets it before it reads it, and nothing else reads
+  // it. Until a first lining up it is whatever the page last held -- `$FFFF`
+  // on level 25 begun from the screen after level 21 -- and the states
+  // before then neither read nor mind it.
+  return in->pc != BOSS_SPITTING_PC ||
          wram_r16(w, (uint16_t)(in->d + BOSS_DP_PLAYER)) < 0x1f00;
 }
 

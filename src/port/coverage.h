@@ -951,7 +951,7 @@
   X(player_event,     "player_hurt",       "an event request in $50, handed to the ROM") \
   X(player_no_recovery, "player_hurt",     "$6A set, so the hit recovery count held") \
   X(player_recovered, "player_hurt",       "the hit recovery count ran out and was held at $FFFF") \
-  X(player_level_won, "player_won",        "no neighbours left, and the ROM ends the level") \
+  X(player_level_won, "player_won",        "no neighbours left: on to ts_lost_check") \
   X(player_died,      "player_dead",       "no health left, and the ROM has the player die") \
   X(player_out_show,  "player_out_show",   "a player with none left: the list of pictures, once more") \
   X(walk_twice_stopped, "player_walk", "...and a door stopped the first walk") \
@@ -2661,6 +2661,13 @@
   X(death_shown_a_list, "ts_death_shown", "...anyone else a list of pictures") \
   X(death_lives_left, "ts_death_counted", "a life gone and one left: health again, and flashing") \
   X(death_none_left, "ts_death_counted", "...or none left, which is the ROM's") \
+  X(lost_someone_saved, "ts_lost_check", "no neighbours left, but somebody saved one: back to the loop") \
+  X(lost_state_kept, "ts_lost_check", "...or none saved, in state 6 or 14: back too") \
+  X(lost_no_end_due, "ts_lost_check", "...or in another, with no end due") \
+  X(lost_state_ended, "ts_lost_check", "...or with one, which is called") \
+  X(lost_panel, "ts_lost_panel", "that player's side of the panel blanked") \
+  X(lost_shown, "ts_lost_shown", "their one picture, and the first long sleep") \
+  X(lost_again, "ts_lost_again", "...and every one after") \
   X(spider_no_room, "ts_spider_enter", "a spider begun with no room for it: the thread ends") \
   X(spider_entered, "ts_spider_enter", "...or with room, and a record asked for") \
   X(spider_made, "ts_spider_made", "its record, a draw of its way, and the first sleep") \

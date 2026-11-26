@@ -360,7 +360,7 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_HURT_RESET_RTS_PC 0x80d02cu
 #define PLAYER_HURT_RTS_PC 0x80d081u
 #define PLAYER_WON_RTS_PC 0x80ce6du
-#define PLAYER_WON_END_PC 0x80ce2au   // no neighbours left: the ROM's
+#define PLAYER_WON_END_PC 0x80ce2au   // no neighbours left: `ts_lost_check`
 #define PLAYER_DEAD_RTS_PC 0x80ce79u
 #define PLAYER_DEAD_END_PC 0x80ce7du  // no health left: `JSL`, the sound in A
 #define PLAYER_DEAD_SOUND 0x0008

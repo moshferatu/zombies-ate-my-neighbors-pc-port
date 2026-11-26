@@ -117,6 +117,10 @@
   X(80ce8b, "$80:CE8B", 0x80ce8bu) /* JSR $80:ECFD */ \
   X(80ce8e, "$80:CE8E", 0x80ce8eu) /* JSR $80:F366 */ \
   X(80ce91, "$80:CE91", 0x80ce91u) /* JSR $80:F36C */ \
+  X(80ce48, "$80:CE48", 0x80ce48u) /* JSR $80:ECFD, none saved */ \
+  X(80ce4b, "$80:CE4B", 0x80ce4bu) /* JSR $80:F366 */ \
+  X(80ce4e, "$80:CE4E", 0x80ce4eu) /* JSR $80:F36C */ \
+  X(80ce51, "$80:CE51", 0x80ce51u) /* JSR $80:F354 */ \
   X(80d081, "$80:D081", 0x80d081u) /* RTS */ \
   X(80d1db, "$80:D1DB", 0x80d1dbu) /* JMP $80:F382 */ \
   X(80d460, "$80:D460", 0x80d460u) /* RTS */ \

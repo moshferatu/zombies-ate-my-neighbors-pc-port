@@ -866,8 +866,9 @@ void player_hurt_call(Wram* w, PortCpu* c, BodyWork* k) {
   player_hurt(w, c, k);
 }
 
-// `$80:CE25  LDA $1D52 : BNE $CE6D`. With no neighbours left the level is
-// over, and ending it is the ROM's.
+// `$80:CE25  LDA $1D52 : BNE $CE6D`. With no neighbours left, what follows
+// is `ts_lost_check` (`port/thread_stretches.h`): unless somebody saved one,
+// the player stands for good.
 void player_won(Wram* w, PortCpu* c, BodyWork* k) {
   lda(c, wram_r16(w, W_NEIGHBOURS_LEFT));
   k->blocks[PBODY_WON]++;
