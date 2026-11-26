@@ -1798,6 +1798,7 @@
   X(player_leaves_ended, "ts_player_leaves", "...or with a routine that ends it, which is asked first") \
   X(player_gone_alone, "ts_player_gone", "out, with one record between the players: it is kept") \
   X(player_gone_let_go, "ts_player_gone", "...or with two: the player's is let go") \
+  X(player_gone_again, "ts_player_gone_again", "nine minutes on, the long sleep again") \
   X(monster_ends_pictured, "ts_monster_ends_shown", "the potion spent: the end's pictures, by the player") \
   X(monster_ends_shown, "ts_monster_ends_after", "...and after them, its words cleared") \
   X(player_frame_ghost, "player_frame", "...or slot 3's potion's") \

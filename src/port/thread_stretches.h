@@ -1723,6 +1723,7 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define PLAYER_LEFT_SLEEP_PC 0x80fb31u
 #define PLAYER_GONE_PC 0x80fb35u
 #define PLAYER_GONE_SLEEP_PC 0x80fb4cu
+#define PLAYER_GONE_AGAIN_PC 0x80fb50u  // `BRA`, after the sleep: 9 minutes on
 #define PLAYER_LOAD 0x001cu
 #define PLAYER_LEFT_PICTURE 0x9b89u
 #define PLAYER_LEFT_TICKS 0x0050u
@@ -3460,6 +3461,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(player_left_panel, "$80:FB18", PLAYER_LEFT_PANEL_PC, player_left_panel, LEAVES, TS_NEEDS_NOTHING) \
   X(player_left_shown, "$80:FB1E", PLAYER_LEFT_SHOWN_PC, player_left_shown, LEAVES, TS_NEEDS_RECORD) \
   X(player_gone, "$80:FB35", PLAYER_GONE_PC, player_gone, LEAVES, TS_NEEDS_NOTHING) \
+  X(player_gone_again, "$80:FB50", PLAYER_GONE_AGAIN_PC, player_gone_again, LEAVES, TS_NEEDS_NOTHING) \
   X(monster_ends, "$80:DA54", MONSTER_ENDS_PC, monster_ends, MONSTER, TS_NEEDS_NOTHING) \
   X(monster_ends_shown, "$80:DA5E", MONSTER_ENDS_PICTURED_PC, monster_ends_shown, MONSTER, TS_NEEDS_NOTHING) \
   X(monster_ends_after, "$80:DA67", MONSTER_ENDS_AFTER_PC, monster_ends_after, MONSTER, TS_NEEDS_NOTHING) \

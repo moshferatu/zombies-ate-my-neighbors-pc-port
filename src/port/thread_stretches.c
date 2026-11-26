@@ -7014,6 +7014,13 @@ void player_left_shown(Wram* w, const Rom* rom, PortCpu* c,
   c->pc = PLAYER_LEFT_SLEEP_PC;
 }
 
+// `LDA #$7FFF`, to the long sleep.
+static void player_gone_sleeps(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, PLAYER_GONE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = PLAYER_GONE_SLEEP_PC;
+}
+
 // `$80:FB35`: with a record for each player the two words differ from the
 // first alone, and the player's is let go. Then the long sleep.
 void player_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
@@ -7033,9 +7040,20 @@ void player_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
     wram_w16(w, (uint16_t)(W_PLAYER_RECORDS + c->x), c->a);
     ran(k, TS_GONE_CLEARED);
   }
-  lda(c, PLAYER_GONE_TICKS);
-  ran(k, TS_LDA_IMM);
-  c->pc = PLAYER_GONE_SLEEP_PC;
+  player_gone_sleeps(c, k);
+}
+
+// `$80:FB50`: `BRA`, and the long sleep again. A thread wakes here only after
+// 32,767 frames, nine minutes on, so only a two-player game played on that
+// long after one player went out by the exit brings it.
+void player_gone_again(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(player_gone_again);
+  ran(k, TS_BRANCH);
+  ran(k, TS_TAKEN);
+  player_gone_sleeps(c, k);
 }
 
 // `$80:DA54`: the monster ended. With its routine still at `$72` it is the
