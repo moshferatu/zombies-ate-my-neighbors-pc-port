@@ -24,6 +24,17 @@ How it plays:
     than `TOO_CLOSE` and off the line is walked away from, and so is anything
     close while there is nothing to shoot with. Something shot at for `FUTILE`
     frames without moving is let be.
+  * **Not being touched.** What hurts a player is what `$80:F7F7`'s table
+    sends to a hurt path (`TOUCH`), and turning to shoot one is a step towards
+    it: nearer than `HARD_CLOSE`, it is walked away from even when it is on a
+    line. A slime's glob (`DODGE`) is kept away from, since where it lands
+    holds a player fast; held fast (state `$0C` on the player's page), left
+    and right are shaken in turn, which `$80:D468` lets go of at the third.
+  * **A kit.** A player who got to level 30 by playing has more than a new
+    game's squirt gun. Unless `--no-kit`, every weapon and item is poked in
+    at `PLAY_FROM`, to the most the game lets anyone carry (what `--give-all`
+    gives); the pokes are written into the movie's comment, and a replay
+    (`zamn.exe`, `zamn_cosim verify`) wants them too.
   * **Arms.** Weapons lying on the ground (object types whose collide id,
     `$80:CA30`, is a weapon's, `$0C-$19`) are fetched before anything else
     while the ammo is low, and taken on the way when near. So are first-aid
@@ -86,10 +97,35 @@ W_ITEM = 0x1CC0          # the selected item
 KIT_SLOT = 7
 DOOR_ID = 0x37
 ATTR_SOLID = 0x0001
-ATTR_DOOR = 0x0040
-OPEN, WATER, DOOR, SOLID = range(4)
-COST = (1, 3, 40, None)  # a cell's steps: swimming is slow, a door spends a key
+# What the walk tests a tile ahead of an up or down step for (`$80:E8D3`,
+# `$80:E943`, `$80:E9B3`): a door a key opens, one a skeleton key opens, and
+# one that breaks open for anybody walking into it.
+ATTR_DOOR_MASK = 0x8B38
+ATTR_DOOR, ATTR_DOOR_B, ATTR_BREAKS = 0x0010, 0x8008, 0x0020
+OPEN, WATER, BREAKS, DOOR, BLAST, SOLID = range(6)
+# A cell's steps: swimming is slow, a door spends a key, a hedge a rocket.
+COST = (1, 3, 8, 40, 30, None)
+# What stops a bazooka's shot and is broken by it (`port/shot5.h`): bit 1 and
+# any of bits 4-6, and not bit 2, which stops it with nothing broken. Hedges
+# are `$2043`; a hedge's block opens to its pair as a door's does.
+BAZOOKA = 5
+BLAST_AHEAD = 6  # cells along the way a hedge is shot at from
 ATTR_WATER_MASK, ATTR_WATER = 0x8B39, 0x0101
+W_SKELETON_KEYS = 0x1D1E  # item slot 9, what `$80:E943` reads
+# The level as 8x8-tile blocks (`$80:ACF6`, `$80:AD0B`): a word a block, in
+# the bank at `$A8`, each block row at the offset `$7E:4228` gives; block n
+# is 64 tile words at n * 128 from the long pointer at `$AA`.
+W_BLOCK_ROWS = 0x4228
+BLOCK_MAP_BANK, BLOCK_LIB, BLOCK_BYTES = 0xA8, 0xAA, 128
+
+_roms = {}
+
+
+def _rom(path):
+    if path not in _roms:
+        with open(path, 'rb') as f:
+            _roms[path] = f.read()
+    return _roms[path]
 
 STEP = 4      # frames a choice is held
 CHECK = 240   # frames between checkpoints
@@ -105,6 +141,23 @@ FUTILE = 120     # frames of shooting at one thing that stays put, and it is let
 AIM_RANGE = 150  # pixels a shot is worth taking at
 AIM_SLACK = 10   # how far off the line still counts as on it
 TOO_CLOSE = 40   # nearer than this and not on a line: get away
+# The ids `$80:F7F7  JSR ($F808,X)` sends to a path that hurts: `$80:F950`
+# (3, 4, 9), `$80:F9BE` ($0A), `$80:F979` ($0B), `$80:F9AE` ($34, which holds
+# a player fast) and `$80:F999` ($35). Over the first survey's partial levels
+# id 3 was within 20 pixels of 528 of the 681 hits.
+TOUCH = {0x03, 0x04, 0x09, 0x0A, 0x0B, 0x34, 0x35}
+DODGE = {0x36}   # a slime's glob: where it comes down, a player is held fast
+DODGE_RANGE = 40
+HARD_CLOSE = 24  # a `TOUCH` this near is walked away from, on a line or not
+THREAD_PAGES = 0x0082DE  # bank $80: each thread's direct page, by slot
+ACTOR_THREAD = 0x0C      # a display record's thread slot, doubled
+DP_STATE = 0x70          # the player's state, on the player's page
+STATE_STUCK = 0x0C       # held fast: `$80:D465`
+W_WEAPONS_A, W_ITEMS_A = 0x1CCC, 0x1D0C
+ITEMS, ITEMS_UNUSED = 12, (6, 11)
+KIT_POKES = (['%d:%x=0999' % (PLAY_FROM, W_WEAPONS_A + 2 * s) for s in range(WEAPONS)] +
+             ['%d:%x=0099' % (PLAY_FROM, W_ITEMS_A + 2 * s) for s in range(ITEMS)
+              if s not in ITEMS_UNUSED])
 
 
 def bcd(v):
@@ -185,7 +238,8 @@ class Ram:
 class Level:
     """The tiles, as `$80:AE14` reads them, and which player boxes fit."""
 
-    def __init__(self, host):
+    def __init__(self, host, blast_ok=False):
+        self.blast_ok = blast_ok  # a bazooka with shots: hedges are a way
         zp = bytes.fromhex(host.cmd('peek 0 100')[0])
         self.stride = struct.unpack_from('<H', zp, 0xB2)[0]
         attrs = zp[0xBA] | zp[0xBB] << 8 | (zp[0xBC] & 1) << 16
@@ -204,8 +258,7 @@ class Level:
             size -= take
         self.map = struct.unpack('<%dH' % (self.rows * self.cols), raw)
         self.attrs = struct.unpack('<512H', bytes.fromhex(host.cmd('peek %x 400' % attrs)[0]))
-        self.key = hash(self.map)
-        # 0 open, 1 water (the player swims), 2 a locked door, 3 solid.
+        self.key = hash((self.map, blast_ok))
         tile = [[SOLID] * self.cols for _ in range(self.rows)]
         for r in range(self.rows):
             for c in range(self.cols):
@@ -215,14 +268,57 @@ class Level:
                     tile[r][c] = OPEN
                 elif a & ATTR_WATER_MASK == ATTR_WATER:
                     tile[r][c] = WATER
-                elif a & ATTR_DOOR:
+                elif a & ATTR_DOOR_MASK in (ATTR_DOOR, ATTR_DOOR_B):
                     tile[r][c] = DOOR
+                elif a & ATTR_DOOR_MASK == ATTR_BREAKS:
+                    tile[r][c] = BREAKS
+                elif a & 0x0002 and a & 0x0070 and not a & 0x0004:
+                    tile[r][c] = BLAST
+        self.doors_open(host, zp, tile)
         # A cell is the box at it, columns c..c+2 and rows r..r+1, and is the
         # worst of its six tiles.
         self.kind = [[max(tile[r + dy][c + dx] for dy in (0, 1) for dx in (0, 1, 2))
                       if r + 1 < self.rows and c + 2 < self.cols else SOLID
                       for c in range(self.cols)] for r in range(self.rows)]
         self.open = [[k <= WATER for k in row] for row in self.kind]
+
+    def doors_open(self, host, zp, tile):
+        """What a door leaves is not the door's tiles alone: it is drawn on a
+        wall several tiles thick, and opening it puts the next block of the
+        library over the whole 8x8-tile block it is in (`$80:E934  LDA [$28] :
+        ORA #$0001`, then `$80:AB5A`). So in a block with a door or a tile
+        that breaks, whatever that block opens up is the door."""
+        rom = _rom(host.rom_path)
+        bank = zp[BLOCK_MAP_BANK]
+        lib = zp[BLOCK_LIB] | zp[BLOCK_LIB + 1] << 8 | zp[BLOCK_LIB + 2] << 16
+        bcols, brows = self.cols // 8, self.rows // 8
+        if bank < 0x80 or lib >> 16 not in (0x7E, 0x7F) or not brows:
+            return
+        rows = struct.unpack('<%dH' % brows,
+                             bytes.fromhex(host.cmd('peek %x %x' % (W_BLOCK_ROWS, 2 * brows))[0]))
+        library = None
+        for br in range(brows):
+            for bc in range(bcols):
+                kinds = {tile[br * 8 + i][bc * 8 + j] for i in range(8) for j in range(8)}
+                kind = (DOOR if DOOR in kinds else BREAKS if BREAKS in kinds else
+                        BLAST if BLAST in kinds else None)
+                if kind is None:
+                    continue
+                at = (bank & 0x7F) * 0x8000 + rows[br] + 2 * bc - 0x8000
+                block = ((rom[at] | rom[at + 1] << 8) | 1) & 0x1FF
+                if library is None:
+                    raw = bytes.fromhex(host.cmd('peek %x %x' % (lib - 0x7E0000, BLOCK_BYTES * 256))[0])
+                    library = struct.unpack('<%dH' % (len(raw) // 2), raw)
+                if (block + 1) * 64 > len(library):
+                    continue
+                for i in range(64):
+                    a = self.attrs[library[block * 64 + i] & 0x3FF]
+                    r, c = br * 8 + i // 8, bc * 8 + i % 8
+                    if not a & ATTR_SOLID or a & ATTR_WATER_MASK == ATTR_WATER:
+                        if tile[r][c] == SOLID:
+                            tile[r][c] = kind
+                    elif tile[r][c] in (DOOR, BREAKS, BLAST):
+                        tile[r][c] = SOLID  # still wall once it is open
 
     @staticmethod
     def cell(x, y):
@@ -245,7 +341,7 @@ class Level:
         if not (0 <= r < self.rows and 0 <= c < self.cols):
             return False
         k = self.kind[r][c]
-        return k <= WATER or (doors and k == DOOR)
+        return k <= BREAKS or (doors and k == DOOR) or (self.blast_ok and k == BLAST)
 
     def flood(self, goal, doors=False):
         """Cost to `goal` from every cell that reaches it, eight ways and no
@@ -309,14 +405,29 @@ class Bot:
         self.aiming = None  # ((id, x, y), since)
         self.futile = set()
         self.shoot = False  # what `combat` said: something to fire at
+        self.urgent = False  # ...and that getting away comes before all else
+        self.blast = None  # the way to face to shoot a hedge on the way
         with open(host.rom_path, 'rb') as f:
-            self.pickup_ids = object_collide_ids(f.read())
+            rom = f.read()
+        self.pickup_ids = object_collide_ids(rom)
+        self.pages = struct.unpack_from('<24H', rom, THREAD_PAGES - 0x8000)
 
     def player(self, ram):
         rec = ram.w(W_PLAYER_A_RECORD)
         if not 0x185E <= rec < 0x185E + ACTOR_STRIDE * ACTORS:
             return None
         return ram.w(rec + 2), ram.w(rec + 6)
+
+    def stuck(self, ram):
+        """Held fast where a slime's glob came down."""
+        rec = ram.w(W_PLAYER_A_RECORD)
+        if not 0x185E <= rec < 0x185E + ACTOR_STRIDE * ACTORS:
+            return False
+        slot = ram.w(rec + ACTOR_THREAD)
+        if slot & 1 or slot >= 2 * len(self.pages):
+            return False
+        page = self.pages[slot // 2]
+        return 0x0100 <= page < 0x0C00 and ram.w(page + DP_STATE) == STATE_STUCK
 
     def actors(self, ram):
         out = []
@@ -345,15 +456,28 @@ class Bot:
         near = []
         self.shoot = False
         armed = self.ammo(ram) > 0
+        urgent = False  # something about to touch the player, or a glob
         for cid, x, y, _ in self.actors(ram):
-            if cid not in HOSTILE or (cid, x, y) in self.futile:
-                continue
             dx, dy = x - pos[0], y - pos[1]
             d = abs(dx) + abs(dy)
+            if cid in DODGE:
+                if d < DODGE_RANGE * 2:
+                    near.append((x, y))
+                if d < DODGE_RANGE:
+                    urgent = True
+                    if close is None or d < close[0]:
+                        close = (d, dx, dy)
+                continue
+            if cid in TOUCH and d < HARD_CLOSE:
+                urgent = True
+            if (cid not in HOSTILE and cid not in TOUCH) or (cid, x, y) in self.futile:
+                continue
             if d < TOO_CLOSE * 2:
                 near.append((x, y))
             if d < TOO_CLOSE and (close is None or d < close[0]):
                 close = (d, dx, dy)
+            if cid not in HOSTILE:
+                continue  # kept away from, never shot at
             if abs(dy) <= AIM_SLACK and abs(dx) <= AIM_RANGE:
                 face = RIGHT if dx > 0 else LEFT
             elif abs(dx) <= AIM_SLACK and abs(dy) <= AIM_RANGE:
@@ -362,7 +486,7 @@ class Bot:
                 continue
             if best is None or d < best[0]:
                 best = (d, face, (cid, x, y))
-        if best and (armed or not close):
+        if best and not urgent and (armed or not close):
             self.shoot = armed
             # The same thing in the same place, shot at for long enough, is
             # something the weapon does nothing to.
@@ -374,6 +498,7 @@ class Bot:
                 self.aiming = (target, self.h.frame)
             return best[1]
         self.aiming = None
+        self.urgent = urgent
         if close and self.level:
             # On top of the player, where everything is on a line and a shot
             # comes too late: away, to whichever open
@@ -414,9 +539,16 @@ class Bot:
         return self.lying(ram, lambda t: t == OBJECT_KEY)
 
     def arms_lying(self, ram):
-        return self.lying(ram, lambda t: self.pickup_ids.get(t) in WEAPON_IDS)
+        # Not a weapon there is nearly as much of as anybody may carry: the
+        # kit's are full, and `$80:F87B` would only keep them there.
+        def wanted(t):
+            cid = self.pickup_ids.get(t)
+            return cid in WEAPON_IDS and bcd(ram.w(W_AMMO + 2 * (cid - WEAPON_IDS[0]))) < 900
+        return self.lying(ram, wanted)
 
     def kits_lying(self, ram):
+        if bcd(ram.w(W_KITS)) >= 90:
+            return []
         return self.lying(ram, lambda t: self.pickup_ids.get(t) == KIT_ID)
 
     def goal(self, ram, pos):
@@ -461,7 +593,7 @@ class Bot:
         b = nearest(left, plain)
         if b:
             return 'neighbour %d' % b[1], (b[2], b[3]), False
-        keys = bcd(ram.w(W_KEYS))
+        keys = bcd(ram.w(W_KEYS)) + bcd(ram.w(W_SKELETON_KEYS))
         if keys:
             b = nearest(left, through)
             if b:
@@ -475,12 +607,14 @@ class Bot:
         return None, None, False
 
     def choose(self, ram, pos):
+        self.blast = None
         if self.level is None:
-            self.level = Level(self.h)
+            self.level = Level(self.h, bcd(ram.w(W_AMMO + 2 * BAZOOKA)) > 0)
         lv = self.level
         # Choosing floods the level twice, so it is done again only when
         # something it depends on changed, or a second has gone by.
-        why = (lv.key, bcd(ram.w(W_LEFT)), ram.w(W_KEYS), len(self.keys_lying(ram)),
+        why = (lv.key, bcd(ram.w(W_LEFT)), ram.w(W_KEYS), ram.w(W_SKELETON_KEYS),
+               len(self.keys_lying(ram)),
                len(self.arms_lying(ram)), len(self.kits_lying(ram)),
                any(cid == DOOR_ID for cid, *_ in self.actors(ram)))
         if (self.chosen is None or self.chosen[0] != why or
@@ -521,6 +655,29 @@ class Bot:
             if best is None:
                 break
             c = best[1]
+        # A hedge on the way a few cells on is shot at, square on: the
+        # bazooka's shot goes the way the player faces.
+        n = here
+        for _ in range(BLAST_AHEAD):
+            nxt = min(((dist[m], m) for m in
+                       ((n[0] + dc, n[1] + dr) for dc in (-1, 0, 1) for dr in (-1, 0, 1))
+                       if m in dist and dist[m] < dist[n]), default=None)
+            if nxt is None:
+                break
+            n = nxt[1]
+            if lv.kind[n[1]][n[0]] == BLAST:
+                dc, dr = n[0] - here[0], n[1] - here[1]
+                # The axis it is further along; on the other the player
+                # is lined up first.
+                if abs(dc) >= abs(dr):
+                    self.blast = RIGHT if dc > 0 else LEFT
+                    if dr:
+                        return pad_toward(0, dr), what
+                else:
+                    self.blast = DOWN if dr > 0 else UP
+                    if dc:
+                        return pad_toward(dc, 0), what
+                return self.blast, what
         return pad_toward(c[0] - here[0], c[1] - here[1]), what
 
 
@@ -662,10 +819,16 @@ def play_level(host, rng, log, max_frames):
             host.run(STEP, 0)
             continue
         none_since = None
+        if bot.stuck(ram):
+            # Held fast: shaken free, left and right in turn. Nothing else
+            # does anything, and it is not being stuck in the other sense.
+            stall_since = host.frame
+            host.run(STEP, LEFT if (host.frame // STEP) & 1 else RIGHT)
+            continue
         pad, what = bot.choose(ram, pos)
         last_goal = bot.last_goal
         aim = bot.combat(ram, pos)
-        if aim is not None and rng.random() < aggression:
+        if aim is not None and (bot.urgent or rng.random() < aggression):
             pad = aim
         if what != last_what:
             log('frame %d at %s: going to %s, %d left' % (host.frame, pos, what, left))
@@ -683,7 +846,7 @@ def play_level(host, rng, log, max_frames):
                 best_progress = d
                 stall_since = host.frame
         # A random wiggle now and then breaks the ties a wall makes.
-        if rng.random() < 0.05:
+        if rng.random() < 0.05 and not bot.urgent:
             pad = rng.choice([UP, DOWN, LEFT, RIGHT, UP | LEFT, UP | RIGHT,
                               DOWN | LEFT, DOWN | RIGHT])
         fire ^= 1
@@ -692,18 +855,55 @@ def play_level(host, rng, log, max_frames):
                 pad |= X  # the selected item is the first-aid kit
             elif host.frame % 32 < STEP:
                 pad |= A  # A steps through the items to it
-        # The selected weapon empty and another loaded: B changes it.
+        # The selected weapon empty and another loaded: B changes it. A hedge
+        # to shoot wants the bazooka, and nothing else does: its blast is
+        # not for the crowd round the neighbours.
         weapon = ram.w(W_WEAPON)
-        empty = weapon >= WEAPONS or not bcd(ram.w(W_AMMO + 2 * weapon))
-        if empty and bot.ammo(ram) and host.frame % 32 < STEP and not fire:
+        loaded = [bcd(ram.w(W_AMMO + 2 * i)) for i in range(WEAPONS)]
+        empty = weapon >= WEAPONS or not loaded[weapon]
+        want = None
+        if bot.blast is not None and loaded[BAZOOKA]:
+            want = BAZOOKA
+        elif weapon == BAZOOKA and any(loaded[:BAZOOKA] + loaded[BAZOOKA + 1:]):
+            want = next(i for i in range(WEAPONS) if i != BAZOOKA and loaded[i])
+        if want is not None and weapon != want and not fire:
+            pad |= B  # every other step, so that each is a press
+        elif empty and bot.ammo(ram) and host.frame % 32 < STEP and not fire:
             pad |= B
-        host.run(STEP, pad | (Y if fire and bot.shoot else 0))
+        blasting = bot.blast is not None and weapon == BAZOOKA and (pad & 0xF0) == bot.blast
+        host.run(STEP, pad | (Y if fire and (bot.shoot or blasting) else 0))
         if bot.level and host.frame % 60 < STEP:
             bot.level = None  # tiles change: doors open
         if host.frame - checkpoints[-1][1] >= CHECK:
             checkpoint(Ram(host))
     log('gave up on level %d at frame %d' % (start_level, host.frame))
     return False
+
+
+REPLAY = '# replay with:'
+
+
+def note_pokes(path, pokes):
+    """The pokes a replay wants, as comment lines under the first: a movie
+    line is read into 256 bytes (`src/analysis/movie.c`), so six a line."""
+    with open(path) as f:
+        lines = f.read().split('\n')
+    notes = [REPLAY + ''.join(' --poke ' + p for p in pokes[i:i + 6])
+             for i in range(0, len(pokes), 6)]
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines[:1] + notes + lines[1:]))
+
+
+def replay_pokes(path):
+    """What `note_pokes` wrote, as arguments for `zamn.exe` or `zamn_cosim`."""
+    out = []
+    with open(path) as f:
+        for line in f:
+            if not line.startswith('#'):
+                break
+            if line.startswith(REPLAY):
+                out += line[len(REPLAY):].split()
+    return out
 
 
 def main():
@@ -720,6 +920,8 @@ def main():
     ap.add_argument('--until', type=int, default=PLAY_FROM,
                     help="the frame to replay it to (the movie's last line)")
     ap.add_argument('--first', type=int, help='the level that movie ends on')
+    ap.add_argument('--no-kit', dest='kit', action='store_false',
+                    help="play with a new game's squirt gun, not every weapon and item")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rng = random.Random(a.seed)
@@ -727,8 +929,12 @@ def main():
     def log(s):
         print(s, flush=True)
 
+    pokes = ' '.join('--poke ' + p for p in KIT_POKES) if a.kit else ''
+    if pokes:
+        log('the kit, which a replay wants too: %s' % pokes)
     host = Host(os.path.abspath(a.rom), a.level,
-                a.start_from and os.path.abspath(a.start_from), a.until)
+                a.start_from and os.path.abspath(a.start_from), a.until,
+                pokes.split())
     try:
         first = a.first if a.first is not None else a.level
         for n in range(a.levels):
@@ -738,6 +944,8 @@ def main():
             path = os.path.abspath(os.path.join(a.out, name))
             host.write(path, 'tools/bot.py --level %d, seed %d; %s' % (
                 a.level, a.seed, 'finished level %d' % level if ok else 'gave up'))
+            if pokes:
+                note_pokes(path, KIT_POKES)
             log('wrote %s' % path)
             if not ok:
                 return 1
