@@ -24,10 +24,17 @@ How it plays:
   * **Walls.** A direction held for four steps without the player moving is
     a wall the plan did not see: the player slides along it, one way and
     then the other, and goes back to the plan.
-  * **Fighting.** An enemy (`HOSTILE`) on a line with the player, in range
+  * **Fighting.** An enemy (`HOSTILE`) on a line with the player -- across,
+    up and down or either diagonal, the eight ways a shot flies -- in range
     and with no wall between, is turned to and shot at, and fire is tapped
     only then: shots are ammo, and
-    a squirt gun fired at nothing is empty before level 1 is over. One nearer
+    a squirt gun fired at nothing is empty before level 1 is over. One
+    coming, within `ENGAGE` and off every line, is stepped onto a line with.
+    What it is is its thread's collision handler (`$7E:1300`), and that
+    chooses the weapon: a werewolf dies of `SILVER`'s first shot, a chainsaw
+    maniac is staggered and mostly killed by one rocket, anything else gets
+    the squirt gun, and the bazooka if it is still there after `ESCALATE`
+    frames of it. One nearer
     than `TOO_CLOSE` and off the line is walked away from, and so is anything
     close while there is nothing to shoot with. Something shot at for `FUTILE`
     frames without moving is let be.
@@ -38,13 +45,13 @@ How it plays:
     holds a player fast; held fast (state `$0C` on the player's page), left
     and right are shaken in turn, which `$80:D468` lets go of at the third.
   * **A kit.** A player who got to level 30 by playing has more than a new
-    game's squirt gun. Unless `--no-kit`, the squirt gun, the bazooka and
-    every item are poked in at `PLAY_FROM`, to the most the game lets anyone
-    carry; only two weapons, since B steps only forwards through the loaded
-    ones. The pokes are written into the movie's comment, and a replay
+    game's squirt gun. Unless `--no-kit`, the squirt gun, the bazooka,
+    `SILVER` and every item are poked in at `PLAY_FROM`, to the most the game
+    lets anyone carry; only three weapons, since B steps only forwards
+    through the loaded ones. The pokes are written into the movie's comment, and a replay
     (`zamn.exe`, `zamn_cosim verify`) wants them too.
   * **Hedges.** One on the way is shot with the bazooka once the player is
-    square in line with it, or it is the next step; one that ten rockets
+    square in line with it, or it is the next step; one that four rockets
     leave standing is planned round. The bazooka is kept up a few seconds
     after, since hedges come in rows.
   * **Arms.** Weapons lying on the ground (object types whose collide id,
@@ -124,6 +131,16 @@ COST = (1, 12, 8, 40, 30, None)
 # are `$2043`; a hedge's block opens to its pair as a door's does.
 BAZOOKA = 5
 BLAST_AHEAD = 6  # cells along the way a hedge is shot at from
+HEDGE_ROCKETS = 4  # rockets spent on a hedge still standing, and it is gone round
+# The bazooka's shot for player one, a pair a way (up, up-right, ... up-left
+# as 1-8): where it is first put from the player (`$81:EE23`, the side's
+# table at `$81:EDAF`) and its step a frame (`$81:EDFF`).
+SHOT5_MOUTH = [(0, 0), (0, -2), (6, -3), (8, -3), (18, 3), (0, 6), (-18, 3), (-4, -3), (-7, -3)]
+SHOT5_STEP = [(0, 0), (0, -4), (2, -2), (3, 0), (2, 2), (0, 3), (-2, 2), (-4, 0), (-2, -2)]
+ROCKET_FRAMES = 64  # as far as a rocket is followed
+FACE_WAY = {UP: 1, UP | RIGHT: 2, RIGHT: 3, DOWN | RIGHT: 4, DOWN: 5,
+            DOWN | LEFT: 6, LEFT: 7, UP | LEFT: 8}
+NUDGE = 16  # pixels across its way a player steps to put a rocket on a hedge
 ATTR_WATER_MASK, ATTR_WATER = 0x8B39, 0x0101
 W_SKELETON_KEYS = 0x1D1E  # item slot 9, what `$80:E943` reads
 # The level as 8x8-tile blocks (`$80:ACF6`, `$80:AD0B`): a word a block, in
@@ -155,6 +172,23 @@ FUTILE = 120     # frames of shooting at one thing that stays put, and it is let
 AIM_RANGE = 150  # pixels a shot is worth taking at
 AIM_SLACK = 10   # how far off the line still counts as on it
 TOO_CLOSE = 40   # nearer than this and not on a line: get away
+# A shot flies along one of eight ways (`SQUIRT_FACING_MAX`, 16 = 8 facings
+# doubled); a diagonal one needs a little more slack and goes less far.
+DIAG_SLACK = 12
+DIAG_RANGE = 110
+ENGAGE = 110     # an enemy this near and off every line is lined up with
+LINE_STEP = 6    # about how far a player walks in a step, to judge one by
+# Who handles a creature's collisions names it: the far address its thread
+# gave `$80:8475`, kept at `$7E:1300` (bank at `$1330`) by the doubled slot.
+W_THREAD_HANDLER = 0x1300
+WEREWOLF = 0x81AC92   # `$81:ACA8  CMP #$0067 : BEQ`: shot id $67 kills it outright
+SILVER = 0x67 - 0x5C  # the weapon slot that fires id $67 (weapon = $5C + slot)
+TOUGH = {0x81990B, 0x8196E4}  # the chainsaw maniac, and while it spins
+# Neighbours (`$83:A364`, `$83:A264`) and records with no thread handler
+# share the enemies' collide id, but are not to be gone out of the way for.
+NEIGHBOURS = {0x83A364, 0x83A264}
+NOT_FOUGHT = {None, 0} | NEIGHBOURS
+ESCALATE = 60    # frames of the squirt gun at one thing alive, and the bazooka
 # The ids `$80:F7F7  JSR ($F808,X)` sends to a path that hurts: `$80:F950`
 # (3, 4, 9), `$80:F9BE` ($0A), `$80:F979` ($0B), `$80:F9AE` ($34, which holds
 # a player fast) and `$80:F999` ($35). Over the first survey's partial levels
@@ -169,9 +203,10 @@ DP_STATE = 0x70          # the player's state, on the player's page
 STATE_STUCK = 0x0C       # held fast: `$80:D465`
 W_WEAPONS_A, W_ITEMS_A = 0x1CCC, 0x1D0C
 ITEMS, ITEMS_UNUSED = 12, (6, 11)
-# Only the squirt gun and the bazooka: B steps only forwards through what has
-# shots (`$80:EA63`), so with two loaded a change is one press, not up to 13.
-KIT_WEAPONS = (0, BAZOOKA)
+# The squirt gun, the bazooka and what werewolves die of, and no more: B steps
+# only forwards through what has shots (`$80:EA63`), so with three loaded a
+# change is one press or two, not up to 13.
+KIT_WEAPONS = (0, BAZOOKA, SILVER)
 KIT_POKES = (['%d:%x=0999' % (PLAY_FROM, W_WEAPONS_A + 2 * s) for s in KIT_WEAPONS] +
              ['%d:%x=0099' % (PLAY_FROM, W_ITEMS_A + 2 * s) for s in range(ITEMS)
               if s not in ITEMS_UNUSED])
@@ -233,7 +268,7 @@ class Host:
 class Ram:
     """The parts of WRAM a step reads, fetched in one round trip."""
 
-    RANGES = [(0x0000, 0x0100), (0x0100, 0x0C00), (0x185E, 0x0280),
+    RANGES = [(0x0000, 0x0100), (0x0100, 0x0C00), (0x1300, 0x0060), (0x185E, 0x0280),
               (0x1C00, 0x0400), (0x6000, 0x0E40)]  # 0x1EC4.. and 0x6D02.. inside
 
     def __init__(self, host):
@@ -364,6 +399,56 @@ class Level:
                 return True
         return False
 
+    def attr(self, x, y):
+        """The attributes of the tile under a pixel, as `$80:AF2D` finds it."""
+        c, r = x >> 3, y >> 3
+        if not (0 <= r < self.rows and 0 <= c < self.cols):
+            return None
+        i = self.map[r * self.cols + c] & 0x3FF
+        return self.attrs[i] if i < 512 else ATTR_SOLID
+
+    def rocket(self, pos, face):
+        """Where a rocket fired from `pos` facing `face` breaks a tile, as
+        `port/shot5.h` flies it: tested first where the player stands, then
+        from the mouth of the weapon, a step a frame. A tile with bit 2 (or
+        the level's edge) stops it with nothing broken, bit 1 with any of bits
+        4-6 is broken, bit 1 alone is flown over for sixty frames at most.
+        The tile's (column, row), or None."""
+        way = FACE_WAY[face]
+        a = self.attr(pos[0], pos[1])
+        if a is None or a & 0x0004:
+            return None
+        mx, my = SHOT5_MOUTH[way]
+        sx, sy = SHOT5_STEP[way]
+        x, y = pos[0] + mx, pos[1] - 2 + my
+        over = 60
+        for _ in range(ROCKET_FRAMES):
+            x, y = x + sx, y + sy
+            a = self.attr(x, y)
+            if a is None or a & 0x0004:
+                return None
+            if a & 0x0002:
+                if a & 0x0070:
+                    return x >> 3, y >> 3
+                over -= 1
+                if not over:
+                    return None
+        return None
+
+    def clear_line(self, frm, to):
+        """`clear_shot`, and on a diagonal: no wall tile under the line from
+        the middle of the player's box to the thing, a point every 4 pixels."""
+        dx, dy = to[0] - frm[0], to[1] - frm[1]
+        if min(abs(dx), abs(dy)) <= AIM_SLACK:
+            return self.clear_shot(frm, to)
+        n = max(abs(dx), abs(dy)) // 4
+        for i in range(1, n):
+            x, y = frm[0] + 3 + dx * i // n, frm[1] + dy * i // n
+            r, c = y >> 3, x >> 3
+            if not (0 <= r < self.rows and 0 <= c < self.cols) or self.wall[r][c]:
+                return False
+        return True
+
     def is_open(self, c, r):
         return 0 <= r < self.rows and 0 <= c < self.cols and self.open[r][c]
 
@@ -453,6 +538,9 @@ class Bot:
         self.blast_cell = None  # ...and the hedge's cell
         self.blast_shots = {}  # shots at each hedge cell
         self.no_blast = set()  # hedge cells shot at to no effect
+        self.engaged = None  # (thread slot, since): what is being fought
+        self.want = None  # the weapon for it
+        self.kinds_seen = set()
         with open(host.rom_path, 'rb') as f:
             rom = f.read()
         self.pickup_ids = object_collide_ids(rom)
@@ -494,16 +582,66 @@ class Bot:
             out.append((i, x, y))
         return out
 
+    def kind(self, ram, rec):
+        """What a display record is: the far address its thread's collisions
+        go to (`$80:8475`), and the thread slot, doubled; (None, None) for a
+        record with no thread."""
+        slot = ram.w(rec + ACTOR_THREAD)
+        if slot & 1 or slot >= 2 * len(self.pages):
+            return None, None
+        return ram.w(W_THREAD_HANDLER + slot) | ram.b(W_THREAD_HANDLER + 0x30 + slot) << 16, slot
+
+    @staticmethod
+    def line(dx, dy):
+        """The way to face to shoot something `dx, dy` off, if it is on one
+        of the eight lines a shot flies along and in range; else None."""
+        ax, ay = abs(dx), abs(dy)
+        if ay <= AIM_SLACK and ax <= AIM_RANGE:
+            return RIGHT if dx > 0 else LEFT
+        if ax <= AIM_SLACK and ay <= AIM_RANGE:
+            return DOWN if dy > 0 else UP
+        if abs(ax - ay) <= DIAG_SLACK and max(ax, ay) <= DIAG_RANGE:
+            return pad_toward(dx, dy)
+        return None
+
+    @staticmethod
+    def off_line(dx, dy):
+        """How far something is from the nearest of the eight lines."""
+        ax, ay = abs(dx), abs(dy)
+        return min(ax, ay, abs(ax - ay) * 0.7)
+
+    def weapon_for(self, kind, slot, loaded):
+        """The weapon a creature is best shot with, by what its handler does
+        with each shot id: a werewolf's (`$81:ACA8`) dies of `SILVER`'s
+        outright, a chainsaw maniac's takes every shot off a stagger meter
+        of 15 as well as its health, so the bazooka's 20 a shot both stops it
+        and is most of it; and anything else that the squirt gun's one a
+        shot has not killed in `ESCALATE` frames gets the bazooka too."""
+        if kind == WEREWOLF and loaded[SILVER]:
+            return SILVER
+        if loaded[BAZOOKA] and (kind in TOUGH or (
+                self.engaged and self.engaged[0] == slot and
+                self.h.frame - self.engaged[1] >= ESCALATE)):
+            return BAZOOKA
+        for w in (0, SILVER, BAZOOKA):
+            if loaded[w]:
+                return w
+        return None
+
     def combat(self, ram, pos):
-        """A pad that faces the nearest enemy on a line with the player, or
-        steps out of the way of one too close; None when nothing calls for it."""
+        """A pad that faces the nearest enemy on a line with the player,
+        steps onto a line with one coming, or steps out of the way of one too
+        close; None when nothing calls for it. Says in `self.want` which
+        weapon what it is after is best shot with."""
         best = None
         close = None
         near = []
+        chase = None  # the nearest enemy worth lining up with
         self.shoot = False
         armed = self.ammo(ram) > 0
+        loaded = [bcd(ram.w(W_AMMO + 2 * i)) for i in range(WEAPONS)]
         urgent = False  # something about to touch the player, or a glob
-        for cid, x, y, _ in self.actors(ram):
+        for cid, x, y, rec in self.actors(ram):
             dx, dy = x - pos[0], y - pos[1]
             d = abs(dx) + abs(dy)
             if cid in DODGE:
@@ -524,18 +662,25 @@ class Bot:
                 close = (d, dx, dy)
             if cid not in HOSTILE:
                 continue  # kept away from, never shot at
-            if abs(dy) <= AIM_SLACK and abs(dx) <= AIM_RANGE:
-                face = RIGHT if dx > 0 else LEFT
-            elif abs(dx) <= AIM_SLACK and abs(dy) <= AIM_RANGE:
-                face = DOWN if dy > 0 else UP
-            else:
+            kind, slot = self.kind(ram, rec)
+            if kind not in self.kinds_seen:
+                self.kinds_seen.add(kind)
+                self.log('frame %d: an enemy handled at %06X, id %02X' % (self.h.frame, kind or 0, cid))
+            if kind in NEIGHBOURS:
                 continue
+            face = self.line(dx, dy)
             # Behind a wall it is out of reach of a shot, and facing it is
             # walking into the wall.
-            if self.level and not self.level.clear_shot(pos, (x, y)):
+            if face is not None and self.level and not self.level.clear_line(pos, (x, y)):
+                face = None
+            if face is None:
+                if d < ENGAGE and kind not in NOT_FOUGHT and (chase is None or d < chase[0]):
+                    chase = (d, dx, dy, kind, slot)
                 continue
             if best is None or d < best[0]:
-                best = (d, face, (cid, x, y))
+                best = (d, face, (cid, x, y), kind, slot)
+        self.urgent = urgent
+        self.want = None
         if best and not urgent and (armed or not close):
             self.shoot = armed
             # The same thing in the same place, shot at for long enough, is
@@ -546,9 +691,33 @@ class Bot:
                     self.futile.add(target)
             else:
                 self.aiming = (target, self.h.frame)
+            self.engage(best[4])
+            self.want = self.weapon_for(best[3], best[4], loaded)
             return best[1]
         self.aiming = None
-        self.urgent = urgent
+        if chase and armed and not close and self.level:
+            # Coming, and off every line: a step that puts it on one, without
+            # going nearer than is safe, and the weapon for it got ready.
+            d0, dx, dy, kind, slot = chase
+            err0 = self.off_line(dx, dy)
+            here = (pos[0], pos[1])
+            pick = None
+            for dc in (-1, 0, 1):
+                for dr in (-1, 0, 1):
+                    if not dc and not dr:
+                        continue
+                    nx, ny = here[0] + LINE_STEP * dc, here[1] + LINE_STEP * dr
+                    if not self.level.is_open(*Level.cell(nx, ny)):
+                        continue
+                    ex, ey = dx - (nx - here[0]), dy - (ny - here[1])
+                    nd = abs(ex) + abs(ey)
+                    score = self.off_line(ex, ey) + (60 if nd < TOO_CLOSE + 8 else 0)
+                    if pick is None or score < pick[0]:
+                        pick = (score, pad_toward(dc, dr))
+            if pick and pick[0] < err0:
+                self.engage(slot)
+                self.want = self.weapon_for(kind, slot, loaded)
+                return pick[1]
         if close and self.level:
             # On top of the player, where everything is on a line and a shot
             # comes too late: away, to whichever open
@@ -568,6 +737,12 @@ class Bot:
                 self.shoot = armed
                 return best_way[1]
         return None
+
+    def engage(self, slot):
+        """Note what is being fought, and since when: the same thread, for
+        whichever of its records."""
+        if not self.engaged or self.engaged[0] != slot:
+            self.engaged = (slot, self.h.frame)
 
     def ammo(self, ram):
         """Shots left, all weapons together."""
@@ -756,7 +931,24 @@ class Bot:
             else:
                 break  # not yet in line: walk on
             self.blast_cell = n
-            return self.blast, what
+            if lv.rocket(pos, self.blast):
+                return self.blast, what
+            # From here the rocket strikes a tile that does not break (a
+            # hedge is often a few hedge tiles in a wall that is not): a
+            # step across its way to where one would break something, or,
+            # with none near, the hedge is gone round.
+            face, self.blast = self.blast, None
+            across = (1, 0) if face & (UP | DOWN) else (0, 1)
+            for off in sorted(range(-NUDGE, NUDGE + 1), key=abs):
+                p = (pos[0] + across[0] * off, pos[1] + across[1] * off)
+                if off and lv.is_open(*Level.cell(*p)) and lv.rocket(p, face):
+                    return pad_toward(across[0] * off, across[1] * off), what
+            self.no_blast.add(n)
+            self.log('frame %d: no rocket from near %s breaks the hedge at %s; gone round'
+                     % (self.h.frame, pos, n))
+            self.level = None
+            self.plan = None
+            break
         return pad_toward(c[0] - here[0], c[1] - here[1]), what
 
 
@@ -804,7 +996,8 @@ def play_level(host, rng, log, max_frames):
     aggression = 0.9  # how often a shot on a line beats walking on
     last_pos = last_dir = None
     pushed = slides = slide_left = slide = slid = 0
-    bazooka_until = 0  # the bazooka is kept up till then once taken
+    held = (None, 0)  # a weapon taken for something is kept up till then
+    fired_at = None  # (hedge cell, rockets) when fire was pressed at a hedge
     while host.frame - begin < max_frames and steps < max_frames:
         steps += 1
         ram = Ram(host)
@@ -968,38 +1161,48 @@ def play_level(host, rng, log, max_frames):
             elif host.frame % 32 < STEP:
                 pad |= A  # A steps through the items to it
         # The selected weapon empty and another loaded: B changes it. A hedge
-        # to shoot wants the bazooka, and nothing else does: its blast is
-        # not for the crowd round the neighbours.
+        # to shoot wants the bazooka, an enemy what `combat` says it is best
+        # shot with, and anything else the squirt gun, its shots cheapest.
         weapon = ram.w(W_WEAPON)
         loaded = [bcd(ram.w(W_AMMO + 2 * i)) for i in range(WEAPONS)]
         empty = weapon >= WEAPONS or not loaded[weapon]
         want = None
         if bot.blast is not None and loaded[BAZOOKA]:
             want = BAZOOKA
-            bazooka_until = host.frame + 240
-        elif weapon == BAZOOKA and host.frame < bazooka_until:
-            want = BAZOOKA  # hedges come in rows: not put away at once
-        elif weapon == BAZOOKA and any(loaded[:BAZOOKA] + loaded[BAZOOKA + 1:]):
-            want = next(i for i in range(WEAPONS) if i != BAZOOKA and loaded[i])
+            held = (BAZOOKA, host.frame + 240)
+        elif aim is not None and bot.want is not None:
+            want = bot.want
+            held = (want, host.frame + 120)
+        elif weapon == held[0] and host.frame < held[1]:
+            want = weapon  # hedges come in rows, werewolves in packs: not put away at once
+        elif weapon != 0 and weapon < WEAPONS and loaded[0]:
+            want = 0
         if want is not None and weapon != want and not fire:
             pad |= B  # every other step, so that each is a press
         elif empty and bot.ammo(ram) and host.frame % 32 < STEP and not fire:
             pad |= B
         blasting = bot.blast is not None and weapon == BAZOOKA and (pad & 0xF0) == bot.blast
+        # A rocket is counted when one is spent: fire held while the last is
+        # still in the air spends nothing.
+        if fired_at and loaded[BAZOOKA] < fired_at[1]:
+            hit = fired_at[0]
+            n = bot.blast_shots[hit] = bot.blast_shots.get(hit, 0) + 1
+        else:
+            n = 0
+        fired_at = (bot.blast_cell, loaded[BAZOOKA]) if blasting and fire else None
         host.run(STEP, pad | (Y if fire and (bot.shoot or blasting) else 0))
-        if blasting and fire:
-            # A hedge that ten rockets leave standing is not one: what is
-            # round it is planned round from now on.
-            n = bot.blast_shots[bot.blast_cell] = bot.blast_shots.get(bot.blast_cell, 0) + 1
-            if n >= 10 and bot.level:
-                c0, r0 = bot.blast_cell
+        if n >= HEDGE_ROCKETS:
+            # A hedge that so many rockets leave standing is not one: what
+            # is round it is planned round from now on.
+            if bot.level:
+                c0, r0 = hit
                 for r in range(r0 - 3, r0 + 4):
                     for c in range(c0 - 3, c0 + 4):
                         if 0 <= r < bot.level.rows and 0 <= c < bot.level.cols and \
                                 bot.level.kind[r][c] == BLAST:
                             bot.no_blast.add((c, r))
-                log('frame %d: the hedge at %s stands after %d shots; gone round' %
-                    (host.frame, bot.blast_cell, n))
+                log('frame %d: the hedge at %s stands after %d rockets; gone round' %
+                    (host.frame, hit, n))
                 bot.level = None
         if bot.level and host.frame % 60 < STEP:
             bot.level = None  # tiles change: doors open
