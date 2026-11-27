@@ -381,19 +381,29 @@ void vram_send_job(Wram* w, PortCpu* c, HwTrace* t) {
   set_c(c, true);
 }
 
-void mosaic_job(Wram* w, PortCpu* c, HwTrace* t) {
-  PORT_COVER(mosaic_job);
-  // `AND #$1E : ASL : ASL : ASL : ORA #$01`, a byte wide: the size is the
-  // register's top nibble, and bit 0 puts it on BG1. The tail is the scroll
-  // shadow's again.
-  const uint16_t word = wram_r16(w, W_MOSAIC_SIZE);
+// `AND #$1E : ASL : ASL : ASL : ORA #$01`, a byte wide, of the word at `at`:
+// the size is the register's top nibble, and bit 0 puts it on BG1. The tail
+// is the scroll shadow's again.
+static void mosaic_from(Wram* w, PortCpu* c, HwTrace* t, uint16_t at,
+                        int head) {
+  const uint16_t word = wram_r16(w, at);
   const uint8_t mosaic = (uint8_t)(((word & 0x1eu) << 3) | 0x01u);
   c->a = (uint16_t)((word & 0xff00u) | mosaic);
   set_nz8(c, mosaic);
-  hw_run(t, MZ_HEAD);
+  hw_run(t, head);
   hw_w8(t, 0x2106, mosaic);
   hw_run(t, SS_TAIL);
   set_c(c, false);
+}
+
+void mosaic_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(mosaic_job);
+  mosaic_from(w, c, t, W_MOSAIC_SIZE, MZ_HEAD);
+}
+
+void boss_mosaic_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(boss_mosaic_job);
+  mosaic_from(w, c, t, W_SCHED_TICK, MT_HEAD);
 }
 
 void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t) {

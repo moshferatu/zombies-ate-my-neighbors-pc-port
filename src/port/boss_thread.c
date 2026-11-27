@@ -862,12 +862,175 @@ static uint32_t turn(Boss* b) {
   return state_goes(b);
 }
 
+static uint32_t spits(Boss* b);
+
+// `$80:8475`, called from `$82:95A4`: from now on nobody is told of its hits.
+// A and Y are the handler and its bank; X is left at the thread's slot, and A
+// at the bank.
+static void handler_set(Boss* b) {
+  PortCpu* c = b->c;
+  ran(b, BOSS_RUN_95A4);
+  jsl(b, 0x95a4);
+  const uint16_t slot = wram_r16(b->w, W_SCHED_CUR_TASK);
+  c->x = slot;
+  wram_w16(b->w, (uint16_t)(W_THREAD_HANDLER + slot), c->a);
+  lda(b, c->y);
+  wram_w16(b->w, (uint16_t)(W_THREAD_HANDLER_BANK + slot), c->a);
+  ran(b, BOSS_RUN_8475);
+  rtl(b);
+}
+
+// `$82:95B7` on: the first of its four parts, to be freed.
+static uint32_t scored(Boss* b) {
+  lda(b, field(b, BOSS_DP_PARTS));
+  ran(b, BOSS_RUN_95B7);
+  return BOSS_PART_FREE_A_PC;
+}
+
+// `$82:95A0`, `$3A` set: it dies. While a spit of its is out it goes on
+// moving them, and comes back here when it wakes; then the one who landed the
+// last blow is paid, if a player did.
+static uint32_t dies(Boss* b) {
+  PortCpu* c = b->c;
+  lda(b, 0);
+  ldy(b, 0);
+  ran(b, BOSS_RUN_95A0);
+  handler_set(b);
+  lda(b, field(b, BOSS_DP_SPITS));
+  ran(b, BOSS_RUN_95A8);
+  if (took(b, c->a != 0)) {
+    PORT_COVER(boss_dies_spits_out);
+    return spits(b);
+  }
+  ldx(b, BOSS_AWARD);
+  lda(b, field(b, BOSS_DP_SCORED));
+  ran(b, BOSS_RUN_95AC);
+  if (took(b, c->a == 0)) {
+    PORT_COVER(boss_dies_unpaid);
+    return scored(b);
+  }
+  PORT_COVER(boss_dies_paid);
+  return BOSS_SCORE_PC;
+}
+
 // `$82:959C`.
 static uint32_t wakes(Boss* b) {
   lda(b, field(b, BOSS_DP_DEAD));
   ran(b, BOSS_RUN_959C);
-  if (!took(b, b->c->a == 0)) return BOSS_DIES_PC;
+  if (!took(b, b->c->a == 0)) return dies(b);
   return turn(b);
+}
+
+// `$82:95BD`, `$82:95C3` and `$82:95C9`: the next of its parts.
+static uint32_t part_freed_a(Boss* b) {
+  lda(b, field(b, BOSS_DP_PARTS + 2));
+  ran(b, BOSS_RUN_95BD);
+  return BOSS_PART_FREE_B_PC;
+}
+
+static uint32_t part_freed_b(Boss* b) {
+  lda(b, field(b, BOSS_DP_PARTS + 4));
+  ran(b, BOSS_RUN_95C3);
+  return BOSS_PART_FREE_C_PC;
+}
+
+static uint32_t part_freed_c(Boss* b) {
+  lda(b, field(b, BOSS_DP_PARTS + 6));
+  ran(b, BOSS_RUN_95C9);
+  return BOSS_PART_FREE_D_PC;
+}
+
+// `$82:95CF`: two frames' sleep.
+static uint32_t death_waits(Boss* b) {
+  lda(b, BOSS_FLASH_SLEEP);
+  ran(b, BOSS_RUN_95CF);
+  return BOSS_DEATH_SLEEP_PC;
+}
+
+// `$82:95E3`: the mosaic queued for the frame's end.
+static uint32_t flash(Boss* b) {
+  lda(b, BOSS_JOB_MOSAIC);
+  ldy(b, BOSS_THREAD_BANK);
+  ran(b, BOSS_RUN_95E3);
+  return BOSS_FLASH_QUEUE_PC;
+}
+
+// `$82:95D6`: on until a tick with none of bits 1-4, and then the flashes.
+static uint32_t death_woke(Boss* b) {
+  PortCpu* c = b->c;
+  lda(b, wram_r16(b->w, W_SCHED_TICK) & BOSS_DEATH_TICK_MASK);
+  ran(b, BOSS_RUN_95D6);
+  if (took(b, c->a != 0)) {
+    PORT_COVER(boss_death_waits);
+    return death_waits(b);
+  }
+  PORT_COVER(boss_death_flashes);
+  lda(b, BOSS_FLASHES);
+  set_field(b, BOSS_DP_FLASHES_LEFT, c->a);
+  ran(b, BOSS_RUN_95DE);
+  return flash(b);
+}
+
+// `$82:95ED`: two frames between flashes.
+static uint32_t flash_queued(Boss* b) {
+  lda(b, BOSS_FLASH_SLEEP);
+  ran(b, BOSS_RUN_95ED);
+  return BOSS_FLASH_SLEEP_PC;
+}
+
+// `$82:95F4`: the next flash, or its plane cleared after the last.
+static uint32_t flash_slept(Boss* b) {
+  const uint16_t left = count_down(b, BOSS_DP_FLASHES_LEFT);
+  ran(b, BOSS_RUN_95F4);
+  if (took(b, left != 0)) return flash(b);
+  PORT_COVER(boss_flashes_over);
+  return BOSS_PLANE_CLEAR_PC;
+}
+
+// `$82:95FC`: a neighbour begun where it stood, which `thread_spawn` reads
+// at `$00` and `$02` (where a spit starts, the rest of the time), with
+// nothing at `$06`.
+static uint32_t plane_cleared(Boss* b) {
+  set_field(b, BOSS_DP_SPIT_FROM_X, boss_x(b));
+  set_field(b, BOSS_DP_SPIT_FROM_Y, boss_y(b));
+  set_field(b, BOSS_DP_SPAWN_ARG, 0xffffu);
+  lda(b, BOSS_NEIGHBOUR_ENTRY);
+  ldy(b, BOSS_NEIGHBOUR_BANK);
+  ran(b, BOSS_RUN_95FC);
+  return BOSS_NEIGHBOUR_PC;
+}
+
+// `$82:9615`: counted, and what it leaves put in the level's list two pixels
+// right of where it stood and four down.
+static uint32_t neighbour_begun(Boss* b) {
+  PortCpu* c = b->c;
+  const uint16_t n = (uint16_t)(wram_r16(b->w, W_BOSS_DEATH_COUNT) + 1);
+  wram_w16(b->w, W_BOSS_DEATH_COUNT, n);
+  ldx(b, (uint16_t)(boss_x(b) + 2));
+  lda(b, boss_y(b));
+  ldy(b, add(b, c->a, 4));
+  lda(b, BOSS_LEAVES);
+  ran(b, BOSS_RUN_9615);
+  return BOSS_PUT_DOWN_CALL_PC;
+}
+
+// `$82:962D`: the mosaic off, at the frame's end.
+static uint32_t put_down(Boss* b) {
+  lda(b, BOSS_JOB_MOSAIC_OFF);
+  ldy(b, BOSS_THREAD_BANK);
+  ran(b, BOSS_RUN_962D);
+  return BOSS_MOSAIC_OFF_PC;
+}
+
+// `$82:9637`: its `$28` off the level's load, and the thread's `RTL`. Where
+// the load goes negative the ROM spins on its `BMI` for good; the harness
+// refuses that.
+static uint32_t mosaic_off_queued(Boss* b) {
+  PORT_COVER(boss_dead);
+  const uint16_t load = sub(b, wram_r16(b->w, W_SPAWN_LOAD), BOSS_LOAD);
+  wram_w16(b->w, W_SPAWN_LOAD, load);
+  ran(b, BOSS_RUN_9637);
+  return BOSS_ENDS_PC;
 }
 
 // `$82:9589`: where its plane is scrolled to, which is its place and the
@@ -1491,6 +1654,18 @@ static const struct {
     {BOSS_SPITS_PC, spits},
     {BOSS_SLEEPS_PC, sleeps},
     {BOSS_WAKES_PC, wakes},
+    {BOSS_SCORED_PC, scored},
+    {BOSS_PART_FREED_A_PC, part_freed_a},
+    {BOSS_PART_FREED_B_PC, part_freed_b},
+    {BOSS_PART_FREED_C_PC, part_freed_c},
+    {BOSS_DEATH_WAITS_PC, death_waits},
+    {BOSS_DEATH_WOKE_PC, death_woke},
+    {BOSS_FLASH_QUEUED_PC, flash_queued},
+    {BOSS_FLASH_SLEPT_PC, flash_slept},
+    {BOSS_PLANE_CLEARED_PC, plane_cleared},
+    {BOSS_NEIGHBOUR_BEGUN_PC, neighbour_begun},
+    {BOSS_PUT_DOWN_PC, put_down},
+    {BOSS_MOSAIC_OFF_QUEUED_PC, mosaic_off_queued},
 };
 
 bool boss_thread_begins_at(uint32_t pc) {

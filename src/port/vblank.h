@@ -123,6 +123,9 @@ enum {
   // $82:8425 mosaic_job
   MZ_HEAD,      // LDA $7E:6DB2 to the `STA $2106`, less the store
 
+  // $82:9644 boss_mosaic_job
+  MT_HEAD,      // LDA $0020 to the `STA $2106`, less the store
+
   // $82:8C49 boss_shake_job
   SK_FIRST,     // LDA $0020 : AND #$0003 : ADC $1B68 : SEP #$20 : STA $2110
   SK_SECOND,    // XBA : STA $2110, and the same to `$210E`
@@ -225,6 +228,18 @@ void vram_send_job(Wram* w, PortCpu* c, HwTrace* t);
 #define MOSAIC_JOB_RTL_PC 0x828438u
 #define W_MOSAIC_SIZE 0x6db2u
 void mosaic_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:9644 boss_mosaic_job --------------------------------------------------
+//
+// The same, as the big figure dies (`port/boss_thread.h`), with its size from
+// bits 1-4 of the tick instead: it is queued fifteen times two frames apart,
+// so the size steps up by one each time and wraps. `$82:9657` after it is
+// `mosaic_off_job` to the byte.
+#define BOSS_MOSAIC_JOB_PC 0x829644u
+#define BOSS_MOSAIC_JOB_RTL_PC 0x829656u
+#define BOSS_MOSAIC_OFF_JOB_PC 0x829657u
+#define BOSS_MOSAIC_OFF_JOB_RTL_PC 0x82965fu
+void boss_mosaic_job(Wram* w, PortCpu* c, HwTrace* t);
 
 // --- $82:882C mosaic_off_job ---------------------------------------------------
 //

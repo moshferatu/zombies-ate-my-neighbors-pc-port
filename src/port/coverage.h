@@ -660,6 +660,14 @@
   X(boss_stops_spitting, "boss_stop_spitting", "the bottle put away and its first picture back") \
   X(boss_spit_bursts, "boss_spit_moves",    "a spit's flight ends and it bursts") \
   X(boss_spit_gone,   "boss_spit_moves",    "the burst's last picture shown: its record is freed") \
+  X(boss_dies_spits_out, "boss_wakes",      "dead, with a spit still out: it goes on moving them") \
+  X(boss_dies_paid,   "boss_wakes",         "dead, and whoever landed the last blow is paid") \
+  X(boss_dies_unpaid, "boss_wakes",         "...or nobody is") \
+  X(boss_death_waits, "boss_death_woke",    "its parts freed: on to a tick that is a multiple of 32") \
+  X(boss_death_flashes, "boss_death_woke",  "...and there: fifteen flashes of the mosaic") \
+  X(boss_flashes_over, "boss_flash_slept",  "the last flash: its plane cleared") \
+  X(boss_dead,        "boss_mosaic_off_queued", "its load given back, and the thread's end") \
+  X(boss_mosaic_job,  "boss_mosaic_job",    "the mosaic by the tick, as the big figure dies") \
   /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \

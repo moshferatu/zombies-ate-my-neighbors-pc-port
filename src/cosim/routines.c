@@ -21908,6 +21908,7 @@ static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
     [VS_DONE] = {100, 6, 1},
     [MO_HEAD] = {36, 5, 0},
     [MZ_HEAD] = {136, 16, 0},
+    [MT_HEAD] = {130, 15, 0},
     [SK_FIRST] = {122, 14, 0},
     [SK_SECOND] = {36, 4, 0},
     [SN_FIRST] = {160, 17, 0},
@@ -21976,6 +21977,7 @@ VBL_SHIM(bg1_vscroll_job)
 VBL_SHIM(vram_send_job)
 VBL_SHIM(mosaic_off_job)
 VBL_SHIM(mosaic_job)
+VBL_SHIM(boss_mosaic_job)
 VBL_SHIM(boss_shake_job)
 VBL_SHIM(snakeoid_shake_job)
 VBL_SHIM(boss_bg_clear_job)
@@ -28329,6 +28331,25 @@ static const CosimRun BOSS_RUN_COST[BOSS_RUN_COUNT] = {
     [BOSS_RUN_9592] = {40, 3, 0},  // JSR
     [BOSS_RUN_9595] = {18, 3, 0},  // LDA
     [BOSS_RUN_959C] = {40, 4, 1},  // LDA : BEQ
+    [BOSS_RUN_95A0] = {30, 4, 0},  // LDA : TAY
+    [BOSS_RUN_95A4] = {54, 4, 0},  // JSL
+    [BOSS_RUN_8475] = {168, 11, 0},  // $80:8475, all of it
+    [BOSS_RUN_95A8] = {40, 4, 1},  // LDA : BNE
+    [BOSS_RUN_95AC] = {58, 7, 1},  // LDX : LDA : BEQ
+    [BOSS_RUN_95B7] = {28, 2, 1},  // LDA
+    [BOSS_RUN_95BD] = {28, 2, 1},  // LDA
+    [BOSS_RUN_95C3] = {28, 2, 1},  // LDA
+    [BOSS_RUN_95C9] = {28, 2, 1},  // LDA
+    [BOSS_RUN_95CF] = {18, 3, 0},  // LDA
+    [BOSS_RUN_95D6] = {64, 8, 0},  // LDA : AND : BNE
+    [BOSS_RUN_95DE] = {46, 5, 1},  // LDA : STA
+    [BOSS_RUN_95E3] = {36, 6, 0},  // LDA : LDY
+    [BOSS_RUN_95ED] = {18, 3, 0},  // LDA
+    [BOSS_RUN_95F4] = {62, 4, 1},  // DEC : BNE
+    [BOSS_RUN_95FC] = {206, 21, 3},  // LDA : STA : LDA : STA : LDA : STA : LDA : LDY
+    [BOSS_RUN_9615] = {220, 20, 0},  // INC : LDA : INC : INC : TAX : LDA : CLC : ADC : TAY : LDA
+    [BOSS_RUN_962D] = {36, 6, 0},  // LDA : LDY
+    [BOSS_RUN_9637] = {110, 12, 0},  // SEC : LDA : SBC : STA : BMI
 };
 
 static bool accepts_boss_thread(const Wram* w, const CosimRegs* in) {
@@ -28353,6 +28374,11 @@ static bool accepts_boss_thread(const Wram* w, const CosimRegs* in) {
     if (wram_r16(w, (uint16_t)(in->d + BOSS_PARTS_DP_FIRST + part)) >= 0x1f00)
       return false;
   if (wram_r16(w, (uint16_t)(in->d + BOSS_DP_SPIT)) >= 0x20) return false;
+  // Its end takes its load off the level's, and where that goes negative the
+  // ROM spins on a `BMI` to itself for good.
+  if (in->pc == BOSS_MOSAIC_OFF_QUEUED_PC &&
+      (uint16_t)(wram_r16(w, W_SPAWN_LOAD) - BOSS_LOAD) >= 0x8000u)
+    return false;
   // The player it is after is read only by `$82:8E2D`, spitting at them:
   // `$82:8CCE`, lining up, sets it before it reads it, and nothing else reads
   // it. Until a first lining up it is whatever the page last held -- `$FFFF`
@@ -28392,9 +28418,27 @@ static void shim_boss_thread(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cycles);
 }
 
-static const uint32_t BOSS_TURN_EXITS[] = {BOSS_DIES_PC, BOSS_STATE_PC,
-                                           BOSS_PICTURE_PC,
+static const uint32_t BOSS_TURN_EXITS[] = {BOSS_STATE_PC, BOSS_PICTURE_PC,
                                            BOSS_PICTURE_FLIP_PC};
+// ...and waking, dead, it may go on moving its spits or be paid for.
+static const uint32_t BOSS_WAKES_EXITS[] = {
+    BOSS_STATE_PC,          BOSS_PICTURE_PC,          BOSS_PICTURE_FLIP_PC,
+    BOSS_SPIT_FIRST_CALL_PC, BOSS_SPIT_SECOND_CALL_PC, BOSS_YIELD_PC,
+    BOSS_SCORE_PC,          BOSS_PART_FREE_A_PC};
+static const uint32_t BOSS_SCORED_EXITS[] = {BOSS_PART_FREE_A_PC};
+static const uint32_t BOSS_PART_FREED_A_EXITS[] = {BOSS_PART_FREE_B_PC};
+static const uint32_t BOSS_PART_FREED_B_EXITS[] = {BOSS_PART_FREE_C_PC};
+static const uint32_t BOSS_PART_FREED_C_EXITS[] = {BOSS_PART_FREE_D_PC};
+static const uint32_t BOSS_DEATH_WAITS_EXITS[] = {BOSS_DEATH_SLEEP_PC};
+static const uint32_t BOSS_DEATH_WOKE_EXITS[] = {BOSS_DEATH_SLEEP_PC,
+                                                 BOSS_FLASH_QUEUE_PC};
+static const uint32_t BOSS_FLASH_QUEUED_EXITS[] = {BOSS_FLASH_SLEEP_PC};
+static const uint32_t BOSS_FLASH_SLEPT_EXITS[] = {BOSS_FLASH_QUEUE_PC,
+                                                  BOSS_PLANE_CLEAR_PC};
+static const uint32_t BOSS_PLANE_CLEARED_EXITS[] = {BOSS_NEIGHBOUR_PC};
+static const uint32_t BOSS_NEIGHBOUR_BEGUN_EXITS[] = {BOSS_PUT_DOWN_CALL_PC};
+static const uint32_t BOSS_PUT_DOWN_EXITS[] = {BOSS_MOSAIC_OFF_PC};
+static const uint32_t BOSS_ENDS_EXITS[] = {BOSS_ENDS_PC};
 static const uint32_t BOSS_TURN_ENDS_EXITS[] = {BOSS_UNFLASH_PC, BOSS_FLASH_PC,
                                                 BOSS_PARTS_PC};
 static const uint32_t BOSS_SPITS_EXITS[] = {BOSS_SPIT_FIRST_CALL_PC,
@@ -37805,6 +37849,31 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 120,
     },
     {
+        .name = "boss_mosaic_job",
+        .symbol = "$82:9644",
+        .entry = BOSS_MOSAIC_JOB_PC,
+        .ret_op = BOSS_MOSAIC_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_mosaic_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 220,
+    },
+    {
+        // `mosaic_off_job` to the byte.
+        .name = "boss_mosaic_off_job",
+        .symbol = "$82:9657",
+        .entry = BOSS_MOSAIC_OFF_JOB_PC,
+        .ret_op = BOSS_MOSAIC_OFF_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_off_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 120,
+    },
+    {
         .name = "boss_shake_job",
         .symbol = "$82:8C49",
         .entry = BOSS_SHAKE_JOB_PC,
@@ -38929,7 +38998,29 @@ static const CosimRoutine ROUTINES[] = {
     BOSS_ROW(flashed, "$82:9589", BOSS_FLASHED_PC, BOSS_TURN_ENDS_EXITS, true)
     BOSS_ROW(spits, "$82:9592", BOSS_SPITS_PC, BOSS_SPITS_EXITS, true)
     BOSS_ROW(sleeps, "$82:9595", BOSS_SLEEPS_PC, BOSS_SLEEPS_EXITS, true)
-    BOSS_ROW(wakes, "$82:959C", BOSS_WAKES_PC, BOSS_TURN_EXITS, true)
+    BOSS_ROW(wakes, "$82:959C", BOSS_WAKES_PC, BOSS_WAKES_EXITS, true)
+    BOSS_ROW(scored, "$82:95B7", BOSS_SCORED_PC, BOSS_SCORED_EXITS, true)
+    BOSS_ROW(part_freed_a, "$82:95BD", BOSS_PART_FREED_A_PC,
+             BOSS_PART_FREED_A_EXITS, true)
+    BOSS_ROW(part_freed_b, "$82:95C3", BOSS_PART_FREED_B_PC,
+             BOSS_PART_FREED_B_EXITS, true)
+    BOSS_ROW(part_freed_c, "$82:95C9", BOSS_PART_FREED_C_PC,
+             BOSS_PART_FREED_C_EXITS, true)
+    BOSS_ROW(death_waits, "$82:95CF", BOSS_DEATH_WAITS_PC,
+             BOSS_DEATH_WAITS_EXITS, true)
+    BOSS_ROW(death_woke, "$82:95D6", BOSS_DEATH_WOKE_PC, BOSS_DEATH_WOKE_EXITS,
+             true)
+    BOSS_ROW(flash_queued, "$82:95ED", BOSS_FLASH_QUEUED_PC,
+             BOSS_FLASH_QUEUED_EXITS, true)
+    BOSS_ROW(flash_slept, "$82:95F4", BOSS_FLASH_SLEPT_PC,
+             BOSS_FLASH_SLEPT_EXITS, true)
+    BOSS_ROW(plane_cleared, "$82:95FC", BOSS_PLANE_CLEARED_PC,
+             BOSS_PLANE_CLEARED_EXITS, true)
+    BOSS_ROW(neighbour_begun, "$82:9615", BOSS_NEIGHBOUR_BEGUN_PC,
+             BOSS_NEIGHBOUR_BEGUN_EXITS, true)
+    BOSS_ROW(put_down, "$82:962D", BOSS_PUT_DOWN_PC, BOSS_PUT_DOWN_EXITS, true)
+    BOSS_ROW(mosaic_off_queued, "$82:9637", BOSS_MOSAIC_OFF_QUEUED_PC,
+             BOSS_ENDS_EXITS, true)
 #undef BOSS_ROW
 #define X(name_, sym, pc)                                                    \
     {                                                                        \

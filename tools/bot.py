@@ -530,7 +530,7 @@ class Bot:
         self.wander = None  # where it is going meanwhile
         self.last_goal = None
         self.chosen = None  # (what it depended on, frame, goal, item)
-        self.aiming = None  # ((id, x, y), since)
+        self.aimed = {}  # (id, x, y) -> frames spent shooting at it there
         self.futile = set()
         self.shoot = False  # what `combat` said: something to fire at
         self.urgent = False  # ...and that getting away comes before all else
@@ -684,17 +684,16 @@ class Bot:
         if best and not urgent and (armed or not close):
             self.shoot = armed
             # The same thing in the same place, shot at for long enough, is
-            # something the weapon does nothing to.
+            # something the weapon does nothing to. The time adds up across
+            # breaks: a campfire (`$82:F330`) a step too near is backed away
+            # from between shots, and then faced and walked at again.
             target = best[2]
-            if self.aiming and self.aiming[0] == target:
-                if self.h.frame - self.aiming[1] >= FUTILE:
-                    self.futile.add(target)
-            else:
-                self.aiming = (target, self.h.frame)
+            self.aimed[target] = self.aimed.get(target, 0) + STEP
+            if self.aimed[target] >= FUTILE:
+                self.futile.add(target)
             self.engage(best[4])
             self.want = self.weapon_for(best[3], best[4], loaded)
             return best[1]
-        self.aiming = None
         if chase and armed and not close and self.level:
             # Coming, and off every line: a step that puts it on one, without
             # going nearer than is safe, and the weapon for it got ready.
@@ -825,7 +824,9 @@ class Bot:
         arms = self.arms_lying(ram)
         b = nearest(arms, plain)
         if b and (b[0] <= ARMS_NEAR or self.ammo(ram) < LOW_AMMO):
-            return 'weapon %d (%d shots)' % (b[1], self.ammo(ram)), (b[2], b[3]), False
+            # Not the shots in the name: what is gone to is told apart by its
+            # name, and a new one each shot is never stuck on.
+            return 'weapon %d' % b[1], (b[2], b[3]), False
         b = nearest(self.kits_lying(ram), plain)
         if b and (b[0] <= ARMS_NEAR or ram.w(W_HEALTH) <= LOW_HEALTH):
             return 'first-aid kit %d' % b[1], (b[2], b[3]), False
@@ -897,6 +898,7 @@ class Bot:
             return pad_toward(near[0] - here[0], near[1] - here[1]), what
         # Walk downhill, looking a few cells ahead along the descent.
         c = here
+        first = None
         for _ in range(3):
             best = None
             for dc in (-1, 0, 1):
@@ -909,6 +911,22 @@ class Bot:
             if best is None:
                 break
             c = best[1]
+            if first is None:
+                first = c
+        # Looking ahead makes a diagonal of a corner: the way goes left and
+        # then up a corridor one cell wide. Pressed from here it pushes into
+        # the corner's wall, which lets the player a few pixels in, and from
+        # there the way is lost and found again below, without end (level 50).
+        # The diagonal is pressed only when its step and both its halves are
+        # on the way from here; else the first step's own way.
+        ahead = pad_toward(c[0] - here[0], c[1] - here[1])
+        if first is not None and ahead & (UP | DOWN) and ahead & (LEFT | RIGHT):
+            sc = 1 if c[0] > here[0] else -1
+            sr = 1 if c[1] > here[1] else -1
+            if not all(m in dist for m in ((here[0] + sc, here[1] + sr),
+                                           (here[0] + sc, here[1]),
+                                           (here[0], here[1] + sr))):
+                c = first
         # A hedge on the way a few cells on is shot at, square on: the
         # bazooka's shot goes the way the player faces. Only from where the
         # way already is in line with it, or it is the next step: lining up
@@ -1076,6 +1094,7 @@ def play_level(host, rng, log, max_frames):
             bot.plan = None
             bot.reach = None
             bot.chosen = None
+            bot.aimed = {}
             stall_since = host.frame
             best_progress = None
             last_what = None

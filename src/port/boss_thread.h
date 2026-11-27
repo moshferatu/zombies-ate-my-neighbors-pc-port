@@ -33,7 +33,19 @@
 // the player is out of reach, or right under it, or four are out, it shuts
 // its mouth and lines up again.
 //
-// How the thread starts and ends is the ROM's still.
+// **And how it dies**, once `$3A` is set: nobody told of a hit any more, and
+// while a spit of its is still out it goes on moving them and sleeping. Then
+// whoever landed the last blow is paid `$2000`, its four parts are freed, and
+// on the next frame whose tick is a multiple of 32 the mosaic flashes, by the
+// tick, fifteen times two frames apart. Its plane is cleared, a neighbour is
+// begun where it stood (`$83:9776`), the count at `$1D52` goes up, an object
+// of type `$2E` goes into the level's list beside that spot
+// (`object_put_back`), the mosaic is turned off, and its `$28` comes off the
+// level's load. The thread ends on its own `RTL`: unless the load went
+// negative, when the ROM spins on a `BMI` to itself for good, which the
+// harness refuses.
+//
+// How the thread starts is the ROM's still.
 //
 // **Written as stretches.** Each is from where a call comes back to the next
 // call that this file does not make itself. It makes the ones whose cost is
@@ -165,6 +177,35 @@
 #define BOSS_SPITS_PC 0x829592u
 #define BOSS_SLEEPS_PC 0x829595u
 #define BOSS_WAKES_PC 0x82959cu
+// ...and its death, each after a call comes back.
+#define BOSS_SCORED_PC 0x8295b7u       // the award paid, or none
+#define BOSS_PART_FREED_A_PC 0x8295bdu // after each of its four parts is freed
+#define BOSS_PART_FREED_B_PC 0x8295c3u
+#define BOSS_PART_FREED_C_PC 0x8295c9u
+#define BOSS_DEATH_WAITS_PC 0x8295cfu  // the last part freed
+#define BOSS_DEATH_WOKE_PC 0x8295d6u   // ...and each wait for the tick
+#define BOSS_FLASH_QUEUED_PC 0x8295edu
+#define BOSS_FLASH_SLEPT_PC 0x8295f4u
+#define BOSS_PLANE_CLEARED_PC 0x8295fcu
+#define BOSS_NEIGHBOUR_BEGUN_PC 0x829615u
+#define BOSS_PUT_DOWN_PC 0x82962du
+#define BOSS_MOSAIC_OFF_QUEUED_PC 0x829637u
+
+// Its death's own.
+#define BOSS_LEAVES 0x002eu            // the object left where it stood
+#define BOSS_NEIGHBOUR_ENTRY 0x9776u   // the neighbour begun there
+#define BOSS_NEIGHBOUR_BANK 0x0083u
+#define BOSS_AWARD 0x2000u
+#define BOSS_FLASHES 0x000fu
+#define BOSS_FLASH_SLEEP 0x0002u
+#define BOSS_DEATH_TICK_MASK 0x001eu   // a tick with none of these bits
+#define BOSS_DP_FLASHES_LEFT 0x2eu     // the stride's word, reused
+#define BOSS_DP_PARTS 0x24u            // its four parts' records, a word each
+#define BOSS_JOB_MOSAIC 0x9644u        // `$82:9644`, queued each flash
+#define BOSS_JOB_MOSAIC_OFF 0x9657u    // `$82:9657`, queued once
+#define BOSS_DP_SPAWN_ARG 0x06u        // what the neighbour begun is given
+#define W_BOSS_DEATH_COUNT 0x1d52u
+#define BOSS_LOAD 0x0028u              // what it was of `W_SPAWN_LOAD`
 
 // Where one stops. All but the last are instructions the harness makes; the
 // last is the ROM's own code, which this file does not have.
@@ -206,7 +247,19 @@
 #define BOSS_SPAT_RTS_PC 0x828ef6u
 #define BOSS_SPITS_AGAIN_RTS_PC 0x828f11u
 #define BOSS_SPIT_ALLOC_PC 0x829320u   // `JSL actor_slot_alloc`
-#define BOSS_DIES_PC 0x8295a0u         // the ROM's: `$3A` is set
+#define BOSS_SCORE_PC 0x8295b3u        // `JSL score_add`
+#define BOSS_PART_FREE_A_PC 0x8295b9u  // `JSL actor_slot_free`, each of the four
+#define BOSS_PART_FREE_B_PC 0x8295bfu
+#define BOSS_PART_FREE_C_PC 0x8295c5u
+#define BOSS_PART_FREE_D_PC 0x8295cbu
+#define BOSS_DEATH_SLEEP_PC 0x8295d2u  // `JSL thread_yield`
+#define BOSS_FLASH_QUEUE_PC 0x8295e9u  // `JSL vbl_queue_a_add`
+#define BOSS_FLASH_SLEEP_PC 0x8295f0u
+#define BOSS_PLANE_CLEAR_PC 0x8295f8u  // `JSL boss_bg_clear`
+#define BOSS_NEIGHBOUR_PC 0x829611u    // `JSL thread_spawn`
+#define BOSS_PUT_DOWN_CALL_PC 0x829629u  // `JSL object_put_back`
+#define BOSS_MOSAIC_OFF_PC 0x829633u   // `JSL vbl_queue_a_add`
+#define BOSS_ENDS_PC 0x829643u         // `RTL`: the thread is over
 
 // The straight runs of the listing a stretch is made of, each named for where
 // it starts, with where it ends. The harness prices a stretch by the runs it
@@ -405,7 +458,26 @@
   X(9589, 0x82958cu) \
   X(9592, 0x829595u) \
   X(9595, 0x829598u) \
-  X(959C, 0x8295a0u)
+  X(959C, 0x8295a0u) \
+  X(95A0, 0x8295a4u) \
+  X(95A4, 0x8295a8u) \
+  X(8475, 0x808480u) \
+  X(95A8, 0x8295acu) \
+  X(95AC, 0x8295b3u) \
+  X(95B7, 0x8295b9u) \
+  X(95BD, 0x8295bfu) \
+  X(95C3, 0x8295c5u) \
+  X(95C9, 0x8295cbu) \
+  X(95CF, 0x8295d2u) \
+  X(95D6, 0x8295deu) \
+  X(95DE, 0x8295e3u) \
+  X(95E3, 0x8295e9u) \
+  X(95ED, 0x8295f0u) \
+  X(95F4, 0x8295f8u) \
+  X(95FC, 0x829611u) \
+  X(9615, 0x829629u) \
+  X(962D, 0x829633u) \
+  X(9637, 0x829643u)
 
 // The calls, jumps and returns between the stretches, which the harness
 // makes: see `CosimRoutine::link`. `JSR boss_stomp` at `$82:958F` is one
@@ -425,7 +497,8 @@
   X(spit_told_rts, "$82:94A3", 0x8294a3u) \
   X(open_waits_bra, "$82:8D90", 0x828d90u) \
   X(stop_waits_bra, "$82:8DEB", 0x828debu) \
-  X(lingers_bra, "$82:8E28", 0x828e28u)
+  X(lingers_bra, "$82:8E28", 0x828e28u) \
+  X(ends_rtl, "$82:9643", 0x829643u)
 
 typedef enum {
 #define X(from, to) BOSS_RUN_##from,
