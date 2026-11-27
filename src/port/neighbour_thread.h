@@ -9,7 +9,7 @@
 //
 // ## A thread
 //
-// Nine of the eleven start the same way: the level's load goes up by what
+// Ten of the eleven start the same way: the level's load goes up by what
 // the neighbour weighs, its kind is put at `$1C`, and `neighbour_begin` is
 // called with its first picture. Then each goes to its loop.
 //
@@ -29,6 +29,11 @@
 // The two that look about them (`NEIGHBOUR_WATCHES`) are told `3` up to
 // twenty-five times before they are lost, and are saved or lost only while
 // their entry in the list is not zero.
+//
+// The patient one, `$83:9BAD`, is told `3` as many times, but does not look
+// about it and does not ask after its entry: it is saved or lost as the
+// others are. Its kind is `$16`, the last the sign has a place for. Level
+// 50 has one.
 //
 // ## Three that differ
 //
@@ -79,7 +84,7 @@ typedef struct {
   uint16_t bank;
 } NeighbourStart;
 
-#define NEIGHBOUR_START_COUNT 9
+#define NEIGHBOUR_START_COUNT 10
 extern const NeighbourStart NEIGHBOUR_STARTS[NEIGHBOUR_START_COUNT];
 #define NEIGHBOUR_START_CALL 0x15  // from where it starts to its `JSR`
 #define NEIGHBOUR_DP_KIND 0x1c
@@ -92,7 +97,7 @@ typedef struct {
   bool clears_34;
 } NeighbourLoopStart;
 
-#define NEIGHBOUR_LOOP_START_COUNT 7
+#define NEIGHBOUR_LOOP_START_COUNT 8
 extern const NeighbourLoopStart NEIGHBOUR_LOOP_STARTS[NEIGHBOUR_LOOP_START_COUNT];
 #define NEIGHBOUR_PATIENCE 0x0019
 #define NEIGHBOUR_DP_PATIENCE 0x26
@@ -137,6 +142,20 @@ extern const WatcherTold WATCHER_TOLDS[WATCHER_TOLD_COUNT];
 #define WATCHER_TOLD_TURN_CALL 0x6b
 #define WATCHER_TOLD_TURNED 0x6e
 
+// The patient one, told. There is one, so its addresses are its own.
+#define PATIENT_TOLD_PC 0x839bfcu
+#define PATIENT_SLEEP_PC 0x839bd5u       // its loop's `JSL`
+#define PATIENT_SAVED_PICTURE 0xf771u
+#define PATIENT_AWARD 0x9999             // in decimal
+#define PATIENT_SAVED_CALL_PC 0x839c1bu  // `JSR $A1D5`
+#define PATIENT_SIGN_PICTURE 0xf6efu
+#define PATIENT_SIGN_CALL_PC 0x839c28u   // `JSR $A2B4`
+#define PATIENT_SIGNED_PC 0x839c2bu
+#define PATIENT_LOST_CALL_PC 0x839c3cu   // `JSR $A18F`
+#define PATIENT_END_PC 0x839c3fu
+#define PATIENT_TURN_CALL_PC 0x839c51u   // `JSR $A21D`
+#define PATIENT_TURNED_PC 0x839c54u
+
 // What `$1E` is set to.
 #define NEIGHBOUR_TOLD_TURN 0x0002
 #define NEIGHBOUR_TOLD_LOST 0x0003
@@ -165,7 +184,7 @@ extern const NeighbourArgument NEIGHBOUR_ARGUMENTS[NEIGHBOUR_ARGUMENT_COUNT];
 #define NEIGHBOUR_SIGN_BANK 0x0090
 #define NEIGHBOUR_SIGN_PLACES 0x83a338u  // a kind: across and up, from 2
 #define NEIGHBOUR_SIGN_TURNS 0x004b
-#define NEIGHBOUR_KIND_LAST 0x0014
+#define NEIGHBOUR_KIND_LAST 0x0016  // the patient one's; the table ends there
 
 // The tourists become two werewolves: where each is put from where they
 // stood, and the thread it is.
@@ -352,6 +371,7 @@ bool neighbour_thread_needs_met(const Wram* w, const Rom* rom,
   X(enter_c, "$83:9E15", 0x839e15u, neighbour_enter, ENTER, NT_NEEDS_NOTHING) \
   X(enter_jumper, "$83:9EBE", 0x839ebeu, neighbour_enter, ENTER, NT_NEEDS_NOTHING) \
   X(enter_tourists, "$83:9FE2", 0x839fe2u, neighbour_enter, ENTER, NT_NEEDS_NOTHING) \
+  X(enter_patient, "$83:9BAD", 0x839badu, neighbour_enter, ENTER, NT_NEEDS_NOTHING) \
   X(started_a, "$83:96B1", 0x8396b1u, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
   X(started_b, "$83:978E", 0x83978eu, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
   X(started_watch_b, "$83:9955", 0x839955u, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
@@ -359,6 +379,7 @@ bool neighbour_thread_needs_met(const Wram* w, const Rom* rom,
   X(started_blinker, "$83:9C85", 0x839c85u, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
   X(started_c, "$83:9E2D", 0x839e2du, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
   X(started_tourists, "$83:9FFA", 0x839ffau, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
+  X(started_patient, "$83:9BC5", 0x839bc5u, neighbour_started, STARTED, NT_NEEDS_NOTHING) \
   X(told_a, "$83:96E1", 0x8396e1u, neighbour_told, TOLD, NT_NEEDS_RECORD) \
   X(turned_a, "$83:9715", 0x839715u, neighbour_told, TOLD, NT_NEEDS_RECORD) \
   X(signed_a, "$83:9729", 0x839729u, neighbour_told, TOLD, NT_NEEDS_RECORD) \
@@ -380,6 +401,9 @@ bool neighbour_thread_needs_met(const Wram* w, const Rom* rom,
   X(told_watch_a, "$83:9B1E", 0x839b1eu, watcher_told, WATCHER, NT_NEEDS_RECORD) \
   X(signed_watch_a, "$83:9B58", 0x839b58u, watcher_told, WATCHER, NT_NEEDS_RECORD) \
   X(turned_watch_a, "$83:9B8C", 0x839b8cu, watcher_told, WATCHER, NT_NEEDS_RECORD) \
+  X(told_patient, "$83:9BFC", PATIENT_TOLD_PC, patient_told, PATIENT, NT_NEEDS_RECORD) \
+  X(signed_patient, "$83:9C2B", PATIENT_SIGNED_PC, patient_told, PATIENT, NT_NEEDS_RECORD) \
+  X(turned_patient, "$83:9C54", PATIENT_TURNED_PC, patient_told, PATIENT, NT_NEEDS_RECORD) \
   X(lost, "$83:A18F", 0x83a18fu, neighbour_lost, LOST, NT_NEEDS_RECORD) \
   X(lost_counted, "$83:A19E", 0x83a19eu, neighbour_lost_counted, LOST, NT_NEEDS_NOTHING) \
   X(tourists_lost, "$83:A1B4", 0x83a1b4u, tourists_lost, LOST, NT_NEEDS_RECORD) \

@@ -23,6 +23,7 @@ const NeighbourStart NEIGHBOUR_STARTS[NEIGHBOUR_START_COUNT] = {
     {0x839e15u, 0x000a, 0x000e, 0xe789, 0x008f},
     {0x839ebeu, 0x000a, 0x0010, 0xdf8f, 0x008f},
     {0x839fe2u, 0x000e, 0x0012, 0xe5c5, 0x0090},
+    {0x839badu, 0x000a, 0x0016, 0xf6ef, 0x008f},
 };
 
 const NeighbourLoopStart NEIGHBOUR_LOOP_STARTS[NEIGHBOUR_LOOP_START_COUNT] = {
@@ -33,6 +34,7 @@ const NeighbourLoopStart NEIGHBOUR_LOOP_STARTS[NEIGHBOUR_LOOP_START_COUNT] = {
     {0x839c85u, 0x839c90u, false, false},
     {0x839e2du, 0x839e38u, false, false},
     {0x839ffau, 0x83a005u, false, false},
+    {0x839bc5u, PATIENT_SLEEP_PC, true, false},
 };
 
 const NeighbourTold NEIGHBOUR_TOLDS[NEIGHBOUR_TOLD_COUNT] = {
@@ -382,6 +384,71 @@ void watcher_told(Wram* w, const Rom* rom, PortCpu* c, NeighbourThreadWork* k) {
     save(c, t->saved_picture, t->award, t->told_pc + WATCHER_TOLD_SAVED_CALL,
          k);
   }
+}
+
+// The watcher's, without its two looks at the list: what it is told is all
+// that decides.
+void patient_told(Wram* w, const Rom* rom, PortCpu* c, NeighbourThreadWork* k) {
+  (void)rom;
+  if (c->pc != PATIENT_TOLD_PC) {
+    // Back from the turn or the sign. Only being lost is looked for.
+    first_picture(w, c, k);
+    lda(c, page(w, c, NEIGHBOUR_DP_TOLD));
+    cmp16(c, c->a, NEIGHBOUR_TOLD_LOST);
+    ran(k, NT_TOLD_CMP);
+    if (c->a != NEIGHBOUR_TOLD_LOST) {
+      PORT_COVER(patient_told_back);
+      ran(k, NT_JMP);
+      sleep_again(w, c, PATIENT_SLEEP_PC, k);
+      return;
+    }
+    PORT_COVER(patient_told_lost_since);
+    ran(k, NT_TAKEN);
+    c->pc = PATIENT_LOST_CALL_PC;
+    return;
+  }
+
+  ran(k, NT_BRANCH);
+  if (flag(c, PORT_P_N)) {
+    PORT_COVER(patient_told_end);
+    ran(k, NT_TAKEN);
+    c->pc = PATIENT_END_PC;
+    return;
+  }
+  if (is(c, NEIGHBOUR_TOLD_TURN, k)) {
+    PORT_COVER(patient_told_turn);
+    c->pc = PATIENT_TURN_CALL_PC;
+    return;
+  }
+  if (is(c, NEIGHBOUR_TOLD_SIGN_UP, k)) {
+    PORT_COVER(patient_told_sign);
+    show_for_sign(w, c, PATIENT_SIGN_PICTURE, k);
+    c->pc = PATIENT_SIGN_CALL_PC;
+    return;
+  }
+  cmp16(c, c->a, NEIGHBOUR_TOLD_LOST);
+  ran(k, NT_CMP_BRANCH);
+  if (c->a != NEIGHBOUR_TOLD_LOST) {
+    PORT_COVER(patient_told_saved);
+    ran(k, NT_TAKEN);
+    save(c, PATIENT_SAVED_PICTURE, PATIENT_AWARD, PATIENT_SAVED_CALL_PC, k);
+    return;
+  }
+  const uint16_t patience = (uint16_t)(page(w, c, NEIGHBOUR_DP_PATIENCE) - 1);
+  set_page(w, c, NEIGHBOUR_DP_PATIENCE, patience);
+  set_nz16(c, patience);
+  ran(k, NT_PATIENCE_DOWN);
+  if (patience & 0x8000u) {
+    PORT_COVER(patient_told_lost);
+    ran(k, NT_TAKEN);
+    c->pc = PATIENT_LOST_CALL_PC;
+    return;
+  }
+  PORT_COVER(patient_told_bore_it);
+  set_page(w, c, NEIGHBOUR_DP_TOLD, 0);
+  ran(k, NT_STZ_DP);
+  ran(k, NT_BRA);
+  sleep_again(w, c, PATIENT_SLEEP_PC, k);
 }
 
 // --- $83:A18F and $83:A1B4: lost --------------------------------------------

@@ -130,7 +130,7 @@
   X(radar_skipped_far_y, "radar_frame",     "...or too far up or down") \
   X(radar_shown,      "radar_frame",        "the square put where the next near neighbour is") \
   /* The neighbours' threads -- see port/neighbour_thread.h. */ \
-  X(neighbour_started_patient, "neighbour_started", "one that looks about it: told 3 twenty-five times first") \
+  X(neighbour_started_patient, "neighbour_started", "one told 3 twenty-five times first") \
   X(neighbour_told_back, "neighbour_told", "back from the turn or the sign") \
   X(neighbour_told_nothing_more, "neighbour_told", "...and told nothing since: its loop again") \
   X(neighbour_told_end, "neighbour_told", "told to end") \
@@ -147,6 +147,14 @@
   X(watcher_told_lost, "watcher_told", "...and with none: lost") \
   X(watcher_told_not_listed, "watcher_told", "its entry in the list is zero, so it only ends") \
   X(watcher_told_saved, "watcher_told", "told anything else: saved") \
+  X(patient_told_back, "patient_told", "back from the turn or the sign, and not lost since") \
+  X(patient_told_lost_since, "patient_told", "...or lost since") \
+  X(patient_told_end, "patient_told", "told to end") \
+  X(patient_told_turn, "patient_told", "told 2") \
+  X(patient_told_sign, "patient_told", "told 4: the sign") \
+  X(patient_told_bore_it, "patient_told", "told 3 with patience left") \
+  X(patient_told_lost, "patient_told", "...and with none: lost") \
+  X(patient_told_saved, "patient_told", "told anything else: saved") \
   X(neighbour_lost_quiet, "neighbour_lost_counted", "the stepper, which has cried out already") \
   X(neighbour_lost_cry, "neighbour_lost_counted", "any other: the sound") \
   X(neighbour_turn_told, "neighbour_turn_shown", "told something while the first pictures played") \
@@ -491,6 +499,7 @@
   X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
   X(hold_goes_on,     "hold_turn",          "...or not yet, and it goes round") \
   /* The giant ant's thread -- see port/ant_thread.h. */                        \
+  X(ant_marks,        "ant_loaded",         "the copy that marks its entry in the level's list") \
   X(ant_goes_on,      "ant_turned",         "nothing in `$2A`: another frame") \
   X(ant_leaves,       "ant_turned",         "`$2A` positive: nobody near, and it goes quietly") \
   X(ant_killed,       "ant_turned",         "a fatal thing held, or `$2A` negative") \
@@ -673,6 +682,8 @@
   X(neighbour_watch_cried, "neighbour_watch", "one of them within a hundred: the cry") \
   X(neighbour_watch_alarmed, "neighbour_watch", "...or alarm with no cry") \
   X(neighbour_watch_told, "neighbour_watch", "something has set its word: the ROM's") \
+  X(neighbour_patient_shown, "neighbour_patient", "the next of its two pictures") \
+  X(neighbour_patient_told, "neighbour_patient", "something has set its word: the ROM's") \
   X(neighbour_alarm_shown, "neighbour_alarm", "the next picture of the alarm") \
   X(neighbour_alarm_over, "neighbour_alarm", "all shown: back to looking") \
   X(neighbour_alarm_told, "neighbour_alarm", "something has set its word: the ROM's") \

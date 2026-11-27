@@ -26,11 +26,12 @@
 // With `$2A` positive, which is `ant_seek` finding both players far
 // away, it only leaves.
 //
-// **The copies differ in four things.** The handler they install, the count
-// a killed one adds to, whether waking clears `$20`, and whether a killed
-// one's handler is taken away before it is heard. `ANT_THREADS` has
-// those. The second copy, the one that carries somebody home, is not here:
-// no movie reaches it.
+// **The copies differ in five things.** The handler they install, the count
+// a killed one adds to, whether waking clears `$20`, whether a killed one's
+// handler is taken away before it is heard, and whether, once its weight is
+// on, it marks its entry in the level's list (`victim_mark_gone`, given
+// `$06`) so that it does not come again. `ANT_THREADS` has those. Only the
+// second copy, at `$81:C28C`, marks; level 32 reaches it.
 //
 // A load that would go below nothing stops the ROM on a branch to itself,
 // and that is the ROM's to do.
@@ -56,19 +57,22 @@ typedef struct {
   uint32_t heard_pc;   // `LDA #$0021`, a killed one's sound
   bool untouchable;    // ...before which its handler is taken away
   uint32_t end_pc;     // `SEC`: its weight comes off
+  bool marks;          // `LDA $06 : JSL victim_mark_gone` after the weight
 } AntThread;
 
 #define ANT_THREADS(X) \
   X(c201, 0x81c201u, 0xc440u, 0x81c215u, 0x81c21cu, true, 0x81c22cu, \
-    0x81c25du, true, 0x81c26eu) \
+    0x81c25du, true, 0x81c26eu, false) \
+  X(c28c, 0x81c292u, 0xc440u, 0x81c2acu, 0x81c2b3u, false, 0x81c2c1u, \
+    0x81c2f2u, true, 0x81c303u, true) \
   X(c321, 0x81c332u, 0xc440u, 0x81c346u, 0x81c34du, false, 0x81c35bu, \
-    0x81c387u, false, 0x81c398u) \
+    0x81c387u, false, 0x81c398u, false) \
   X(c3b6, 0x81c3bcu, 0xc4a6u, 0x81c3d0u, 0x81c3d7u, false, 0x81c3e5u, \
-    0x81c411u, false, 0x81c422u)
+    0x81c411u, false, 0x81c422u, false)
 
 enum {
 #define X(at, loaded, handler, sleep, woke, forgets, turned, heard, \
-          untouchable, end) \
+          untouchable, end, marks) \
   ANT_THREAD_AT_##at,
   ANT_THREADS(X)
 #undef X
@@ -80,13 +84,21 @@ extern const AntThread ANT_THREADS_BY[ANT_THREAD_COUNT];
 #define ANT_WEIGHT 0x001c
 #define ANT_KILLED_SFX 0x0021
 #define ANT_DP_FORGOTTEN 0x20
+#define ANT_DP_MARK 0x06  // its entry in the level's list, for the mark
 // Held, either of these kills it.
 #define ANT_FATAL_KIND_A 0x002a
 #define ANT_FATAL_KIND_B 0x0021
 
 // Where the rest of a copy is, from the addresses in its row.
+static inline uint32_t ant_mark_call_pc(const AntThread* t) {
+  return t->loaded_pc + 0x0c;  // `JSL victim_mark_gone`, in one that marks
+}
+static inline uint32_t ant_marked_pc(const AntThread* t) {
+  return t->loaded_pc + 0x10;  // where the mark comes back
+}
 static inline uint32_t ant_handler_call_pc(const AntThread* t) {
-  return t->loaded_pc + 0x10;  // `JSL thread_set_handler`
+  // `JSL thread_set_handler`, after the mark's six bytes in one that marks.
+  return t->loaded_pc + (t->marks ? 0x16 : 0x10);
 }
 static inline uint32_t ant_sleep_call_pc(const AntThread* t) {
   return t->sleep_pc + 3;      // `JSL thread_yield`
@@ -137,8 +149,11 @@ typedef enum {
 
 // Each is one stretch, and leaves `c->pc` on the instruction it stops at.
 //
-// Its weight on the load, and its handler in A and Y for the call.
+// Its weight on the load, and its handler in A and Y for the call; or, in
+// one that marks, its entry in A for the mark.
 void ant_loaded(Wram* w, PortCpu* c, const AntThread* t);
+// From the mark, its handler in A and Y for the call.
+void ant_marked(PortCpu* c, const AntThread* t);
 // One frame, in A for the call.
 void ant_sleeps(PortCpu* c, const AntThread* t);
 // The state's routine, by an `RTS` to it that comes back to the next call.
@@ -168,6 +183,11 @@ bool ant_has_room(PortCpu* c);
   X(c201_where, "$81:C226", 0x81c226u) \
   X(c201_picture, "$81:C229", 0x81c229u) \
   X(c201_over, "$81:C28B", 0x81c28bu) \
+  X(c28c_setup, "$81:C28C", 0x81c28cu) \
+  X(c28c_place, "$81:C28F", 0x81c28fu) \
+  X(c28c_where, "$81:C2BB", 0x81c2bbu) \
+  X(c28c_picture, "$81:C2BE", 0x81c2beu) \
+  X(c28c_over, "$81:C320", 0x81c320u) \
   X(c321_room, "$81:C321", 0x81c321u) \
   X(c321_no_room, "$81:C326", 0x81c326u) \
   X(c321_setup, "$81:C329", 0x81c329u) \

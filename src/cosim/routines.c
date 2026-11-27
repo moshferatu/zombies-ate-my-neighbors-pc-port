@@ -9811,10 +9811,10 @@ NEIGHBOUR_THREAD_STRETCHES(X)
 
 static const uint32_t NT_EXITS_ENTER[] = {
     0x8396aeu, 0x83978bu, 0x839952u, 0x839a9eu, 0x839c82u,
-    0x839d15u, 0x839e2au, 0x839ed3u, 0x839ff7u};
+    0x839d15u, 0x839e2au, 0x839ed3u, 0x839ff7u, 0x839bc2u};
 static const uint32_t NT_EXITS_STARTED[] = {
     0x8396bcu, 0x839799u, 0x839965u, 0x839ab3u, 0x839c90u, 0x839e38u,
-    TOURISTS_SLEEP_PC};
+    TOURISTS_SLEEP_PC, PATIENT_SLEEP_PC};
 // A thread's loop, `JSR $A1D5`, `JSR $A18F`, its end, `JSR $A21D` and
 // `JSR $A2B4`.
 static const uint32_t NT_EXITS_TOLD[] = {
@@ -9830,7 +9830,12 @@ static const uint32_t NT_EXITS_WATCHER[] = {
     0x839a35u,
     0x839ab3u, 0x839af7u, 0x839b48u, 0x839b55u, 0x839b74u, 0x839b77u,
     0x839b89u};
-static const uint32_t NT_EXITS_LOST[] = {0x83a196u, 0x83a1a8u, 0x83a1afu,
+// The patient one's loop, `JSR $A1D5`, `JSR $A2B4`, `JSR $A18F`, its end
+// and `JSR $A21D`.
+static const uint32_t NT_EXITS_PATIENT[] = {
+    PATIENT_SLEEP_PC, PATIENT_SAVED_CALL_PC, PATIENT_SIGN_CALL_PC,
+    PATIENT_LOST_CALL_PC, PATIENT_END_PC, PATIENT_TURN_CALL_PC};
+static const uint32_t NT_EXITS_LOST[] ={0x83a196u, 0x83a1a8u, 0x83a1afu,
                                          0x83a1beu};
 static const uint32_t NT_EXITS_SAVED[] = {0x83a1d9u, 0x83a1e5u, 0x83a1ecu,
                                           0x83a1f4u, NEIGHBOUR_RISE_SLEEP_PC};
@@ -25266,6 +25271,8 @@ static void ant_cost(const CosimRegs* in, const CosimRun* run) {
 }
 
 static const CosimRun MT_RUN_LOADED = {134, 16, 0};   // `CLC` to `LDY #`
+static const CosimRun MT_RUN_LOADED_MARKS = {126, 12, 1};  // ...to `LDA $06`
+static const CosimRun MT_RUN_MARKED = {36, 6, 0};     // `LDA #` : `LDY #`
 static const CosimRun MT_RUN_SLEEPS = {18, 3, 0};     // `LDA #$0001`
 static const CosimRun MT_RUN_WOKE = {102, 7, 1};      // `PEA` to `PHA`
 static const CosimRun MT_RUN_WOKE_FORGETS = {130, 9, 2};  // ...after `STZ $20`
@@ -25306,11 +25313,27 @@ static bool accepts_ant_ends(const Wram* w, const CosimRegs* in) {
 static void shim_ant_loaded(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   (void)rom;
+  const AntThread* t = ant_thread_at(in->pc, ant_loaded_at);
   PortCpu c;
   cpu_from(in, &c);
-  ant_loaded(w, &c, ant_thread_at(in->pc, ant_loaded_at));
+  ant_loaded(w, &c, t);
   cpu_to(&c, out);
-  ant_cost(in, &MT_RUN_LOADED);
+  ant_cost(in, t->marks ? &MT_RUN_LOADED_MARKS : &MT_RUN_LOADED);
+}
+
+static uint32_t ant_marked_at(const AntThread* t) {
+  return t->marks ? ant_marked_pc(t) : 0;
+}
+
+static void shim_ant_marked(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  ant_marked(&c, ant_thread_at(in->pc, ant_marked_at));
+  cpu_to(&c, out);
+  ant_cost(in, &MT_RUN_MARKED);
 }
 
 static void shim_ant_sleeps(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -25414,8 +25437,9 @@ static void shim_ant_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 #define X(at, loaded, handler, sleep, woke, forgets, turned, heard,          \
-          untouchable, end)                                                  \
-  static const uint32_t ant_##at##_loaded_EXITS[] = {loaded + 0x10};         \
+          untouchable, end, marks)                                           \
+  static const uint32_t ant_##at##_loaded_EXITS[] = {                        \
+      marks ? loaded + 0x0c : loaded + 0x10};                                \
   static const uint32_t ant_##at##_sleeps_EXITS[] = {sleep + 3};             \
   static const uint32_t ant_##at##_woke_EXITS[] = {turned - 7};              \
   static const uint32_t ant_##at##_turned_EXITS[] = {                        \
@@ -25428,6 +25452,8 @@ static void shim_ant_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
 ANT_THREADS(X)
 #undef X
 static const uint32_t ant_c201_untouched_EXITS[] = {0x81c260u};
+static const uint32_t ant_c28c_untouched_EXITS[] = {0x81c2f5u};
+static const uint32_t ant_c28c_marked_EXITS[] = {0x81c2a8u};
 static const uint32_t ANT_HAS_ROOM_EXITS[] = {ANT_C321_NO_ROOM_PC,
                                               ANT_C321_BEGIN_PC};
 
@@ -26275,7 +26301,11 @@ static bool accepts_frankenstein(const Wram* w, const CosimRegs* in) {
     return false;
   const uint16_t d = in->d;
   if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_RECORD)) >= 0x1f00) return false;
-  if (wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_WAY)) > 0x0040) return false;
+  // Its way is drawn at `$81:A496`, so until that has run it is whatever the
+  // page held before, and nothing reads it.
+  if (in->pc != FRANKENSTEIN_FOUND_PC && in->pc != FRANKENSTEIN_MARKED_PC &&
+      wram_r16(w, (uint16_t)(d + FRANKENSTEIN_DP_WAY)) > 0x0040)
+    return false;
   // A free slot's way is whatever the page held before: it is only read once
   // a thing is made there, which writes it first.
   for (uint16_t i = 0; i <= FRANKENSTEIN_THING_LAST; i += FRANKENSTEIN_THING_STRIDE) {
@@ -29371,6 +29401,37 @@ static void shim_neighbour_alarm_frame(Wram* w, const Rom* rom,
 
 static const uint32_t NEIGHBOUR_WATCH_A_EXITS[] = {0x839ab3u, 0x839af7u,
                                                    0x839b1eu};
+
+// The patient one's loop is the watcher's at ease, less the look.
+static bool accepts_neighbour_patient_frame(const Wram* w,
+                                            const CosimRegs* in) {
+  return accepts_neighbour(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_WHICH)) <
+             NEIGHBOUR_PATIENT_COUNT;
+}
+
+static void shim_neighbour_patient_frame(Wram* w, const Rom* rom,
+                                         const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_patient_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &WH_TOLD, 1);
+  if (k.told) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &WH_NEXT, 1);
+    run_add(&run, k.wrapped ? &TU_WRAP : &RUN_TAKEN, 1);
+    run_add(&run, &WH_SET, 1);
+    run_add(&run, &TU_AGAIN, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t NEIGHBOUR_PATIENT_EXITS[] = {NEIGHBOUR_PATIENT_SLEEP_PC,
+                                                   NEIGHBOUR_PATIENT_TOLD_PC};
 static const uint32_t NEIGHBOUR_WATCH_B_EXITS[] = {0x839965u, 0x8399a2u,
                                                    0x8399cau};
 
@@ -38004,6 +38065,16 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 16,
     },
     {
+        .name = "neighbour_patient",
+        .symbol = "$83:9BD9",
+        .entry = NEIGHBOUR_PATIENT_PC,
+        .run = shim_neighbour_patient_frame,
+        .accepts = accepts_neighbour_patient_frame,
+        COSIM_EXITS(NEIGHBOUR_PATIENT_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
         .name = "neighbour_alarm_a",
         .symbol = "$83:9AFB",
         .entry = 0x839afbu,
@@ -38295,7 +38366,7 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 100,                                                       \
     },
 #define X(at, loaded_pc, handler, sleep_pc, woke_pc, forgets, turned_pc,     \
-          heard_pc, untouchable, end_pc)                                     \
+          heard_pc, untouchable, end_pc, marks)                              \
     ANT_ROW(at, loaded, loaded_pc, shim_ant_loaded,                          \
             accepts_ant_thread)                                          \
     ANT_ROW(at, sleeps, sleep_pc, shim_ant_sleeps,                           \
@@ -38311,9 +38382,14 @@ static const CosimRoutine ROUTINES[] = {
             accepts_ant_thread)
     ANT_THREADS(X)
 #undef X
-    // Only the first takes a killed one's handler away, and comes back here.
+    // Only the first two take a killed one's handler away, and come back
+    // here.
     ANT_ROW(c201, untouched, 0x81c25du, shim_ant_untouched,
             accepts_ant_thread)
+    ANT_ROW(c28c, untouched, 0x81c2f2u, shim_ant_untouched,
+            accepts_ant_thread)
+    // Only the second marks its entry, and comes back here.
+    ANT_ROW(c28c, marked, 0x81c2a2u, shim_ant_marked, accepts_ant_thread)
 #undef ANT_ROW
     {
         .name = "ant_c321_has_room",

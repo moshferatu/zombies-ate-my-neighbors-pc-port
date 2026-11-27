@@ -177,6 +177,21 @@ void neighbour_alarm_frame(Wram* w, const Rom* rom, PortCpu* c,
   c->pc = watch->alarm_sleep_pc;
 }
 
+void neighbour_patient_frame(Wram* w, const Rom* rom, PortCpu* c,
+                             NeighbourWork* k) {
+  lda(c, field(w, c, NEIGHBOUR_DP_TOLD));
+  if (c->a != 0) {
+    PORT_COVER(neighbour_patient_told);
+    k->told = true;
+    c->pc = NEIGHBOUR_PATIENT_TOLD_PC;
+    return;
+  }
+  PORT_COVER(neighbour_patient_shown);
+  show_next(w, rom, c, k, NEIGHBOUR_PATIENT_PICTURES, NEIGHBOUR_PATIENT_COUNT);
+  c->y = field(w, c, NEIGHBOUR_DP_RECORD);
+  c->pc = NEIGHBOUR_PATIENT_SLEEP_PC;
+}
+
 void neighbour_rise_frame(Wram* w, PortCpu* c, NeighbourWork* k) {
   const uint16_t z = (uint16_t)(field(w, c, NEIGHBOUR_DP_RECORD) + ACTOR_Z);
   c->y = ACTOR_Z;

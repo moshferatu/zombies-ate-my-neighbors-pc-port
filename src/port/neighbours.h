@@ -32,6 +32,12 @@
 // begins: sound `$30`. The second has four at ease and eleven alarmed, and
 // makes no sound.
 //
+// **The patient one** goes round two pictures, and asks whether it has
+// been told before it shows the next, as the two that look about them do,
+// but never looks.
+//
+//   $83:9BD9  neighbour_patient_frame  the neighbour of `$83:9BAD`
+//
 // I have not seen which neighbour is which, the tourists apart.
 //
 // **What a neighbour leaves** is the record itself with another picture:
@@ -122,6 +128,12 @@ typedef struct {
 extern const NeighbourWatch NEIGHBOUR_WATCHES[NEIGHBOUR_WATCH_COUNT];
 #define NEIGHBOUR_WATCH_NEAR 0x0064
 
+#define NEIGHBOUR_PATIENT_PC 0x839bd9u
+#define NEIGHBOUR_PATIENT_SLEEP_PC 0x839bd5u  // `JSL`, A already the frames
+#define NEIGHBOUR_PATIENT_TOLD_PC 0x839bfcu
+#define NEIGHBOUR_PATIENT_PICTURES 0x839c65u
+#define NEIGHBOUR_PATIENT_COUNT 2
+
 #define NEIGHBOUR_RISE_PC 0x83a210u
 #define NEIGHBOUR_RISE_SLEEP_PC 0x83a20cu  // `JSL`, A already 2
 #define NEIGHBOUR_RISE_DONE_PC 0x83a21cu   // the `RTS`
@@ -163,6 +175,8 @@ void neighbour_watch_frame(Wram* w, const Rom* rom, PortCpu* c,
                            NeighbourWork* k, const NeighbourWatch* watch);
 void neighbour_alarm_frame(Wram* w, const Rom* rom, PortCpu* c,
                            NeighbourWork* k, const NeighbourWatch* watch);
+void neighbour_patient_frame(Wram* w, const Rom* rom, PortCpu* c,
+                             NeighbourWork* k);
 void neighbour_rise_frame(Wram* w, PortCpu* c, NeighbourWork* k);
 void neighbour_sign_frame(Wram* w, const Rom* rom, PortCpu* c,
                           NeighbourWork* k);

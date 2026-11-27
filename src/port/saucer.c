@@ -84,9 +84,6 @@ typedef struct {
 // The game's count of frames.
 #define W_FRAMES 0x0020u
 
-// A bearing is 1 to 8, and the thread keeps it doubled.
-#define SAUCER_MAX_HEADING 0x0010
-
 // One saucer's pass.
 typedef struct {
   Wram* w;
@@ -696,7 +693,13 @@ bool saucer_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t heading = wram_r16(w, (uint16_t)(page + SAUCER_DP_HEADING));
   const uint16_t phase =
       wram_r16(w, (uint16_t)(page + SAUCER_DP_LIGHTS_PHASE));
-  if (heading > SAUCER_MAX_HEADING || (heading & 1) != 0) return false;
+  // The heading is a bearing doubled once it has been set, but the first
+  // pass of a hunt reads it before it is: whatever the page held, odd or not,
+  // indexes the tables as the ROM's `ASL : TAX` has it. Only a read past the
+  // end of the bank, which the hardware would take from the next, is the
+  // ROM's.
+  const uint16_t at = (uint16_t)(heading << 1);
+  if (at > 0xffffu - SAUCER_SWOOP_STEPS - 3) return false;
   if (phase != 0 && phase != SAUCER_LIGHTS_STEP) return false;
   return state == SAUCER_STATE_HUNT || state == SAUCER_STATE_ON_TARGET ||
          state == SAUCER_STATE_SWOOP || state == SAUCER_STATE_OPEN;

@@ -8,9 +8,9 @@
 
 const AntThread ANT_THREADS_BY[ANT_THREAD_COUNT] = {
 #define X(at, loaded, handler, sleep, woke, forgets, turned, heard, \
-          untouchable, end) \
+          untouchable, end, marks) \
   [ANT_THREAD_AT_##at] = {loaded, handler, sleep, woke, forgets, turned,     \
-                          heard, untouchable, end},
+                          heard, untouchable, end, marks},
     ANT_THREADS(X)
 #undef X
 };
@@ -28,6 +28,16 @@ void ant_loaded(Wram* w, PortCpu* c, const AntThread* t) {
   set_c(c, false);
   wram_w16(w, W_SPAWN_LOAD,
            adc16(c, wram_r16(w, W_SPAWN_LOAD), ANT_WEIGHT));
+  if (t->marks) {
+    PORT_COVER(ant_marks);
+    load_a(c, field(w, c, ANT_DP_MARK));
+    c->pc = ant_mark_call_pc(t);
+    return;
+  }
+  ant_marked(c, t);
+}
+
+void ant_marked(PortCpu* c, const AntThread* t) {
   c->a = t->handler;
   c->y = ANT_THREAD_BANK;
   set_nz16(c, c->y);
